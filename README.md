@@ -2,29 +2,28 @@
 
 # wy
 
-### AI wrote the code. Know why before you own it.
+### An experimental IDE for understanding AI-generated code.
 
-Understand the decisions behind a change—then follow the evidence into the code and conversation.
+**AI wrote the code. Know why before you own it.**
 
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square)](pyproject.toml)
+Explore the implementation, question the design, and follow every explanation back to its evidence.
+
+[![Experimental](https://img.shields.io/badge/Status-Experimental-E7B66D?style=flat-square&labelColor=182335)](#experimental-status)
 [![Codex + Claude Code](https://img.shields.io/badge/Works_with-Codex_%2B_Claude_Code-78DCCE?style=flat-square&labelColor=182335)](#from-agent-output-to-code-you-understand)
 [![Offline by default](https://img.shields.io/badge/Offline-by_default-78DCCE?style=flat-square&labelColor=182335)](#local-by-default-ai-when-you-ask)
 [![MIT License](https://img.shields.io/badge/License-MIT-A9A1FF?style=flat-square&labelColor=182335)](LICENSE)
 
-[Get started](#get-started) · [Try the demo](#try-it-on-a-real-diff) · [How it works](#from-agent-output-to-code-you-understand) · [Command guide](docs/usage.md)
+[Get started](#get-started) · [Explore the IDE](#an-ide-built-around-understanding) · [Command guide](docs/usage.md)
 
 </div>
 
-![wy terminal workspace: a recorded reason for ThreadPoolExecutor, linked evidence, alternatives and the unanswered question of worker count](docs/assets/workspace.svg)
 
-<p align="center"><sub>Actual terminal capture · bundled demo with synthetic Codex history · offline analysis</sub></p>
 
 A diff tells you **what changed**. wy helps you investigate **why that approach was chosen**, **what assumptions remain**, and **what you should check before shipping**.
 
-It brings your Git changes, relevant repository code, and project-matched Codex or Claude Code history into one terminal workspace. Start with an offline decision review; ask your installed agent CLI for a deeper explanation when you need one.
+**wy is a terminal-based IDE for understanding AI-generated code.** It brings your Git changes, source files, design questions, and project-matched Codex or Claude Code conversations into one place. Explore a change from the overall behavior down to a single class or function, then inspect the evidence behind the answer.
 
-> **“Why a thread pool—and why eight workers?”**<br>
-> In the demo, wy finds the agent's stated reason: the existing client is synchronous. It links that statement to the code, lists alternatives to investigate, and leaves the worker count as an open question.
+The IDE is read-only: you use it to understand and evaluate the implementation. Offline review works without an account; deeper explanations use your installed Codex or Claude CLI when you ask.
 
 ## From agent output to code you understand
 
@@ -36,26 +35,29 @@ It brings your Git changes, relevant repository code, and project-matched Codex 
 | **What still needs checking?** | Assumptions, alternatives, unresolved questions and stale evidence. |
 | **Does the evidence still match the code?** | Saved excerpts beside current source, with changed or ambiguous locations flagged. |
 
-**Read the decision → inspect the evidence → check the code → ask a better question.**
+## An IDE built around understanding
 
-<details>
-<summary><strong>See the code evidence view</strong></summary>
+**Explore a file → understand the implementation → question the design → inspect the evidence.**
 
-![wy code view showing a saved citation alongside the current source, with line numbers and syntax highlighting](docs/assets/evidence.svg)
+| Part of the IDE | What you can do |
+| --- | --- |
+| **Changed-file explorer** | Browse changes by folder, expand a file into classes and functions, and choose exactly what to investigate. Refresh the file list offline. |
+| **Explanation workspace** | Read how the implementation works, why the choices fit, what alternatives exist, and what to check. Keep the code and its reasoning in the same workspace. |
+| **Design investigation** | Select a class, function or line and ask **Why this design?** No automatically detected decision is required. |
+| **Evidence navigation** | Click a numbered reference to inspect the captured code, diff or conversation. Return with **← Explanation** or **Escape**. |
+| **Follow-up questions** | Ask “Would a simpler function work?” or “What happens if this fails?” while keeping the selected target in scope. |
+| **Code and conversation views** | Compare saved citations with current source, navigate file outlines, and inspect the conversation surrounding a recorded statement. |
 
-The original citation stays intact. The current file appears separately, so moved or changed code doesn't silently rewrite the evidence.
+**Settings** holds your Codex/Claude choice, history sources, detected choices and review details. **Files** toggles the explorer on a narrow terminal; **Help** opens a short guide. Saved explanations and evidence can be browsed without another model call.
 
-</details>
 
 ## Get started
 
-Requires **Python 3.11+**, **Git**, and [uv](https://docs.astral.sh/uv/). Install from source:
 
 ```bash
 git clone https://github.com/grandimam/wy.git
 cd wy
-uv sync
-uv tool install .
+cargo install --path . --locked
 ```
 
 Then open a repository with changes you want to understand:
@@ -63,38 +65,16 @@ Then open a repository with changes you want to understand:
 ```bash
 cd /path/to/your/repo
 wy review                 # Review the diff and matching project history, offline
-wy                        # Open the terminal workspace
+wy                        # Open the IDE
 ```
 
-Select a decision to inspect its rationale and citations. For a broader explanation, use the **Understand** tab: choose Codex or Claude, then **Explain changes**. This requires the chosen CLI to be installed and signed in, and may consume your account's usage.
+Click **Explain changes** to understand the recent work, or choose a file, class or function in the explorer to investigate one part. Select Codex or Claude in **Settings**. Generating explanations requires the chosen CLI to be installed and signed in, and may consume your account's usage.
+
+For the offline review, open **Settings → Detected choices** to inspect the detected decisions, rationale and citations.
 
 **No agent history?** Review still works using repository evidence. **No model account?** Offline review and evidence browsing still work.
 
 Local reviews are stored in `.wy/`. Add `.wy/` to your repository's `.gitignore` before sharing it; wy does not edit the ignore file for you.
-
-## Try it on a real diff
-
-From the wy checkout, create a throwaway repository containing a sequential-to-threaded download change and a synthetic Codex conversation:
-
-```bash
-uv run python examples/make_demo.py /tmp/wy-demo
-uv run wy review --repo /tmp/wy-demo --session /tmp/wy-demo/.wy/demo-session.jsonl
-uv run wy --repo /tmp/wy-demo
-```
-
-Use a fresh destination if `/tmp/wy-demo` already exists. The demo never executes the sample application and needs no application dependencies.
-
-Open **Why use ThreadPoolExecutor?** to see the recorded justification, follow a code citation, then inspect the saved conversation. The review also asks what measurements justify the worker count.
-
-Prefer a quick answer in your shell?
-
-```bash
-uv run wy explain worker.py:11 --repo /tmp/wy-demo
-uv run wy ask worker.py:11 'What alternatives exist?' --repo /tmp/wy-demo
-uv run wy gaps --repo /tmp/wy-demo
-```
-
-The demo prints a snapshot ID. Add `--baseline snapshot-…` to the review command to isolate changes since that snapshot.
 
 ## Fit it into your agent workflow
 
@@ -122,9 +102,21 @@ For a fresh, cited explanation through an installed agent CLI:
 
 ```bash
 wy reason --agent codex
-wy reason --agent claude --file worker.py
+wy reason --agent claude --file worker.rs
 wy reason --agent codex --question 'What changed, and what should I test?'
 ```
+
+To understand a particular design choice after the AI has coded:
+
+```bash
+wy why src/example.rs:MyClass
+wy why src/example.rs:MyClass.run --question 'Would a simpler function work?'
+```
+
+In `wy`, expand a changed file, select a class or function, and choose **Why this
+design?**. The answer distinguishes recorded justifications, inferred benefits,
+and missing reasons, with citations you can follow back to code and conversation.
+No automatically detected decision is required. Follow-ups keep the selected target.
 
 ## Evidence you can question
 
@@ -143,7 +135,7 @@ A recorded statement can still be wrong. A linked session does not prove authors
 | Mode | What runs | What you need |
 | --- | --- | --- |
 | **Offline review** · `wy review`, `wy explain`, `wy ask` | Local detection, evidence retrieval and cached investigation. No model or network request. | A Git repository. |
-| **Agent explanation** · `wy reason`, in-app `/reason` or `/ask` | Your installed Codex or Claude CLI receives bounded, redacted evidence and returns a fresh assessment. | The selected CLI, sign-in and available account usage. |
+| **Agent explanation** · `wy reason`, `wy why`, in-app `/reason`, `/why` or `/ask` | Your installed Codex or Claude CLI receives bounded, redacted evidence and returns a fresh assessment. | The selected CLI, sign-in and available account usage. |
 | **Optional model enrichment** · `--model` | A configured Ollama-compatible endpoint enriches detected decisions or answers follow-ups. | An explicitly configured model and endpoint. |
 
 wy does not modify application source or execute the code it reviews. Reviews, source snapshots and normalized conversation excerpts stay in local `.wy/` artifacts unless you explicitly request model processing. Redaction is best-effort; local artifacts are not encrypted.
@@ -154,30 +146,34 @@ See the [model setup and reflection workflow](docs/usage.md#optional-model-analy
 
 | In your shell | Purpose |
 | --- | --- |
+| `wy why worker.rs:batch` | Investigate the design of a specific function through your agent CLI. |
+| `wy reasoning-evidence 1 --id <explanation-id>` | Inspect the exact saved source behind an explanation, offline. |
 | `wy decisions` | List detected decisions and review origin. |
 | `wy explain 1` | Inspect a decision's rationale, citations and later assessments. |
 | `wy evidence 1 2` | Open the second citation for the first decision. |
 | `wy gaps` | Find unanswered questions, unexplained choices and stale findings. |
 | `wy decisions --json` | Get structured output for scripts. |
 
-Inside the workspace, **Ctrl+J** opens the command bar; `/help` lists commands. **Tab** moves focus, **Alt+Left / Alt+Right** navigate history, and **Ctrl+Q** exits.
+Inside the IDE, **Ctrl+B** toggles files, **Ctrl+J** opens the command bar, and **F1** opens help. **Tab** moves focus, **Alt+Left / Alt+Right** navigate history, and **Ctrl+Q** exits.
 
 In-app `/ask` calls the selected agent CLI. The shell command `wy ask TARGET 'QUESTION'` works offline unless you add `--model`.
 
-## Scope and development
+## Experimental status
 
-wy is an early **0.1.0 MVP**. Offline detection is deliberately selective and capped at twelve decisions per review. It covers patterns such as concurrency, caching, dependency versions, operational limits, broad exception handling and retries; it does not discover every architectural decision. Python gets AST-based analysis; other supported text files use line anchors. Retrieval is lexical, and citations need human judgment.
+**wy is experimental software (0.2.0).** The interface, commands and saved artifact formats are evolving. Use its explanations as a starting point for investigation, and verify important claims against the cited code and conversation.
+
+Offline detection is deliberately selective and capped at twelve decisions per review. It covers patterns such as concurrency, caching, dependency versions, operational limits, broad exception handling and retries; it does not discover every architectural decision. Rust, JavaScript, TypeScript and JSON use tree-sitter syntax navigation; other text files use line anchors. Retrieval is lexical, and citations need human judgment.
+
+## Development
 
 From the checkout:
 
 ```bash
-uv sync
-uv run pytest -q
-uv run ruff check src tests benchmarks examples
-uv run python benchmarks/run.py
+cargo check --locked
+cargo test --locked
 ```
 
-The synthetic benchmark checks regressions, not real-world accuracy. See [evaluation](docs/evaluation.md) for its scope.
+Automated checks verify regressions, not real-world accuracy. See [evaluation](docs/evaluation.md) for its scope.
 
 [Command guide](docs/usage.md) · [Architecture and limitations](docs/architecture.md) · [Security boundaries](docs/security.md) · [Codex format support](docs/codex-formats.md)
 

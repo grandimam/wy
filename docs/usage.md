@@ -2,7 +2,7 @@
 
 [← Back to the README](../README.md)
 
-Detailed workflows for the terminal workspace, project history, evidence and optional model analysis.
+Detailed workflows for wy, an experimental terminal-based IDE for understanding AI-generated code: project history, design investigation, evidence and optional model analysis.
 
 ## Use with Codex, Claude Code, or both
 
@@ -47,11 +47,71 @@ A baseline isolates net changes made **since the snapshot**. It cannot prove who
 
 ## Commands
 
-### Open the terminal workspace
+### Understand a design choice after the AI has coded
 
-Run `wy` from a repository. It opens **Understand**, where you choose your installed
-**Codex CLI** or **Claude CLI** and select **Explain changes**. No local model is
-needed. The CLI uses your existing sign-in and account usage.
+Point directly at a class, function, or line. No detected decision is required:
+
+```bash
+wy why src/reasoning.rs:ContextSelection
+wy why src/reasoning.rs:select_context --question "Would a simpler approach work?"
+wy why src/reasoning.rs:50 --agent claude
+```
+
+The answer starts with engineering judgment: the choice, its justification, and
+whether that justification is **recorded**, **inferred**, or **unknown**. A recorded
+reason must quote an exact assistant statement from the supplied conversation.
+The quote and source ID are validated; whether that statement actually justifies
+the choice still needs your judgment. User requests establish requirements, and
+code establishes behavior; neither by itself proves the original motivation.
+
+Use `file:Class.method` for qualified symbols, or `file:line` for any
+supported text file. The selected region is included even if automatic context
+selection overlooks it. Relevant conversation events are ranked by filename and
+symbol, including nearby requests and explanations. Retrieval is bounded and can
+miss a reason; **unknown** means it was not established by the supplied evidence.
+
+In `wy`, expand **Changed files**, select a class or function, and click **Why this
+design?**. Alternatively use `/why file:Class [question]`.
+Follow-up questions retain that target and call the selected agent CLI. Select a numbered citation to inspect its captured evidence; a session
+citation offers **Open conversation** to inspect surrounding events.
+
+The shell prints the saved explanation ID. Inspect its exact citations offline:
+
+```bash
+wy reasoning-evidence 1 --id reasoning-EXAMPLE
+```
+
+Using the ID keeps the evidence tied to that explanation even after subsequent
+edits or reviews. The explanation remains a fresh assessment; it does not replace
+the offline decision detector's findings.
+
+### Open the IDE
+
+Run `wy` from your repository and choose **Explain changes**, or select a file
+on the left to inspect its diff and choose **Explain this file**. Read one
+continuous explanation: **The change**, **The reasoning**, and **What to check**.
+Reasons are labeled as stated in a conversation, inferred, or unknown.
+**Diff** opens the selected file's changes. **All changes** in the sidebar returns
+to the whole task. Returning to an explanation already opened in this session
+reuses it while the review and conversation-source setting remain the same.
+
+Ask follow-ups in the input below the explanation. Click a numbered reference
+inside the answer to inspect its evidence, or open **Sources** and select a
+reference with the keyboard. **← Explanation** or **Escape** returns to your
+reading position. Evidence browsing keeps the original question's scope.
+
+The file sidebar groups changed files by folder. Expand a file to investigate a
+class or function. **Files** (or **Ctrl+B**) shows the sidebar on a small terminal;
+**Refresh** updates it offline. Use `/why file:Class` or `/why file:line` to
+investigate code outside the changed-file list.
+
+**Settings** contains the Codex/Claude selector, conversation-source settings,
+saved conversations, detected choices, and review details. **Help** (or **F1**)
+opens a short guide. **Stop** cancels a running explanation. Advanced commands
+remain available through **Ctrl+J** or `/`.
+
+Explanations use your selected CLI's existing sign-in and account usage. Browsing
+saved answers and evidence does not call the AI.
 
 Explanations connect the request, before/after behavior, mechanisms, tradeoffs and
 checks to numbered evidence. Select a citation to inspect the exact diff, source
@@ -63,7 +123,7 @@ input below the explanation. Each question receives a fresh evidence packet.
 The persistent terminal workspace also includes a decision
 tree, code panes, a Codex/Claude conversation browser, navigation history and an in-app
 command bar. `wy --repo PATH` opens another repository; `wy explore` is an alias.
-From an uninstalled checkout, use `uv run wy`.
+From an uninstalled checkout, use `cargo run --`.
 
 Type `/` while navigating, or press **Ctrl+J**, to focus the command bar. Matching
 commands appear as you type. Start with `/help`:
@@ -80,7 +140,7 @@ commands appear as you type. Start with `/help`:
 | `/code` | Show saved and current source panes |
 | `/line 120` | Go to a line in the current file |
 | `/reason codex` or `/reason claude` | Explain current changes through that installed CLI |
-| `/reason codex src/example.py` | Explain one file |
+| `/reason codex src/example.rs` | Explain one file |
 | `/ask What alternatives exist?` | Ask the selected CLI about the selected decision’s file |
 | `/cancel` | Stop the running explanation |
 | `/origin` | Inspect review ID, time, session and limitations |
@@ -102,7 +162,7 @@ decisions; **Ctrl+F** searches the current code file; **Ctrl+G** goes to a line;
 highlighting. Code appears when you select a code citation.
 
 The code view preserves the saved excerpt and separately displays the current
-file. It starts at a bounded cited region; **Full file** expands it. Python, Markdown
+file. It starts at a bounded cited region; **Full file** expands it. Rust, Markdown
 and JSON files offer a structural outline. Search and go-to use original file line
 numbers even in the focused view. If the file changed, wy searches for an exact excerpt match: a unique match
 helps locate moved text, while multiple matches or changed text remain explicitly
@@ -111,19 +171,19 @@ Conversation citations open the stored event; previous/next controls and linked
 tool call/result navigation expose its context. Nearby events do not establish a
 causal chain or private model reasoning.
 
-The Origin tab shows the saved review and every included agent/session. These
+Settings shows the saved review and every included agent/session. These
 sessions are contextual evidence, not proof of authorship. Later assessments show self-reported
 identity separately; their authoring session was not captured by the current import
 format. Browsing uses saved data without invoking a model or rereading the live
 transcript. An explicit explanation request refreshes stale reviews before collecting its evidence.
-Generated explanations are saved separately under `.wy` and rejected if the code
-changes while generation is running.
+Generated explanations are saved separately under `.wy`; if the code changes
+during generation, the answer is retained with a snapshot-staleness warning.
 
 The standalone commands remain available for scripts and quick inspection:
 
 ```bash
 wy reason --agent codex   # explain actual changes; claude is also supported
-wy reason --agent claude --file src/example.py --question "Why this approach?"
+wy reason --agent claude --file src/example.rs --question "Why this approach?"
 wy decisions              # compact numbered index and review origin
 wy explain 1              # rationale, citations and later assessments
 wy evidence 1 2           # saved evidence plus current source context
@@ -148,10 +208,10 @@ Data-producing commands support `--json`. Repository commands accept `--repo PAT
 | `wy review --baseline ID` | Compare against a captured pre-session tree |
 | `wy review --base REV` | Compare against a different commit |
 | `wy review --diff change.patch` | Read a unified diff whose added lines match the current working tree |
-| `wy explain worker.py:21` | Inspect a decision at a location; a decision ID also works |
+| `wy explain worker.rs:21` | Inspect a decision at a location; a decision ID also works |
 | `wy decisions` | Read cached decisions and check staleness |
 | `wy gaps` | Show unexplained choices, open questions and stale findings |
-| `wy ask worker.py:21 'Why this approach?'` | Investigate a cached decision |
+| `wy ask worker.rs:21 'Why this approach?'` | Investigate a cached decision |
 
 Choose only one of `--baseline`, `--base` and `--diff`. Imported patches are **never applied**. Cached reads do not invoke a model. Follow-ups about why, alternatives, evidence, conventions and assumptions work offline; arbitrary semantic questions require `--model`.
 
@@ -171,11 +231,11 @@ Install and sign in to Codex or Claude Code, then run:
 
 ```bash
 wy reason --agent codex
-wy reason --agent claude --file worker.py
+wy reason --agent claude --file worker.rs
 wy reason --agent codex --question 'What behavior changed, and what should I test?'
 ```
 
-In the workspace, choose **Codex CLI** or **Claude CLI** in the **Understand** tab
+In the workspace, choose **Codex** or **Claude** in **Settings**
 and click **Explain changes**, or use `/reason codex`. Select a citation to inspect
 the supplied diff, code excerpt or stored conversation event in the **Evidence** tab.
 Use `/cancel` to stop an in-progress request.
@@ -200,15 +260,15 @@ Use the active Codex conversation to supply the assessment, with no separate mod
 ```bash
 wy review --session <session-id>
 # Nominate a question that automatic detection missed (also works for unchanged code):
-wy focus src/wy/storage.py:27 'Why store artifacts in SQLite?' --evidence src/wy/storage.py:41
-wy reflection-request src/wy/storage.py:27 --json
+wy focus src/storage.rs:27 'Why store artifacts in SQLite?' --evidence src/storage.rs:41
+wy reflection-request src/storage.rs:27 --json
 # Ask the conversation to answer the returned request using its response_schema,
 # write the JSON response to a local file, then import it:
 wy record-reflection /tmp/wy-reflection.json
-wy explain src/wy/storage.py:27
+wy explain src/storage.rs:27
 ```
 
-For wy itself, run these commands from this checkout with `uv run wy`. The request includes
+For wy itself, run these commands from this checkout with `cargo run --`. The request includes
 code excerpts, citation IDs and a schema for rationale, alternatives, assumptions, uncertainty,
 and a keep/revise/insufficient-context assessment. A response is a **retrospective assessment**;
 it never replaces the original explanation or upgrades it to Recorded. Agent/model identity
@@ -222,26 +282,17 @@ reviews and reflections remain in the local SQLite artifact history.
 
 ### Use a separate configured model
 
-The provider boundary is extensible. The included implementation speaks the [Ollama chat API](https://docs.ollama.com/api/chat), requests a JSON schema, validates the output with Pydantic and rejects fabricated evidence IDs. Start a local Ollama service with a model you have explicitly chosen and installed:
+The provider boundary is extensible. The included implementation speaks the [Ollama chat API](https://docs.ollama.com/api/chat), requests a JSON schema, validates the output with JSON Schema and rejects fabricated evidence IDs. Start a local Ollama service with a model you have explicitly chosen and installed:
 
 ```bash
 export WY_MODEL='your-installed-model'
 # Defaults to http://127.0.0.1:11434/api/chat
 export WY_MODEL_ENDPOINT='http://127.0.0.1:11434/api/chat'
 wy review --model
-wy ask worker.py:21 'What assumptions should I verify?' --model
+wy ask worker.rs:21 'What assumptions should I verify?' --model
 ```
 
 A remote Ollama-compatible endpoint additionally requires **both** HTTPS and `WY_ALLOW_REMOTE=1`. Optional `WY_PROVIDER_API_KEY` is passed as a bearer token, never stored. These settings are read from the process environment, not repository files. `--model` is required even when the environment is configured. It sends redacted decision excerpts and retrieved evidence, not the whole repository. Review the data before enabling external processing: redaction is best-effort.
 
 Invalid model results leave the offline decision intact and add a warning. Models cannot assign `Recorded`, change code anchors or introduce arbitrary source citations. Citation existence is validated; semantic entailment still requires human review. Token counts returned by the provider are saved per review. No monetary price is guessed.
 
-## Screenshots
-
-These are actual terminal captures of the bundled threaded-worker demo, using a
-synthetic Codex transcript and offline review. No model-generated assessment is
-shown.
-
-![Decision workspace with recorded rationale, alternatives and an open question](assets/workspace.svg)
-
-![Code evidence with the saved citation beside the current source file](assets/evidence.svg)

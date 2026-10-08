@@ -1,0 +1,35 @@
+[
+  {
+    "category": "caching",
+    "pattern": "\\b(?:redis\\.(?:Redis|from_url)|Redis)\\s*\\(",
+    "token": "redis",
+    "question": "Why use Redis?",
+    "alternatives": [
+      "An in-process cache",
+      "Database-backed storage"
+    ],
+    "gap": "Which sharing, durability or eviction requirements justify an external service?"
+  },
+  {
+    "category": "failure-handling",
+    "pattern": "\\bRetry\\s*\\(",
+    "token": "retry",
+    "question": "Why introduce automatic retries?",
+    "alternatives": [
+      "Fail immediately",
+      "Queue work for later retry"
+    ],
+    "gap": "Are operations idempotent, and are retry limits and backoff justified?"
+  },
+  {
+    "category": "database",
+    "pattern": "\\b(?:CREATE TABLE|ALTER TABLE|CREATE (?:UNIQUE )?INDEX)\\b",
+    "token": "schema",
+    "question": "Why change the database schema?",
+    "alternatives": [
+      "Preserve the current schema",
+      "Use a staged additive migration"
+    ],
+    "gap": "What query or data requirement motivates this change, and how is rollback handled?"
+  }
+]

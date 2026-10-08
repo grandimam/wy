@@ -1,0 +1,1166 @@
+{
+  "Review": {
+    "$defs": {
+      "ChangedFile": {
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "title": "File",
+            "type": "string"
+          },
+          "hunks": {
+            "items": {
+              "$ref": "#/$defs/Location"
+            },
+            "title": "Hunks",
+            "type": "array"
+          },
+          "symbols": {
+            "items": {
+              "$ref": "#/$defs/Location"
+            },
+            "title": "Symbols",
+            "type": "array"
+          },
+          "added_lines": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Added Lines",
+            "type": "array"
+          },
+          "removed_line_count": {
+            "minimum": 0,
+            "title": "Removed Line Count",
+            "type": "integer"
+          },
+          "diff": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Diff"
+          },
+          "diff_truncated": {
+            "default": false,
+            "title": "Diff Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "file",
+          "hunks",
+          "symbols",
+          "added_lines",
+          "removed_line_count"
+        ],
+        "title": "ChangedFile",
+        "type": "object"
+      },
+      "Decision": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "category": {
+            "enum": [
+              "concurrency",
+              "caching",
+              "abstraction",
+              "dependency",
+              "configuration",
+              "database",
+              "failure-handling",
+              "architecture"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "location": {
+            "$ref": "#/$defs/Location"
+          },
+          "explanation": {
+            "title": "Explanation",
+            "type": "string"
+          },
+          "provenance": {
+            "enum": [
+              "recorded",
+              "inferred",
+              "unexplained"
+            ],
+            "title": "Provenance",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "alternatives": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Alternatives",
+            "type": "array"
+          },
+          "assumptions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Assumptions",
+            "type": "array"
+          },
+          "unresolved_questions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unresolved Questions",
+            "type": "array"
+          },
+          "snapshot_hash": {
+            "title": "Snapshot Hash",
+            "type": "string"
+          },
+          "attribution": {
+            "default": "unknown",
+            "enum": [
+              "since-baseline",
+              "unknown"
+            ],
+            "title": "Attribution",
+            "type": "string"
+          },
+          "stale": {
+            "default": false,
+            "title": "Stale",
+            "type": "boolean"
+          },
+          "reflections": {
+            "items": {
+              "$ref": "#/$defs/Reflection"
+            },
+            "title": "Reflections",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "question",
+          "category",
+          "location",
+          "explanation",
+          "provenance",
+          "evidence",
+          "snapshot_hash"
+        ],
+        "title": "Decision",
+        "type": "object"
+      },
+      "Evidence": {
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "title": "File",
+            "type": "string"
+          },
+          "symbol": {
+            "default": "<module>",
+            "title": "Symbol",
+            "type": "string"
+          },
+          "start_line": {
+            "minimum": 1,
+            "title": "Start Line",
+            "type": "integer"
+          },
+          "end_line": {
+            "minimum": 1,
+            "title": "End Line",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "code",
+              "session",
+              "diff"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "excerpt": {
+            "title": "Excerpt",
+            "type": "string"
+          },
+          "snapshot_hash": {
+            "default": "",
+            "title": "Snapshot Hash",
+            "type": "string"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Event Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "agent": {
+            "anyOf": [
+              {
+                "enum": [
+                  "codex",
+                  "claude"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Agent"
+          }
+        },
+        "required": [
+          "file",
+          "start_line",
+          "end_line",
+          "id",
+          "kind",
+          "excerpt"
+        ],
+        "title": "Evidence",
+        "type": "object"
+      },
+      "Location": {
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "title": "File",
+            "type": "string"
+          },
+          "symbol": {
+            "default": "<module>",
+            "title": "Symbol",
+            "type": "string"
+          },
+          "start_line": {
+            "minimum": 1,
+            "title": "Start Line",
+            "type": "integer"
+          },
+          "end_line": {
+            "minimum": 1,
+            "title": "End Line",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "file",
+          "start_line",
+          "end_line"
+        ],
+        "title": "Location",
+        "type": "object"
+      },
+      "Reflection": {
+        "additionalProperties": false,
+        "properties": {
+          "decision_id": {
+            "title": "Decision Id",
+            "type": "string"
+          },
+          "assessment": {
+            "enum": [
+              "keep",
+              "revise",
+              "insufficient_context"
+            ],
+            "title": "Assessment",
+            "type": "string"
+          },
+          "rationale": {
+            "maxLength": 3000,
+            "minLength": 1,
+            "title": "Rationale",
+            "type": "string"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "alternatives": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 6,
+            "title": "Alternatives",
+            "type": "array"
+          },
+          "assumptions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "Assumptions",
+            "type": "array"
+          },
+          "suggested_change": {
+            "maxLength": 3000,
+            "title": "Suggested Change",
+            "type": "string"
+          },
+          "uncertainty": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Uncertainty",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "context": {
+            "enum": [
+              "original_conversation",
+              "separate_review"
+            ],
+            "title": "Context",
+            "type": "string"
+          },
+          "identity_verification": {
+            "const": "self_reported",
+            "default": "self_reported",
+            "title": "Identity Verification",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision_id",
+          "assessment",
+          "rationale",
+          "evidence_ids",
+          "alternatives",
+          "assumptions",
+          "suggested_change",
+          "uncertainty",
+          "request_id",
+          "created_at",
+          "agent",
+          "model",
+          "context"
+        ],
+        "title": "Reflection",
+        "type": "object"
+      },
+      "SessionRef": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "agent": {
+            "enum": [
+              "codex",
+              "claude"
+            ],
+            "title": "Agent",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cwd"
+          },
+          "storage_key": {
+            "title": "Storage Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "agent",
+          "path",
+          "cwd",
+          "storage_key"
+        ],
+        "title": "SessionRef",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "schema_version": {
+        "default": 1,
+        "title": "Schema Version",
+        "type": "integer"
+      },
+      "id": {
+        "title": "Id",
+        "type": "string"
+      },
+      "root": {
+        "title": "Root",
+        "type": "string"
+      },
+      "created_at": {
+        "title": "Created At",
+        "type": "string"
+      },
+      "head": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Head"
+      },
+      "baseline_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Baseline Id"
+      },
+      "session_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Session Id"
+      },
+      "sessions": {
+        "items": {
+          "$ref": "#/$defs/SessionRef"
+        },
+        "title": "Sessions",
+        "type": "array"
+      },
+      "decisions": {
+        "items": {
+          "$ref": "#/$defs/Decision"
+        },
+        "title": "Decisions",
+        "type": "array"
+      },
+      "changes": {
+        "items": {
+          "$ref": "#/$defs/ChangedFile"
+        },
+        "title": "Changes",
+        "type": "array"
+      },
+      "warnings": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Warnings",
+        "type": "array"
+      },
+      "file_hashes": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "title": "File Hashes",
+        "type": "object"
+      },
+      "input_tokens": {
+        "default": 0,
+        "title": "Input Tokens",
+        "type": "integer"
+      },
+      "output_tokens": {
+        "default": 0,
+        "title": "Output Tokens",
+        "type": "integer"
+      },
+      "provider": {
+        "default": "offline",
+        "title": "Provider",
+        "type": "string"
+      },
+      "comparison_base": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Comparison Base"
+      },
+      "history_source": {
+        "anyOf": [
+          {
+            "enum": [
+              "codex",
+              "claude",
+              "both",
+              "none",
+              "selected"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "History Source"
+      }
+    },
+    "required": [
+      "id",
+      "root",
+      "created_at"
+    ],
+    "title": "Review",
+    "type": "object"
+  },
+  "Session": {
+    "$defs": {
+      "Event": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "user",
+              "assistant",
+              "read",
+              "search",
+              "tool_call",
+              "tool_output",
+              "change",
+              "test"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "source_line": {
+            "title": "Source Line",
+            "type": "integer"
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool"
+          },
+          "call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Call Id"
+          },
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "text",
+          "source_line"
+        ],
+        "title": "Event",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "title": "Id",
+        "type": "string"
+      },
+      "path": {
+        "title": "Path",
+        "type": "string"
+      },
+      "cwd": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Cwd"
+      },
+      "format": {
+        "default": "codex-rollout",
+        "title": "Format",
+        "type": "string"
+      },
+      "events": {
+        "items": {
+          "$ref": "#/$defs/Event"
+        },
+        "title": "Events",
+        "type": "array"
+      },
+      "warnings": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Warnings",
+        "type": "array"
+      },
+      "agent": {
+        "default": "codex",
+        "enum": [
+          "codex",
+          "claude"
+        ],
+        "title": "Agent",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "path"
+    ],
+    "title": "Session",
+    "type": "object"
+  },
+  "ReflectionResponse": {
+    "$defs": {
+      "ReflectionContent": {
+        "additionalProperties": false,
+        "description": "A retrospective assessment, never evidence of original intent.",
+        "properties": {
+          "decision_id": {
+            "title": "Decision Id",
+            "type": "string"
+          },
+          "assessment": {
+            "enum": [
+              "keep",
+              "revise",
+              "insufficient_context"
+            ],
+            "title": "Assessment",
+            "type": "string"
+          },
+          "rationale": {
+            "maxLength": 3000,
+            "minLength": 1,
+            "title": "Rationale",
+            "type": "string"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "alternatives": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 6,
+            "title": "Alternatives",
+            "type": "array"
+          },
+          "assumptions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "Assumptions",
+            "type": "array"
+          },
+          "suggested_change": {
+            "maxLength": 3000,
+            "title": "Suggested Change",
+            "type": "string"
+          },
+          "uncertainty": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Uncertainty",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision_id",
+          "assessment",
+          "rationale",
+          "evidence_ids",
+          "alternatives",
+          "assumptions",
+          "suggested_change",
+          "uncertainty"
+        ],
+        "title": "ReflectionContent",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "request_id": {
+        "title": "Request Id",
+        "type": "string"
+      },
+      "review_id": {
+        "title": "Review Id",
+        "type": "string"
+      },
+      "agent": {
+        "maxLength": 100,
+        "minLength": 1,
+        "title": "Agent",
+        "type": "string"
+      },
+      "model": {
+        "anyOf": [
+          {
+            "maxLength": 100,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Model"
+      },
+      "context": {
+        "enum": [
+          "original_conversation",
+          "separate_review"
+        ],
+        "title": "Context",
+        "type": "string"
+      },
+      "reflections": {
+        "items": {
+          "$ref": "#/$defs/ReflectionContent"
+        },
+        "maxItems": 12,
+        "minItems": 1,
+        "title": "Reflections",
+        "type": "array"
+      }
+    },
+    "required": [
+      "request_id",
+      "review_id",
+      "agent",
+      "model",
+      "context",
+      "reflections"
+    ],
+    "title": "ReflectionResponse",
+    "type": "object"
+  },
+  "Justification": {
+    "additionalProperties": false,
+    "description": "Model output cannot set locations, attribution or fabricate evidence records.",
+    "properties": {
+      "explanation": {
+        "maxLength": 3000,
+        "title": "Explanation",
+        "type": "string"
+      },
+      "provenance": {
+        "enum": [
+          "inferred",
+          "unexplained"
+        ],
+        "title": "Provenance",
+        "type": "string"
+      },
+      "evidence_ids": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 12,
+        "title": "Evidence Ids",
+        "type": "array"
+      },
+      "alternatives": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 6,
+        "title": "Alternatives",
+        "type": "array"
+      },
+      "assumptions": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 8,
+        "title": "Assumptions",
+        "type": "array"
+      },
+      "unresolved_questions": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 8,
+        "title": "Unresolved Questions",
+        "type": "array"
+      }
+    },
+    "required": [
+      "explanation",
+      "provenance",
+      "evidence_ids",
+      "alternatives",
+      "assumptions",
+      "unresolved_questions"
+    ],
+    "title": "Justification",
+    "type": "object"
+  },
+  "Explanation": {
+    "$defs": {
+      "Claim": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "maxLength": 3500,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "basis": {
+            "enum": [
+              "observed",
+              "assessment",
+              "proposed",
+              "unknown"
+            ],
+            "title": "Basis",
+            "type": "string"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Evidence Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "text",
+          "basis",
+          "evidence_ids"
+        ],
+        "title": "Claim",
+        "type": "object"
+      },
+      "Judgment": {
+        "additionalProperties": false,
+        "properties": {
+          "choice": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Choice",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 1800,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "recorded",
+              "inferred",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "quote": {
+            "maxLength": 1800,
+            "title": "Quote",
+            "type": "string"
+          },
+          "quote_id": {
+            "maxLength": 200,
+            "title": "Quote Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "choice",
+          "reason",
+          "status",
+          "evidence_ids",
+          "quote",
+          "quote_id"
+        ],
+        "title": "Judgment",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "title": {
+        "maxLength": 160,
+        "title": "Title",
+        "type": "string"
+      },
+      "answer": {
+        "$ref": "#/$defs/Claim"
+      },
+      "problem": {
+        "$ref": "#/$defs/Claim"
+      },
+      "before": {
+        "$ref": "#/$defs/Claim"
+      },
+      "after": {
+        "$ref": "#/$defs/Claim"
+      },
+      "steps": {
+        "items": {
+          "$ref": "#/$defs/Claim"
+        },
+        "maxItems": 8,
+        "title": "Steps",
+        "type": "array"
+      },
+      "tradeoffs": {
+        "items": {
+          "$ref": "#/$defs/Claim"
+        },
+        "maxItems": 6,
+        "title": "Tradeoffs",
+        "type": "array"
+      },
+      "checks": {
+        "items": {
+          "$ref": "#/$defs/Claim"
+        },
+        "maxItems": 6,
+        "title": "Checks",
+        "type": "array"
+      },
+      "unknowns": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 10,
+        "title": "Unknowns",
+        "type": "array"
+      },
+      "judgments": {
+        "items": {
+          "$ref": "#/$defs/Judgment"
+        },
+        "maxItems": 6,
+        "title": "Judgments",
+        "type": "array"
+      }
+    },
+    "required": [
+      "title",
+      "answer",
+      "problem",
+      "before",
+      "after",
+      "steps",
+      "tradeoffs",
+      "checks",
+      "unknowns",
+      "judgments"
+    ],
+    "title": "Explanation",
+    "type": "object"
+  },
+  "ContextSelection": {
+    "$defs": {
+      "ContextTarget": {
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "title": "File",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file",
+          "symbol"
+        ],
+        "title": "ContextTarget",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "targets": {
+        "items": {
+          "$ref": "#/$defs/ContextTarget"
+        },
+        "maxItems": 10,
+        "minItems": 1,
+        "title": "Targets",
+        "type": "array"
+      }
+    },
+    "required": [
+      "targets"
+    ],
+    "title": "ContextSelection",
+    "type": "object"
+  },
+  "Answer": {
+    "additionalProperties": false,
+    "properties": {
+      "answer": {
+        "maxLength": 5000,
+        "title": "Answer",
+        "type": "string"
+      },
+      "evidence_ids": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 12,
+        "title": "Evidence Ids",
+        "type": "array"
+      },
+      "uncertainty": {
+        "maxLength": 2000,
+        "title": "Uncertainty",
+        "type": "string"
+      }
+    },
+    "required": [
+      "answer",
+      "evidence_ids",
+      "uncertainty"
+    ],
+    "title": "Answer",
+    "type": "object"
+  }
+}
