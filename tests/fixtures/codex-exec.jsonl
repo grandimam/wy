@@ -1,0 +1,8 @@
+{"type":"thread.started","thread_id":"exec-example"}
+{"type":"item.started","item":{"id":"cmd-1","type":"command_execution","command":"rg sqlite3 ."}}
+{"type":"item.completed","item":{"id":"cmd-1","type":"command_execution","command":"rg sqlite3 .","aggregated_output":"repository.py: sqlite3.connect(path)","exit_code":0}}
+{"type":"item.completed","item":{"id":"reason-1","type":"reasoning","text":"PRIVATE RECORD MUST NOT BE INGESTED"}}
+{"type":"item.completed","item":{"id":"msg-1","type":"agent_message","text":"I chose ThreadPoolExecutor in worker.py because the existing task handler uses synchronous I/O."}}
+{"type":"item.completed","item":{"id":"file-1","type":"file_change","changes":[{"path":"worker.py","kind":"update"}]}}
+{"type":"item.completed","item":{"id":"test-1","type":"command_execution","command":"uv run pytest","aggregated_output":"2 passed","exit_code":0}}
+{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":30}}
