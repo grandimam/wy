@@ -8,12 +8,13 @@ from pathlib import Path
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
+from rich.style import Style
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
+from wy import history
 from wy.models import Decision, Review, Session
-from wy.storage import Store
 
 STATUS = {"recorded": "green", "inferred": "yellow", "unexplained": "cyan"}
 
@@ -34,13 +35,21 @@ def console() -> Console:
 
 
 def saved_session(review: Review) -> Session | None:
-    if not review.session_id:
-        return None
-    try:
-        data = Store(Path(review.root)).get("session", review.session_id)
-    except ValueError:
-        return None
-    return Session.model_validate(data)
+    sessions = history.saved_sessions(review)
+    return sessions[0] if len(sessions) == 1 else None
+
+
+def session_index(sessions: list[dict]):
+    out = console()
+    table = Table(box=box.SIMPLE, title="Sessions for this repository", expand=True)
+    for label in ("Agent", "Session ID", "Workspace", "Started"):
+        table.add_column(label, overflow="fold")
+    for session in sessions:
+        table.add_row(Text(session["agent"]), Text(session["id"]), Text(session.get("cwd") or "Unknown"),
+                      Text(str(session.get("timestamp") or "Not captured")))
+    out.print(table)
+    if not sessions:
+        out.print("No sessions with a verified working directory in this repository.")
 
 
 def command(review: Review, action: str) -> str:
@@ -54,9 +63,12 @@ def origin(out: Console, review: Review, session: Session | None):
         f"Repository  {review.root}",
         f"Saved in    {Path(review.root) / '.wy' / 'wy.sqlite3'}",
         f"Analysis    {review.provider} · tokens {review.input_tokens} in / {review.output_tokens} out",
-        f"Codex       {review.session_id or 'None supplied — repository evidence only'}",
+        "History     " + (", ".join(f"{s.agent}:{s.id}" for s in review.sessions)
+                          or (f"codex:{review.session_id}" if review.session_id else "None — repository evidence only")),
     ]
-    if session:
+    if review.sessions:
+        lines += [f"Transcript  {s.agent}: {s.path}" for s in review.sessions]
+    elif session:
         lines.append(f"Transcript  {session.path}")
     elif review.session_id:
         lines.append("Transcript  Saved session details unavailable")
@@ -126,16 +138,17 @@ def decision_view(decision: Decision, review: Review | None = None, *, show_code
     out.print(Text("Original rationale · " + decision.provenance.title(), style=STATUS[decision.provenance]))
     out.print(Text(decision.explanation))
     out.print("Authorship: not proven" + ("; changes isolated since baseline." if decision.attribution == "since-baseline" else "."))
-    events = {e.id: e for e in session.events} if session else {}
     out.print(Text("\nEvidence trail", style="bold"))
     for number, evidence in enumerate(decision.evidence, 1):
         out.print(Text(f"e {number} · [{evidence.id}] {evidence.kind} · {evidence.file}:{evidence.start_line}"))
         if evidence.kind == "session":
-            event = events.get(evidence.event_id)
+            source = history.session_for_evidence(review, evidence) if review else None
+            event = next((e for e in source.events if e.id == evidence.event_id), None) if source else None
+            out.print(Text(f"  Source: {source.agent}:{source.id}" if source else "  Source: unavailable"))
             out.print(Text(f"  Event: {evidence.event_id or 'unknown'} · kind: {event.kind if event else 'unknown'}"))
             out.print(Text(evidence.excerpt))
-            if review and evidence.event_id:
-                out.print("  Inspect stored event: " + command(review, f"session --event {shlex.quote(evidence.event_id)}"))
+            if review and evidence.event_id and source:
+                out.print("  Inspect stored event: " + command(review, f"session --id {shlex.quote(source.agent + ':' + source.id)} --event {shlex.quote(evidence.event_id)}"))
         elif show_code:
             out.print(Text(evidence.excerpt))
     if not any(e.kind == "session" for e in decision.evidence):
@@ -186,7 +199,7 @@ def session_view(review: Review, session: Session, event_id: str | None = None):
         if len(first_request.text) > 600:
             preview += "\n[preview truncated]"
         out.print(Panel(Text(preview), title=f"First stored user message · {first_request.id}"))
-        out.print("Read full message: " + command(review, f"session --event {first_request.id}"))
+        out.print("Read full message: " + command(review, f"session --id {shlex.quote(session.agent + ':' + session.id)} --event {first_request.id}"))
     else:
         out.print("No user request captured in this session snapshot.")
     table = Table(box=box.SIMPLE, expand=True, title="Conversation events cited by decisions")
@@ -197,7 +210,7 @@ def session_view(review: Review, session: Session, event_id: str | None = None):
     references: dict[str, list[str]] = {}
     for number, decision in enumerate(review.decisions, 1):
         for evidence in decision.evidence:
-            if evidence.kind == "session" and evidence.event_id:
+            if evidence.kind == "session" and evidence.event_id and evidence.file == session.path:
                 label = f"#{number} {decision.question}"
                 values = references.setdefault(evidence.event_id, [])
                 if label not in values:
@@ -212,7 +225,7 @@ def session_view(review: Review, session: Session, event_id: str | None = None):
                       Text(event.kind if event else "unknown"), Text("\n".join(labels)), Text(preview))
     if references:
         out.print(table)
-        out.print("Inspect a stored event: " + command(review, "session --event <event-id>"))
+        out.print("Inspect a stored event: " + command(review, f"session --id {shlex.quote(session.agent + ':' + session.id)} --event <event-id>"))
     else:
         out.print("No conversation events are cited by this review's decisions.")
     out.print("Cited events provide context; they do not prove who authored a change.")
@@ -223,7 +236,7 @@ def evidence_view(data: dict):
     evidence = data["evidence"]
     out.print(Panel(Text(f"{evidence['id']} · {evidence['kind']}\n{evidence['file']}:{evidence['start_line']}\n"
                          f"Decision: {data['decision_id']}\nReview: {data['review_id']}\n"
-                         f"Codex context: {data['session_id'] or 'None'}"), title="Evidence trace", border_style="blue"))
+                         f"Agent context: {data.get('agent') or 'unknown'} · {data['session_id'] or 'None'}"), title="Evidence trace", border_style="blue"))
     if evidence["kind"] == "session":
         out.print(Panel(Text(evidence["excerpt"]), title="Cited conversation excerpt"))
         for title, key in (("Nearby stored events", "context"), ("Linked tool call / result", "linked_tool_events")):
@@ -239,7 +252,9 @@ def evidence_view(data: dict):
                         preview = preview[:200] + "…"
                     table.add_row(Text(event["id"]), Text(event["kind"]), Text(preview))
                 out.print(table)
-        out.print("Inspect a full event with: wy session --event <event-id>")
+        if data.get("agent") and data.get("session_id"):
+            out.print("Inspect a full event: wy session --id " + shlex.quote(data["agent"] + ":" + data["session_id"])
+                      + " --event <event-id> --repo " + shlex.quote(data["root"]))
     else:
         lexer = Path(evidence["file"]).suffix.lstrip(".") or "text"
         out.print(Panel(Syntax(evidence["excerpt"], lexer, line_numbers=True,
@@ -258,3 +273,47 @@ def evidence_view(data: dict):
     items(out, "Other decisions sharing this citation", [
         f"#{d['number']} {d['question']}" for d in data["related_decisions"]
     ])
+
+
+def reasoning_text(artifact: dict) -> tuple[Text, list[dict]]:
+    result = artifact["explanation"]
+    known = {e["id"]: e for e in artifact["packet"]["evidence"]}
+    cited = []
+    text = Text(result["title"] + "\n\n", style="bold")
+    text.append(f"{artifact['agent'].title()} CLI · new assessment · {artifact['created_at']}\n"
+                "Based on the captured diff and project history; not recovered private reasoning.\n\n", style="dim")
+    sections = [("Answer", [result["answer"]]), ("Problem / request", [result["problem"]]),
+                ("Before", [result["before"]]), ("After", [result["after"]]),
+                ("How the changes work together", result["steps"]),
+                ("Tradeoffs", result["tradeoffs"]), ("How to verify", result["checks"])]
+    for title, values in sections:
+        if not values:
+            continue
+        text.append(title + "\n", style="bold cyan")
+        for claim in values:
+            numbers = []
+            for key in claim["evidence_ids"]:
+                if key not in [e["id"] for e in cited]:
+                    cited.append(known[key])
+                numbers.append(str(next(i for i, e in enumerate(cited, 1) if e["id"] == key)))
+            text.append(claim["text"], style="")
+            for number in numbers:
+                text.append(f" [{number}]", style=Style(color="cyan", underline=True, meta={"@click": f"app.open_reason_citation({number})"}))
+            text.append(f"  ({claim['basis']})\n\n", style="dim")
+    if result["unknowns"]:
+        text.append("Still unknown\n", style="bold yellow")
+        for item in result["unknowns"]:
+            for key in known:
+                item = item.replace(key, known[key].get("file", key))
+            text.append("• " + item + "\n", style="")
+    return text, cited
+
+
+def reasoning_view(artifact: dict):
+    out = console()
+    text, cited = reasoning_text(artifact)
+    out.print(text)
+    out.print(Text("Evidence references", style="bold"))
+    for i, item in enumerate(cited, 1):
+        out.print(Text(f"[{i}] {item['kind']} · {item.get('agent', '')} {item.get('session_id', '')} · {item['file']}"
+                       + (f":{item['start_line']}" if item.get("start_line") else "")))

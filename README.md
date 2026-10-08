@@ -1,224 +1,184 @@
+<div align="center">
+
 # wy
 
-**AI writes the code. wy helps you understand the decisions behind it.**
+### AI wrote the code. Know why before you own it.
 
-wy finds consequential choices in a Git change, connects them to repository and available Codex evidence, and makes them discoverable through a CLI and VS Code CodeLens. It never inserts explanatory comments into application source.
+Understand the decisions behind a change—then follow the evidence into the code and conversation.
 
-This is a functional, precision-oriented MVP. It works offline without a model or an account. Optional structured model analysis can enrich the detected decisions.
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square)](pyproject.toml)
+[![Codex + Claude Code](https://img.shields.io/badge/Works_with-Codex_%2B_Claude_Code-78DCCE?style=flat-square&labelColor=182335)](#from-agent-output-to-code-you-understand)
+[![Offline by default](https://img.shields.io/badge/Offline-by_default-78DCCE?style=flat-square&labelColor=182335)](#local-by-default-ai-when-you-ask)
+[![MIT License](https://img.shields.io/badge/License-MIT-A9A1FF?style=flat-square&labelColor=182335)](LICENSE)
 
-```text
-Why use ThreadPoolExecutor? · Recorded · View evidence
+[Get started](#get-started) · [Try the demo](#try-it-on-a-real-diff) · [How it works](#from-agent-output-to-code-you-understand) · [Command guide](docs/usage.md)
 
-11     with ThreadPoolExecutor(max_workers=8) as pool:
-12         return list(pool.map(fetch, urls))
-```
+</div>
 
-Click the virtual annotation to inspect the justification, source evidence, alternatives, assumptions and unanswered questions—including why the worker count is eight.
+![wy terminal workspace: a recorded reason for ThreadPoolExecutor, linked evidence, alternatives and the unanswered question of worker count](docs/assets/workspace.svg)
 
-## Install
+<p align="center"><sub>Actual terminal capture · bundled demo with synthetic Codex history · offline analysis</sub></p>
 
-Requires Python 3.11+, Git and [uv](https://docs.astral.sh/uv/).
+A diff tells you **what changed**. wy helps you investigate **why that approach was chosen**, **what assumptions remain**, and **what you should check before shipping**.
+
+It brings your Git changes, relevant repository code, and project-matched Codex or Claude Code history into one terminal workspace. Start with an offline decision review; ask your installed agent CLI for a deeper explanation when you need one.
+
+> **“Why a thread pool—and why eight workers?”**<br>
+> In the demo, wy finds the agent's stated reason: the existing client is synchronous. It links that statement to the code, lists alternatives to investigate, and leaves the worker count as an open question.
+
+## From agent output to code you understand
+
+| You want to know… | wy gives you… |
+| --- | --- |
+| **What problem does this change solve?** | An opt-in agent explanation of the problem, before/after behavior, tradeoffs and checks. |
+| **Why this implementation?** | Detected choices with recorded rationale, evidence-backed hypotheses or an explicit “unexplained” status. |
+| **Where did that explanation come from?** | Navigable citations into code, saved conversation events and linked tool calls/results. |
+| **What still needs checking?** | Assumptions, alternatives, unresolved questions and stale evidence. |
+| **Does the evidence still match the code?** | Saved excerpts beside current source, with changed or ambiguous locations flagged. |
+
+**Read the decision → inspect the evidence → check the code → ask a better question.**
+
+<details>
+<summary><strong>See the code evidence view</strong></summary>
+
+![wy code view showing a saved citation alongside the current source, with line numbers and syntax highlighting](docs/assets/evidence.svg)
+
+The original citation stays intact. The current file appears separately, so moved or changed code doesn't silently rewrite the evidence.
+
+</details>
+
+## Get started
+
+Requires **Python 3.11+**, **Git**, and [uv](https://docs.astral.sh/uv/). Install from source:
 
 ```bash
+git clone https://github.com/grandimam/wy.git
+cd wy
 uv sync
-uv run wy --help
-# Optional: expose wy on PATH for use in other repositories and VS Code
 uv tool install .
 ```
 
-No backend, telemetry or network request is involved in the default analysis path. Local artifacts live in `.wy/`; add that directory to your own `.gitignore` before sharing a repository. wy does not edit it for you.
+Then open a repository with changes you want to understand:
 
-## Try the complete workflow
+```bash
+cd /path/to/your/repo
+wy review                 # Review the diff and matching project history, offline
+wy                        # Open the terminal workspace
+```
 
-From this checkout, create a new throwaway repository with a representative change and a synthetic Codex transcript. No sample application code is executed, and no application dependencies are required.
+Select a decision to inspect its rationale and citations. For a broader explanation, use the **Understand** tab: choose Codex or Claude, then **Explain changes**. This requires the chosen CLI to be installed and signed in, and may consume your account's usage.
+
+**No agent history?** Review still works using repository evidence. **No model account?** Offline review and evidence browsing still work.
+
+Local reviews are stored in `.wy/`. Add `.wy/` to your repository's `.gitignore` before sharing it; wy does not edit the ignore file for you.
+
+## Try it on a real diff
+
+From the wy checkout, create a throwaway repository containing a sequential-to-threaded download change and a synthetic Codex conversation:
 
 ```bash
 uv run python examples/make_demo.py /tmp/wy-demo
 uv run wy review --repo /tmp/wy-demo --session /tmp/wy-demo/.wy/demo-session.jsonl
-uv run wy explain worker.py:11 --repo /tmp/wy-demo
-uv run wy decisions --repo /tmp/wy-demo --json
-uv run wy gaps --repo /tmp/wy-demo
-uv run wy ask worker.py:11 'What alternatives exist?' --repo /tmp/wy-demo
+uv run wy --repo /tmp/wy-demo
 ```
 
-The demo prints a baseline ID. To isolate the changes after that snapshot, pass `--baseline snapshot-…` to `wy review`. Without the baseline, wy still explains the diff but labels authorship **unknown**.
+Use a fresh destination if `/tmp/wy-demo` already exists. The demo never executes the sample application and needs no application dependencies.
 
-To see the annotations in VS Code:
+Open **Why use ThreadPoolExecutor?** to see the recorded justification, follow a code citation, then inspect the saved conversation. The review also asks what measurements justify the worker count.
+
+Prefer a quick answer in your shell?
 
 ```bash
-npm install --prefix vscode
-npm run compile --prefix vscode
-code --extensionDevelopmentPath="$PWD/vscode" /tmp/wy-demo
+uv run wy explain worker.py:11 --repo /tmp/wy-demo
+uv run wy ask worker.py:11 'What alternatives exist?' --repo /tmp/wy-demo
+uv run wy gaps --repo /tmp/wy-demo
 ```
 
-Open `worker.py`. A CodeLens appears above line 11. Click it to open the evidence panel. Enable VS Code's `editor.codeLens` setting if lenses are hidden. The extension can display an existing cache without the CLI on PATH. For its explicit review and follow-up actions, set the **user-level** `wy.executable` setting to this checkout's absolute `.venv/bin/wy` path, or install `wy` on PATH. Open the Git root as the workspace folder.
+The demo prints a snapshot ID. Add `--baseline snapshot-…` to the review command to isolate changes since that snapshot.
 
-The extension is a local development extension, not a published Marketplace release. Its **wy: Review Current Changes** command runs offline against HEAD; use the CLI for session selection, baseline selection or model analysis. **wy: Refresh Decision Annotations** reloads a cache manually if filesystem notifications are unavailable.
+## Fit it into your agent workflow
 
-## Use with Codex
-
-Before an agent begins, capture your working tree:
+Before the agent starts, capture the current working tree:
 
 ```bash
 wy snapshot --json
-# Run your coding agent as usual.
-wy sessions
-wy review --session <id> --baseline <snapshot-id>
+# Run Codex, Claude Code, or both as usual.
+wy review --baseline <snapshot-id>
+wy
 ```
 
-`wy sessions` discovers metadata in `$CODEX_HOME/sessions` and `archived_sessions` (default `~/.codex`). It does not read auth files. Supply a rollout path or an exported `codex exec --json` JSONL path directly with `--session` if desired. JSON exec streams may lack the original user request and workspace metadata; wy reports that limitation. Missing history is supported, not fabricated.
+Without a baseline, wy compares **HEAD to the current working tree**, including staged and non-ignored untracked files. A snapshot separates new changes from pre-existing edits; concurrent human or agent edits can still be included.
 
-A baseline isolates net changes made **since the snapshot**. It cannot prove who authored them if humans or other agents were editing concurrently. A review without a baseline cannot separate agent edits from pre-existing uncommitted work. The chosen transcript is contextual evidence, not an authorship filter.
+Project history is discovered automatically for both agents. Narrow it when needed:
 
-## Commands
+```bash
+wy sessions                         # List sessions belonging to this repository
+wy review --source claude           # Use only matching Claude Code history
+wy review --source none             # Use repository evidence alone
+wy review --session codex:<id>       # Select a session; repeat for multiple sessions
+```
 
-### Open the terminal workspace
+For a fresh, cited explanation through an installed agent CLI:
 
-Run `wy` from a repository. It opens a persistent terminal workspace with a decision
-tree, code panes, a Codex conversation browser, navigation history and an in-app
-command bar. `wy --repo PATH` opens another repository; `wy explore` is an alias.
-From an uninstalled checkout, use `uv run wy`.
+```bash
+wy reason --agent codex
+wy reason --agent claude --file worker.py
+wy reason --agent codex --question 'What changed, and what should I test?'
+```
 
-Type `/` while navigating, or press **Ctrl+J**, to focus the command bar. Matching
-commands appear as you type. Start with `/help`:
+## Evidence you can question
 
-| In-app command | Action |
+wy keeps **what was stated**, **what is inferred**, and **what is unknown** distinct.
+
+| Status | Meaning |
 | --- | --- |
-| `/decisions` | Focus the decision tree |
-| `/decision 3` | Open a numbered decision |
-| `/evidence 2` | Follow the selected decision's second citation |
-| `/session` | Browse the saved Codex conversation |
-| `/event event-42` | Open a stored event |
-| `/find SQLite` | Filter decisions |
-| `/code` | Show saved and current source panes |
-| `/line 120` | Go to a line in the current file |
-| `/ask What alternatives exist?` | Investigate the selected decision offline |
-| `/origin` | Inspect review ID, time, session and limitations |
-| `/back`, `/forward` | Move through visited decisions and evidence |
-| `/review` | Explicitly create a fresh offline review |
-| `/review <session-id-or-path>` | Create a review with Codex evidence |
-| `/quit` | Exit |
+| **Recorded** | A relevant, explicit justification was found in the agent's observable transcript. |
+| **Inferred** | Repository evidence supports a hypothesis; assumptions remain visible. |
+| **Unexplained** | The choice is visible, but its motivation is not established by the available evidence. |
 
-Click or press Enter on a decision, and expand it to follow its citations.
-Implementation/configuration findings are grouped separately from examples,
-fixtures, tests and documentation. These groups describe file locations; they do
-not certify that a detected pattern is a real design decision.
+A recorded statement can still be wrong. A linked session does not prove authorship. A new model assessment stays separate from the original rationale and never upgrades it to **Recorded**.
 
-**Tab** changes focus; **Alt+Left / Alt+Right** navigate history; **Ctrl+K** searches
-decisions; **Ctrl+F** searches the current code file; **Ctrl+G** goes to a line;
-**Ctrl+Q** exits. Source panes are read-only and include line numbers and syntax
-highlighting. Code appears when you select a code citation.
+## Local by default. AI when you ask.
 
-The code view preserves the saved excerpt and separately displays the current
-file. If the file changed, wy searches for an exact excerpt match: a unique match
-helps locate moved text, while multiple matches or changed text remain explicitly
-unresolved. Navigation never rewrites the original citation or clears staleness.
-Conversation citations open the stored event; previous/next controls and linked
-tool call/result navigation expose its context. Nearby events do not establish a
-causal chain or private model reasoning.
+| Mode | What runs | What you need |
+| --- | --- | --- |
+| **Offline review** · `wy review`, `wy explain`, `wy ask` | Local detection, evidence retrieval and cached investigation. No model or network request. | A Git repository. |
+| **Agent explanation** · `wy reason`, in-app `/reason` or `/ask` | Your installed Codex or Claude CLI receives bounded, redacted evidence and returns a fresh assessment. | The selected CLI, sign-in and available account usage. |
+| **Optional model enrichment** · `--model` | A configured Ollama-compatible endpoint enriches detected decisions or answers follow-ups. | An explicitly configured model and endpoint. |
 
-The Origin tab shows the saved review and selected Codex session. That session is
-contextual evidence, not proof of authorship. Later assessments show self-reported
-identity separately; their authoring session was not captured by the current import
-format. Browsing uses saved data without invoking a model or rereading the live
-transcript. Only the explicit `/review` command creates a new review.
+wy does not modify application source or execute the code it reviews. Reviews, source snapshots and normalized conversation excerpts stay in local `.wy/` artifacts unless you explicitly request model processing. Redaction is best-effort; local artifacts are not encrypted.
 
-The standalone commands remain available for scripts and quick inspection:
+See the [model setup and reflection workflow](docs/usage.md#optional-model-analysis) for Ollama configuration and assessments supplied by an existing coding conversation.
 
-```bash
-wy decisions              # compact numbered index and review origin
-wy explain 1              # rationale, citations and later assessments
-wy evidence 1 2           # saved evidence plus current source context
-wy session                # linked session and cited events
-wy session --event event-42
-wy explain 1 --show-code
-```
+## A few commands worth remembering
 
-Numbers refer to the current review's order; `wy gaps` preserves those numbers.
-Use full decision IDs when retaining a reference. Existing JSON output remains
-available with `--json`; `wy evidence` and `wy session` also support it.
-
-All noninteractive commands support `--json`. Repository commands accept `--repo PATH`.
-
-| Command | Purpose |
+| In your shell | Purpose |
 | --- | --- |
-| `wy sessions` | List discovered Codex sessions; `--codex-home PATH` overrides discovery |
-| `wy snapshot` | Save a pre-session working-tree baseline |
-| `wy review` | Analyze HEAD versus the working tree, including staged and untracked files |
-| `wy review --session ID_OR_PATH` | Include observable agent history |
-| `wy review --baseline ID` | Compare against a captured pre-session tree |
-| `wy review --base REV` | Compare against a different commit |
-| `wy review --diff change.patch` | Read a unified diff whose added lines match the current working tree |
-| `wy explain worker.py:21` | Inspect a decision at a location; a decision ID also works |
-| `wy decisions` | Read cached decisions and check staleness |
-| `wy gaps` | Show unexplained choices, open questions and stale findings |
-| `wy ask worker.py:21 'Why this approach?'` | Investigate a cached decision |
+| `wy decisions` | List detected decisions and review origin. |
+| `wy explain 1` | Inspect a decision's rationale, citations and later assessments. |
+| `wy evidence 1 2` | Open the second citation for the first decision. |
+| `wy gaps` | Find unanswered questions, unexplained choices and stale findings. |
+| `wy decisions --json` | Get structured output for scripts. |
 
-Choose only one of `--baseline`, `--base` and `--diff`. Imported patches are **never applied**. Cached reads do not invoke a model. Follow-ups about why, alternatives, evidence, conventions and assumptions work offline; arbitrary semantic questions require `--model`.
+Inside the workspace, **Ctrl+J** opens the command bar; `/help` lists commands. **Tab** moves focus, **Alt+Left / Alt+Right** navigate history, and **Ctrl+Q** exits.
 
-## What the statuses mean
+In-app `/ask` calls the selected agent CLI. The shell command `wy ask TARGET 'QUESTION'` works offline unless you add `--model`.
 
-- **Recorded:** a relevant, explicitly stated assistant justification is quoted from the available transcript. It is not access to private reasoning or proof the justification is correct.
-- **Inferred:** repository evidence supports a plausible hypothesis, with assumptions made explicit. It is not a verified account of the agent's intent.
-- **Unexplained:** the choice is visible, but the available evidence does not establish its motivation.
+## Scope and development
 
-Alternatives are options to investigate, not a claim that the original agent considered them. Conflicting patterns remain questions rather than being flattened into a single supposed repository convention.
+wy is an early **0.1.0 MVP**. Offline detection is deliberately selective and capped at twelve decisions per review. It covers patterns such as concurrency, caching, dependency versions, operational limits, broad exception handling and retries; it does not discover every architectural decision. Python gets AST-based analysis; other supported text files use line anchors. Retrieval is lexical, and citations need human judgment.
 
-## Optional model analysis
-
-### Ask the coding conversation to review its own decisions
-
-Use the active Codex conversation to supply the assessment, with no separate model provider:
+From the checkout:
 
 ```bash
-wy review --session <session-id>
-# Nominate a question that automatic detection missed (also works for unchanged code):
-wy focus src/wy/storage.py:27 'Why store artifacts in SQLite?' --evidence src/wy/storage.py:41
-wy reflection-request src/wy/storage.py:27 --json
-# Ask the conversation to answer the returned request using its response_schema,
-# write the JSON response to a local file, then import it:
-wy record-reflection /tmp/wy-reflection.json
-wy explain src/wy/storage.py:27
-```
-
-For wy itself, run these commands from this checkout with `uv run wy`. The request includes
-code excerpts, citation IDs and a schema for rationale, alternatives, assumptions, uncertainty,
-and a keep/revise/insufficient-context assessment. A response is a **retrospective assessment**;
-it never replaces the original explanation or upgrades it to Recorded. Agent/model identity
-and original-conversation context are self-reported. Use `separate_review` when the original
-coding conversation is unavailable, and `null` when the model name is unknown.
-
-The CLI validates request identity, decision membership, citations and source freshness before
-saving. It never starts another model or applies suggested changes. `wy explain --json` returns
-the complete reflection history; terminal output summarizes it. Existing editor annotations
-continue to show the original explanation. A new `wy review` starts fresh decisions; prior
-reviews and reflections remain in the local SQLite artifact history.
-
-### Use a separate configured model
-
-The provider boundary is extensible. The included implementation speaks the [Ollama chat API](https://docs.ollama.com/api/chat), requests a JSON schema, validates the output with Pydantic and rejects fabricated evidence IDs. Start a local Ollama service with a model you have explicitly chosen and installed:
-
-```bash
-export WY_MODEL='your-installed-model'
-# Defaults to http://127.0.0.1:11434/api/chat
-export WY_MODEL_ENDPOINT='http://127.0.0.1:11434/api/chat'
-wy review --model
-wy ask worker.py:21 'What assumptions should I verify?' --model
-```
-
-A remote Ollama-compatible endpoint additionally requires **both** HTTPS and `WY_ALLOW_REMOTE=1`. Optional `WY_PROVIDER_API_KEY` is passed as a bearer token, never stored. These settings are read from the process environment, not repository files. `--model` is required even when the environment is configured. It sends redacted decision excerpts and retrieved evidence, not the whole repository. Review the data before enabling external processing: redaction is best-effort.
-
-Invalid model results leave the offline decision intact and add a warning. Models cannot assign `Recorded`, change code anchors or introduce arbitrary source citations. Citation existence is validated; semantic entailment still requires human review. Token counts returned by the provider are saved per review. No monetary price is guessed.
-
-## Verify
-
-```bash
+uv sync
 uv run pytest -q
 uv run ruff check src tests benchmarks examples
 uv run python benchmarks/run.py
-npm test --prefix vscode
 ```
 
-Tests cover missing history and evidence, unrelated pre-existing edits, competing conventions, malformed model output, secrets, non-invasive review, unsafe paths, stale anchors and editor provider behavior. The small synthetic benchmark is a regression suite, not a claim of real-world accuracy or human-rated usefulness. See [evaluation](docs/evaluation.md).
+The synthetic benchmark checks regressions, not real-world accuracy. See [evaluation](docs/evaluation.md) for its scope.
 
-See [architecture and limitations](docs/architecture.md), [security](docs/security.md), and [Codex format support](docs/codex-formats.md).
+[Command guide](docs/usage.md) · [Architecture and limitations](docs/architecture.md) · [Security boundaries](docs/security.md) · [Codex format support](docs/codex-formats.md)
+
+Licensed under [MIT](LICENSE).

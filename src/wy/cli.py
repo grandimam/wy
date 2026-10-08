@@ -9,8 +9,7 @@ from typing import Annotated
 
 import typer
 
-from wy import explorer, presentation, reflection, service, trace
-from wy.ingestion.codex import CodexCollector
+from wy import explorer, history, presentation, reasoning, reflection, service, trace
 from wy.models import ReflectionResponse
 from wy.provider import OllamaProvider
 from wy.security import redact
@@ -101,9 +100,18 @@ def emit(value, as_json: bool):
 
 @app.command()
 @guarded
-def sessions(as_json: Json = False, codex_home: Annotated[Path | None, typer.Option()] = None):
-    """List available Codex sessions (metadata only)."""
-    emit(CodexCollector().discover(codex_home), as_json)
+def sessions(
+    repo: Repo = Path("."), as_json: Json = False,
+    source: Annotated[str, typer.Option(help="codex, claude, both or none")] = "both",
+    codex_home: Annotated[Path | None, typer.Option()] = None,
+    claude_home: Annotated[Path | None, typer.Option()] = None,
+):
+    """List only Codex/Claude sessions matched to this repository."""
+    result = history.discover(repo, source, codex_home, claude_home)
+    if as_json:
+        emit(result, True)
+    else:
+        presentation.session_index(result)
 
 
 @app.command()
@@ -118,7 +126,8 @@ def snapshot(repo: Repo = Path("."), as_json: Json = False):
 @guarded
 def review(
     repo: Repo = Path("."),
-    session: Annotated[str | None, typer.Option(help="Codex session ID or JSONL path")] = None,
+    session: Annotated[list[str] | None, typer.Option(help="Session ID, agent:id or JSONL path; repeatable")] = None,
+    source: Annotated[str, typer.Option(help="Project history: codex, claude, both or none")] = "both",
     baseline: Annotated[str | None, typer.Option()] = None,
     base: Annotated[str | None, typer.Option(help="Git revision to compare against")] = None,
     diff: Annotated[
@@ -128,17 +137,10 @@ def review(
     as_json: Json = False,
 ):
     """Analyze changes, save decisions and refresh the editor cache."""
-    session_path = None
-    if session:
-        if Path(session).is_file():
-            session_path = Path(session)
-        else:
-            matches = [s for s in CodexCollector().discover() if s["id"] == session]
-            if len(matches) != 1:
-                raise ValueError("Session ID not found or ambiguous; pass an explicit JSONL path")
-            session_path = Path(matches[0]["path"])
+    paths = history.resolve(repo, session or [], source)
     result = service.review(
-        repo, session_path, baseline, base, diff, OllamaProvider.from_env() if model else None
+        repo, None, baseline, base, diff, OllamaProvider.from_env() if model else None,
+        session_paths=paths, history_source=source,
     )
     emit(result, as_json)
 
@@ -187,12 +189,25 @@ def session(
     repo: Repo = Path("."),
     as_json: Json = False,
     event: Annotated[str | None, typer.Option(help="Inspect a stored event, e.g. event-42")] = None,
+    id: Annotated[str | None, typer.Option("--id", help="Session ID or agent:id from this review")] = None,
 ):
-    """Trace the current review to its saved Codex session and cited events."""
+    """Trace this review to its repository-scoped Codex/Claude sessions."""
     result = service.load_review(repo)
-    saved = presentation.saved_session(result)
-    if saved is None:
+    matches = history.saved_sessions(result)
+    if id:
+        matches = [s for s in matches if id in {s.id, f"{s.agent}:{s.id}"}]
+    if not matches:
         raise ValueError("No saved session available for this review; supply --session when reviewing")
+    if len(matches) > 1:
+        if event or id:
+            raise ValueError("Choose one reviewed session with --id agent:session-id")
+        if as_json:
+            emit([s.model_dump(mode="json") for s in matches], True)
+        else:
+            presentation.session_index([s.model_dump(mode="json") for s in matches])
+            typer.echo("Inspect a saved session with: wy session --id agent:session-id")
+        return
+    saved = matches[0]
     if as_json:
         if event:
             selected = next((e for e in saved.events if e.id == event), None)
@@ -208,7 +223,7 @@ def session(
 @app.command()
 @guarded
 def explore(repo: Repo = Path(".")):
-    """Browse decisions, code citations and Codex events interactively (read-only)."""
+    """Browse decisions, code citations and agent events interactively (read-only)."""
     explorer.start(repo)
 
 
@@ -223,6 +238,25 @@ def evidence(target: str, citation: str, repo: Repo = Path("."), as_json: Json =
         emit(data, True)
     else:
         presentation.evidence_view(data)
+
+
+@app.command()
+@guarded
+def reason(
+    repo: Repo = Path("."),
+    agent: Annotated[str, typer.Option(help="Use the installed codex or claude CLI")] = "codex",
+    file: Annotated[str | None, typer.Option(help="Optional repository-relative file to explain")] = None,
+    question: Annotated[str, typer.Option()] = "Explain the current changes so I can reason about them.",
+    source: Annotated[str, typer.Option(help="Project history: codex, claude, both or none")] = "both",
+    as_json: Json = False,
+):
+    """Explain actual changes with the installed Codex/Claude CLI and cited evidence."""
+    result = reasoning.run(repo, agent, question, file, source,
+                           progress=None if as_json else lambda message: typer.echo(message, err=True))
+    if as_json:
+        emit(result, True)
+    else:
+        presentation.reasoning_view(result)
 
 
 @app.command()

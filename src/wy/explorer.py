@@ -5,6 +5,7 @@ from __future__ import annotations
 import shlex
 import sqlite3
 import subprocess
+import threading
 from pathlib import Path
 
 from rich.text import Text
@@ -20,6 +21,7 @@ from textual.widgets import (
     Input,
     Label,
     OptionList,
+    Select,
     Static,
     TabbedContent,
     TabPane,
@@ -27,29 +29,35 @@ from textual.widgets import (
     Tree,
 )
 from textual.widgets.option_list import Option, OptionDoesNotExist
+from textual.widgets.text_area import Selection
 
-from wy import presentation, service, trace
+from wy import agent_cli, history, presentation, reasoning, service, source_view, trace
 from wy.models import Review
-from wy.repository import repo_root
+from wy.repository import head, repo_root, sources
 from wy.security import read_source, redact
+from wy.storage import Store
 
 Route = tuple[str, str | None, str | None]
 
 COMMANDS = {
     "/help": "Show commands and navigation keys",
+    "/reason [codex|claude] [file]": "Explain actual changes using the installed agent CLI",
+    "/cancel": "Cancel the running reasoning request",
     "/decisions": "Focus the decision tree",
     "/decision <number>": "Open a decision",
     "/evidence <number>": "Follow a citation on the selected decision",
-    "/session": "Browse the saved Codex conversation",
+    "/session": "Browse this review's saved Codex / Claude conversations",
+    "/sessions": "List agent sessions belonging to this repository",
     "/event <event-id>": "Open a stored conversation event",
     "/code": "Show the code panes",
     "/line <number>": "Jump to a line in the current file",
     "/find <words>": "Filter decisions by question or file",
-    "/ask <question>": "Investigate the selected decision using cached evidence",
+    "/ask <question>": "Ask the selected agent CLI about the selected file or current changes",
     "/origin": "Show review and session provenance",
     "/back": "Go back",
     "/forward": "Go forward",
-    "/review [session-id-or-path]": "Create a fresh offline review; optionally include a Codex session",
+    "/review [codex|claude|both|none]": "Review this repository with the selected project history",
+    "/review <session-id-or-path> …": "Review with specific sessions (quote paths with spaces)",
     "/quit": "Close the workspace",
 }
 
@@ -88,6 +96,8 @@ class Explorer(App):
     #workspace { height: 1fr; }
     #sidebar { width: 33%; min-width: 25; max-width: 52; border-right: solid #2d425a; }
     #filter { margin: 1 1 0 1; }
+    #history-source { margin: 0 1; height: 3; }
+    #session-select { height: 3; }
     #decision-tree { height: 1fr; background: #0d1420; padding: 0 1; }
     #sidebar-note { height: auto; padding: 1; color: #8ea5bf; }
     #main { width: 1fr; }
@@ -102,6 +112,10 @@ class Explorer(App):
     #citations { height: auto; max-height: 16; min-height: 4; margin: 0 1; }
     #code-status { height: auto; max-height: 6; color: #e9bf78; padding: 0 1 1 1; }
     #code-tools { height: 3; }
+    #file-tools { height: 3; }
+    #file-outline { width: 1fr; }
+    #file-tools Button { min-width: 13; }
+    #file-summary { height: 2; color: #99d9d4; padding: 0 1; }
     #line-input { width: 16; }
     #source-search { width: 1fr; }
     #find-next { min-width: 10; }
@@ -122,6 +136,16 @@ class Explorer(App):
     #status { height: 1; padding: 0 1; background: #152337; color: #afc5de; }
     #command { margin: 0 1; height: 3; }
     #command-hints { height: auto; max-height: 7; display: none; margin: 0 1; background: #152337; }
+    #reason-controls { height: 3; }
+    #reason-agent { width: 18; }
+    #reason-controls Button { min-width: 18; margin-left: 1; }
+    #reason-status { height: auto; max-height: 4; padding: 1; color: #99d9d4; }
+    #reason-scroll { height: 1fr; }
+    #reason-copy { height: auto; padding: 1; }
+    #reason-citations { height: 7; }
+    #reason-question { height: 3; }
+    #reason-evidence-label { height: auto; max-height: 6; color: #99d9d4; }
+    #reason-evidence { height: 1fr; }
     """
     BINDINGS = [
         Binding("ctrl+q", "quit", "Quit", priority=True),
@@ -137,22 +161,40 @@ class Explorer(App):
     def __init__(self, review: Review):
         super().__init__()
         self.review = review
-        self.session = presentation.saved_session(review)
+        self.load_history()
+        self.source_mode = "both"
         self.routes: list[Route] = []
         self.route_index = -1
         self.selected_decision: str | None = None
         self.selected_event: str | None = None
         self.current_file: str | None = None
+        self.reason_file: str | None = None
         self.paired_event: str | None = None
         self.decision_nodes = {}
         self.route_nodes = {}
         self.reviewing = False
+        self.source_text = ""
+        self.source_symbols = []
+        self.source_trace = None
+        self.source_full = False
+        self.source_anchor = 1
+        self.source_focus = 1
+        self.source_span = 1
+        self.reason_agent = (agent_cli.available() or ["codex"])[0]
+        self.reason_cancel = threading.Event()
+        self.reason_running = False
+        self.reason_artifact = None
+        self.reason_citations = []
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield Static(id="origin-strip", markup=False)
         with Horizontal(id="workspace"):
             with Vertical(id="sidebar"):
+                yield Label("HISTORY FOR NEXT REVIEW", classes="section-label")
+                yield Select([("Codex + Claude", "both"), ("Codex only", "codex"),
+                              ("Claude only", "claude"), ("Repository only", "none")],
+                             value="both", allow_blank=False, id="history-source")
                 yield Input(placeholder="Find decision or file…  Ctrl+K", id="filter")
                 yield Tree("Decisions", id="decision-tree")
                 yield Static("Enter / click to open · expand to follow citations\nR = recorded  I = inferred  U = unexplained\n! = stale evidence", id="sidebar-note", markup=False)
@@ -162,6 +204,26 @@ class Explorer(App):
                     yield Button("Forward →", id="forward")
                     yield Static("Select a decision", id="breadcrumb", markup=False)
                 with TabbedContent(id="tabs"):
+                    with TabPane("Understand", id="reason-tab"):
+                        with Horizontal(id="reason-controls"):
+                            yield Select([("Codex CLI", "codex"), ("Claude CLI", "claude")],
+                                         value=self.reason_agent, allow_blank=False, id="reason-agent")
+                            yield Button("Explain changes", id="reason-now", variant="primary")
+                            yield Button("Selected file", id="reason-file")
+                        yield Static("Explain the problem, before/after behavior, tradeoffs and checks—with citations.", id="reason-status", markup=False)
+                        with VerticalScroll(id="reason-scroll"):
+                            yield Static("Choose Codex or Claude above, then Explain changes.\n\n"
+                                         "Wy supplies the actual diff and project-scoped history to your installed CLI. "
+                                         "The CLI generates a fresh assessment using your existing sign-in. "
+                                         "It may consume your account's usage. It does not edit your code.",
+                                         id="reason-copy", markup=False)
+                        yield Label("OPEN A CITATION TO CHECK THE CLAIM", classes="section-label")
+                        yield OptionList(id="reason-citations", markup=False)
+                        yield Input(placeholder="Ask about these changes…  Enter to send to the selected CLI", id="reason-question")
+                    with TabPane("Evidence", id="reason-evidence-tab"):
+                        yield Static("Select a numbered citation from an explanation.", id="reason-evidence-label", markup=False)
+                        yield Button("Explain this file", id="explain-evidence-file")
+                        yield TextArea(read_only=True, id="reason-evidence")
                     with TabPane("Decision", id="decision-tab"):
                         with VerticalScroll(id="decision-scroll"):
                             yield Static("No decisions in this review.", id="decision-copy", markup=False)
@@ -169,21 +231,27 @@ class Explorer(App):
                             yield OptionList(id="citations", markup=False)
                     with TabPane("Code", id="code-tab"):
                         yield Static("Select a code citation to inspect its saved and current source.", id="code-status", markup=False)
+                        yield Static("Choose a citation to explore the file's structure.", id="file-summary", markup=False)
+                        with Horizontal(id="file-tools"):
+                            yield Select([("File outline", "none")], value="none", allow_blank=False, id="file-outline")
+                            yield Button("Cited region", id="focus-citation")
+                            yield Button("Full file", id="toggle-full")
                         with Horizontal(id="code-tools"):
                             yield Input(placeholder="Go to line", id="line-input", type="integer")
                             yield Input(placeholder="Find in current file…", id="source-search")
                             yield Button("Find next", id="find-next")
                         with Horizontal(id="code-panes"):
                             with Vertical(classes="source-pane"):
-                                yield Label("SAVED EXCERPT · review time", classes="source-title")
+                                yield Label("SAVED CITATION · review time", classes="source-title")
                                 yield TextArea(read_only=True, show_line_numbers=True, id="saved-code")
                             with Vertical(classes="source-pane"):
-                                yield Label("CURRENT FILE · read-only", classes="source-title")
+                                yield Label("CURRENT CONTEXT · read-only", classes="source-title", id="current-title")
                                 yield TextArea(read_only=True, show_line_numbers=True, id="current-code")
-                        yield Label("RELATED DECISIONS · sharing this citation", classes="section-label")
+                        yield Label("DECISIONS IN THIS FILE · locations at review time", classes="section-label")
                         yield OptionList(id="related", markup=False)
                     with TabPane("Conversation", id="conversation-tab"):
-                        yield Static("Stored Codex events. Proximity is context, not proof of cause or authorship.", id="conversation-note", markup=False)
+                        yield Select(self.session_options(), value="all", allow_blank=False, id="session-select")
+                        yield Static("Stored project events. Proximity is context, not proof of cause or authorship.", id="conversation-note", markup=False)
                         with Horizontal(id="conversation-panes"):
                             with Vertical(id="event-sidebar"):
                                 yield Input(placeholder="Search stored events…", id="event-filter")
@@ -207,7 +275,7 @@ class Explorer(App):
         self.theme = "textual-dark"
         self.query_one("#origin-strip", Static).update(
             f"{self.review.id} · {self.review.created_at} · {self.review.provider}\n"
-            f"Codex context: {self.review.session_id or 'none supplied'} · authorship not proven"
+            f"Project history: {self.history_label()} · authorship not proven"
         )
         self.show_origin()
         self.fill_tree()
@@ -221,11 +289,101 @@ class Explorer(App):
             self.query_one("#decision-copy", Static).update(
                 "Welcome to wy\n\nType /help in the command bar to see available actions.\n\n"
                 "No decisions are available yet. Use /review to analyze local changes, or "
-                "/review <session-id-or-path> to include a Codex conversation.\n\n"
+                "/review codex, /review claude or /review both to include this project's history.\n\n"
                 "Review origin and limitations are available in the Origin tab."
             )
         self.query_one("#decision-tree", Tree).focus()
         self.update_navigation()
+        self.query_one("#tabs", TabbedContent).active = "reason-tab"
+        if self.review.head != head(Path(self.review.root)):
+            self.query_one("#reason-status", Static).update("The saved review is from an older Git state. Explain changes will refresh the actual diff first.")
+        self.load_reasoning()
+
+    def load_reasoning(self):
+        try:
+            artifact = Store(Path(self.review.root)).get("reasoning", "latest")
+        except ValueError:
+            return
+        _, hashes, _ = sources(Path(self.review.root))
+        if artifact["review_id"] == self.review.id and hashes == self.review.file_hashes and self.review.head == head(Path(self.review.root)):
+            self.show_reasoning(artifact)
+        else:
+            self.query_one("#reason-status", Static).update("A previous explanation exists for an older review. Explain changes to refresh it.")
+
+    def show_reasoning(self, artifact: dict):
+        self.reason_artifact = artifact
+        self.reason_file = artifact["packet"].get("focus_file")
+        text, self.reason_citations = presentation.reasoning_text(artifact)
+        self.query_one("#reason-copy", Static).update(text)
+        self.query_one("#reason-status", Static).update(
+            f"{artifact['agent'].title()} assessment · {len(self.reason_citations)} cited items · select a reference below to inspect it"
+        )
+        choices = self.query_one("#reason-citations", OptionList)
+        choices.clear_options()
+        choices.add_options([Option(Text(f"[{i}] {e['kind']} · {e.get('agent', '')} {e.get('role', '')} · {e['file']}"
+                                        + (f":{e['start_line']}" if e.get('start_line') else "")), id=str(i))
+                             for i, e in enumerate(self.reason_citations, 1)])
+        self.query_one("#tabs", TabbedContent).active = "reason-tab"
+        self.query_one("#reason-scroll", VerticalScroll).scroll_home(animate=False)
+
+    @on(OptionList.OptionSelected, "#reason-citations")
+    def choose_reason_citation(self, event: OptionList.OptionSelected):
+        self.action_open_reason_citation(int(event.option.id))
+
+    def action_open_reason_citation(self, number: int):
+        item = self.reason_citations[number - 1]
+        self.query_one("#reason-evidence-label", Static).update(
+            f"[{number}] {item['kind']} · {item['file']}\n"
+            + (f"{item.get('agent')}:{item.get('session_id')} · {item.get('event_id')} · {item.get('role')}\n" if item['kind'] == 'session' else "")
+            + ("Excerpt truncated: additional context was not supplied to the model." if item.get('truncated') else "Captured evidence supplied to this assessment.")
+        )
+        if item['kind'] != 'session':
+            self.reason_file = item['file']
+        area = self.query_one("#reason-evidence", TextArea)
+        area.show_line_numbers = item['kind'] == 'code'
+        area.line_number_start = item.get('start_line', 1)
+        area.load_text(item['text'])
+        self.query_one("#tabs", TabbedContent).active = "reason-evidence-tab"
+        area.focus()
+
+    @on(Select.Changed, "#reason-agent")
+    def reason_agent_changed(self, event: Select.Changed):
+        self.reason_agent = event.value
+
+    @on(Input.Submitted, "#reason-question")
+    def reason_question(self, event: Input.Submitted):
+        if event.value.strip():
+            self.start_reasoning(event.value.strip(), self.reason_file)
+            event.input.value = ""
+
+    def start_reasoning(self, question="Explain the current changes so I can reason about them.", file=None):
+        if self.reason_running or self.reviewing:
+            self.notify("A review or explanation is already running; /cancel stops reasoning", severity="warning")
+            return
+        self.reason_file = file
+        self.reason_cancel = threading.Event()
+        self.reason_running = True
+        self.query_one("#tabs", TabbedContent).active = "reason-tab"
+        self.query_one("#reason-status", Static).update(f"Starting {self.reason_agent}… /cancel to stop")
+        self.reason_worker(self.reason_agent, question, file, self.source_mode, self.reason_cancel)
+
+    @work(thread=True, group="reasoning", exclusive=True)
+    def reason_worker(self, agent, question, file, source_mode, cancel):
+        try:
+            artifact = reasoning.run(Path(self.review.root), agent, question, file, source_mode, cancel,
+                                     progress=lambda message: self.call_from_thread(self.query_one("#reason-status", Static).update, message))
+            review = service.load_review(Path(self.review.root))
+            self.call_from_thread(self.apply_review, review)
+            self.call_from_thread(self.show_reasoning, artifact)
+        except (ValueError, OSError, sqlite3.DatabaseError, subprocess.SubprocessError) as exc:
+            message = "Invalid structured response from agent" if hasattr(exc, "errors") else redact(str(exc))
+            self.call_from_thread(self.query_one("#reason-status", Static).update, message)
+        finally:
+            self.reason_running = False
+
+    def action_quit(self):
+        self.reason_cancel.set()
+        self.exit()
 
     def show_origin(self):
         r = self.review
@@ -233,8 +391,7 @@ class Explorer(App):
         text.append(f"Review: {r.id}\nCreated: {r.created_at}\nRepository: {r.root}\n"
                     f"Storage: {Path(r.root) / '.wy' / 'wy.sqlite3'}\n"
                     f"Analysis: {r.provider} · {r.input_tokens} input / {r.output_tokens} output tokens\n"
-                    f"Codex context: {r.session_id or 'None supplied'}\n"
-                    f"Transcript: {self.session.path if self.session else 'Unavailable'}\n"
+                    "Project sessions:\n" + ("\n".join(f"  {s.agent}:{s.id}\n  {s.path}" for s in self.sessions) or "  None supplied") + "\n"
                     f"Baseline: {r.baseline_id or 'None'}\n\n", style="")
         text.append("What this establishes\n", style="bold cyan")
         text.append("The selected session supplied contextual evidence. It does not prove who authored the changes. "
@@ -249,6 +406,32 @@ class Explorer(App):
         text.append("\n".join(r.warnings), style="yellow")
         self.query_one("#origin-copy", Static).update(text)
 
+    def load_history(self):
+        self.sessions = history.saved_sessions(self.review)
+        self.session = self.sessions[0] if self.sessions else None
+        self.event_sources = {
+            (e.id if len(self.sessions) == 1 else f"{s.agent}:{s.id}:{e.id}"): (s, e)
+            for s in self.sessions for e in s.events
+        }
+
+    def history_label(self):
+        return " · ".join(f"{agent}: {sum(s.agent == agent for s in self.sessions)}"
+                          for agent in ("codex", "claude") if any(s.agent == agent for s in self.sessions)) or "none supplied"
+
+    def session_options(self):
+        return [("All reviewed project sessions", "all"), *[(f"{s.agent.title()} · {s.id}", f"{s.agent}:{s.id}") for s in self.sessions]]
+
+    def event_key(self, source, event):
+        return event.id if len(self.sessions) == 1 else f"{source.agent}:{source.id}:{event.id}"
+
+    @on(Select.Changed, "#history-source")
+    def history_source_changed(self, event: Select.Changed):
+        self.source_mode = event.value
+
+    @on(Select.Changed, "#session-select")
+    def session_selected(self):
+        self.fill_events(self.query_one("#event-filter", Input).value)
+
     def fill_tree(self, query: str = ""):
         tree = self.query_one("#decision-tree", Tree)
         tree.clear()
@@ -256,6 +439,11 @@ class Explorer(App):
         tree.root.expand()
         self.decision_nodes = {}
         self.route_nodes = {}
+        changed = tree.root.add(Text("Changed files", style="bold cyan"), expand=True)
+        for change in sorted(self.review.changes, key=lambda c: (presentation.source_scope(c.file) != "Implementation / configuration", c.file)):
+            if query.casefold() in change.file.casefold():
+                route = ("file", None, change.file)
+                self.route_nodes[route] = changed.add_leaf(Text(change.file), data=route)
         groups = {}
         for scope in ("Implementation / configuration", "Examples / fixtures", "Tests", "Documentation"):
             if any(presentation.source_scope(d.location.file) == scope
@@ -292,13 +480,15 @@ class Explorer(App):
     def fill_events(self, query: str = ""):
         options = self.query_one("#events", OptionList)
         options.clear_options()
-        if not self.session:
-            self.query_one("#conversation-note", Static).update("No saved Codex session is available for this review.")
+        if not self.sessions:
+            self.query_one("#conversation-note", Static).update("No saved project sessions. Use /review codex, /review claude or /review both.")
             return
+        selected = self.query_one("#session-select", Select).value
         options.add_options([
-            Option(Text(f"{e.id} · {e.kind}\n{' '.join(e.text.split())[:110]}"), id=e.id)
-            for e in self.session.events
-            if query.casefold() in f"{e.id} {e.kind} {e.text}".casefold()
+            Option(Text(f"{s.agent} · {s.id[:8]} · {e.id} · {e.kind}\n{' '.join(e.text.split())[:110]}"), id=key)
+            for key, (s, e) in self.event_sources.items()
+            if (selected == "all" or selected == f"{s.agent}:{s.id}")
+            and query.casefold() in f"{s.agent} {s.id} {e.id} {e.kind} {e.text}".casefold()
         ])
 
     @on(Input.Changed, "#event-filter")
@@ -323,16 +513,31 @@ class Explorer(App):
             self.routes.append(route)
             self.route_index += 1
         kind, decision_id, detail = route
+        if kind == "file":
+            self.reason_file = detail
+            self.selected_decision = None
+            change = next(c for c in self.review.changes if c.file == detail)
+            self.query_one("#reason-evidence-label", Static).update(f"{detail} · actual change against the saved comparison base")
+            area = self.query_one("#reason-evidence", TextArea)
+            area.show_line_numbers = False
+            area.load_text(change.diff or "No saved diff; Explain this file refreshes the review.")
+            self.query_one("#tabs", TabbedContent).active = "reason-evidence-tab"
+            area.focus()
+            self.query_one("#breadcrumb", Static).update(detail)
+            self.update_navigation()
+            return
         if decision_id:
+            self.reason_file = service.select(self.review, decision_id).location.file
             self.selected_decision = decision_id
             self.show_decision(decision_id, assessment=int(detail) if kind == "assessment" else None)
-        if kind == "evidence":
+        if kind in {"evidence", "source"}:
             decision = service.select(self.review, decision_id)
-            evidence = trace.select_evidence(decision, detail)
+            citation, line = detail.rsplit("@", 1) if kind == "source" else (detail, None)
+            evidence = trace.select_evidence(decision, citation)
             if evidence.kind == "session":
-                self.show_event(evidence.event_id, cited=evidence.excerpt)
+                self.show_event(evidence.event_id, cited=evidence.excerpt, source_path=evidence.file)
             else:
-                self.show_source(trace.inspect(self.review, decision, evidence))
+                self.show_source(trace.inspect(self.review, decision, evidence), focus_line=int(line) if line else None)
         elif kind == "event":
             self.show_event(detail)
         else:
@@ -394,14 +599,18 @@ class Explorer(App):
             citations = [e for e in citations if e.id in ids]
         options.add_options([
             Option(Text(f"{e.kind.upper()} · {e.event_id or f'{e.file}:{e.start_line}'}\n"
+                        + (f"{e.agent or 'agent'}:{e.session_id or self.review.session_id}\n" if e.kind == "session" else "")
+                        +
                         f"{'Conversation context' if e.kind == 'session' else 'Target file' if e.file == d.location.file else 'Related source · relevance requires checking'} · {e.id}"), id=e.id)
             for e in citations
         ])
         self.query_one("#decision-scroll", VerticalScroll).scroll_home(animate=False)
 
-    def show_source(self, data: dict):
+    def show_source(self, data: dict, focus_line: int | None = None):
         e = data["evidence"]
         self.current_file = e["file"]
+        self.source_trace = data
+        self.source_full = False
         current = data.get("current")
         self.query_one("#code-status", Static).update(
             f"{e['file']} · saved lines {e['start_line']}–{e['end_line']}\n"
@@ -416,32 +625,101 @@ class Explorer(App):
             area.language = language if language in area.available_languages else None
         saved.line_number_start = e["start_line"]
         saved.load_text(e["excerpt"])
+        saved.selection = Selection((0, 0), (saved.document.line_count - 1, len(saved.document.lines[-1])))
         raw = read_source(Path(self.review.root), e["file"])
-        live.load_text(redact(raw) if raw is not None else "Current source unavailable.")
+        self.source_text = redact(raw) if raw is not None else ""
+        self.source_symbols = source_view.outline(e["file"], self.source_text)
+        self.source_anchor = current["anchor_line"] if current else 1
+        self.source_span = max(1, len(e["excerpt"].splitlines()))
+        decision = service.select(self.review, data["decision_id"])
+        offset = self.source_span // 2
+        if decision.location.file == e["file"] and e["start_line"] <= decision.location.start_line <= e["end_line"]:
+            offset = decision.location.start_line - e["start_line"]
+        self.source_focus = focus_line or self.source_anchor + offset
+        picker = self.query_one("#file-outline", Select)
+        picker.disabled = not self.source_symbols
+        with picker.prevent(Select.Changed):
+            picker.set_options([("Jump to function / class / section…", "none"), *[
+                (f"{'  ' * min(s.depth, 3)}{s.kind} {s.name}  ·  {s.start}–{s.end}", str(i))
+                for i, s in enumerate(self.source_symbols)
+            ]])
+            picker.value = "none"
         self.query_one("#tabs", TabbedContent).active = "code-tab"
-        if current:
-            self.call_after_refresh(live.move_cursor, (current["anchor_line"] - 1, 0), center=True)
+        self.render_source()
         related = self.query_one("#related", OptionList)
         related.clear_options()
-        related.add_options([Option(Text(f"#{d['number']} {d['question']}"), id=d["id"]) for d in data["related_decisions"]])
+        related.add_options([Option(Text(f"#{d['number']} · line {d['line']}{' · STALE' if d['stale'] else ''} · {d['question']}"), id=d["id"])
+                             for d in data["file_decisions"]])
 
-    def show_event(self, event_id: str | None, cited: str | None = None):
+    def render_source(self):
+        area = self.query_one("#current-code", TextArea)
+        lines = self.source_text.splitlines()
+        if not lines:
+            area.line_number_start = 1
+            area.load_text("Current source unavailable.")
+            self.query_one("#file-summary", Static).update("The saved citation is still available on the left.")
+            return
+        if self.source_full:
+            start, end, label = 1, len(lines), "full file"
+        else:
+            start, end, label = source_view.window(self.source_text, self.source_symbols, self.source_focus)
+            if self.source_anchor <= self.source_focus < self.source_anchor + self.source_span:
+                start = min(start, self.source_anchor)
+                end = min(len(lines), max(end, self.source_anchor + min(self.source_span, 100) - 1))
+        area.line_number_start = start
+        area.load_text("\n".join(lines[start - 1:end]))
+        self.query_one("#current-title", Label).update(Text(f"CURRENT {'FILE' if self.source_full else 'CONTEXT'} · {start}–{end}"))
+        self.query_one("#toggle-full", Button).label = "Focus view" if self.source_full else "Full file"
+        self.query_one("#file-summary", Static).update(
+            f"{len(lines)} lines · {len(self.source_symbols)} outline entries · {len(self.source_trace['file_decisions'])} decisions · showing {start}–{end}\n{label}"
+        )
+        current = self.source_trace.get("current") if self.source_trace else None
+        confirmed = current and current["status"] in {"unchanged", "unique_excerpt_match"}
+        lo, hi = max(start, self.source_anchor), min(end, self.source_anchor + self.source_span - 1)
+        if confirmed and lo <= hi:
+            area.selection = Selection((lo - start, 0), (hi - start, len(lines[hi - 1])))
+        else:
+            area.move_cursor((max(0, min(self.source_focus - start, end - start)), 0))
+
+    @on(Select.Changed, "#file-outline")
+    def select_symbol(self, event: Select.Changed):
+        if event.value == "none" or not self.source_trace:
+            return
+        symbol = self.source_symbols[int(event.value)]
+        self.navigate(("source", self.source_trace["decision_id"], f"{self.source_trace['evidence']['id']}@{symbol.start}"))
+
+    def focus_citation(self):
+        if self.source_trace:
+            self.navigate(("evidence", self.source_trace["decision_id"], self.source_trace["evidence"]["id"]))
+
+    def toggle_full(self):
+        if self.source_trace:
+            self.source_full = not self.source_full
+            self.render_source()
+
+    def show_event(self, event_id: str | None, cited: str | None = None, source_path: str | None = None):
         self.query_one("#tabs", TabbedContent).active = "conversation-tab"
-        event = next((e for e in self.session.events if e.id == event_id), None) if self.session else None
-        self.selected_event = event_id if event else None
+        matches = [(key, source, event) for key, (source, event) in self.event_sources.items()
+                   if (key == event_id or event.id == event_id) and (source_path is None or source.path == source_path)]
+        key, source, event = matches[0] if len(matches) == 1 else (None, None, None)
+        self.selected_event = key
         self.paired_event = None
         if event:
+            self.session = source
+            selected = self.query_one("#session-select", Select)
+            if selected.value not in {"all", f"{source.agent}:{source.id}"}:
+                selected.value = f"{source.agent}:{source.id}"
             self.query_one("#event-label", Static).update(
                 f"{event.id} · {event.kind} · transcript line {event.source_line}\n"
-                f"Codex context: {self.session.id}"
+                f"Source: {source.agent}:{source.id}"
             )
             self.query_one("#event-text", TextArea).load_text(event.text)
             if event.call_id:
                 pair = next((e for e in self.session.events if e.id != event.id and e.call_id == event.call_id), None)
-                self.paired_event = pair.id if pair else None
+                self.paired_event = self.event_key(source, pair) if pair else None
             options = self.query_one("#events", OptionList)
             try:
-                options.highlighted = options.get_option_index(event.id)
+                options.highlighted = options.get_option_index(key)
             except OptionDoesNotExist:
                 # A search may intentionally exclude the opened event.
                 pass
@@ -456,21 +734,26 @@ class Explorer(App):
 
     @on(Button.Pressed)
     def button_pressed(self, event: Button.Pressed):
-        actions = {"back": self.action_back, "forward": self.action_forward, "find-next": self.find_next}
+        actions = {"back": self.action_back, "forward": self.action_forward, "find-next": self.find_next,
+                   "toggle-full": self.toggle_full, "focus-citation": self.focus_citation}
         if event.button.id in actions:
             actions[event.button.id]()
         elif event.button.id in {"previous-event", "next-event"}:
             self.step_event(-1 if event.button.id == "previous-event" else 1)
         elif event.button.id == "paired-event" and self.paired_event:
             self.navigate(("event", self.selected_decision, self.paired_event))
+        elif event.button.id in {"reason-now", "reason-file", "explain-evidence-file"}:
+            file = self.reason_file if event.button.id != "reason-now" else None
+            self.start_reasoning(file=file)
 
     def step_event(self, offset: int):
         if not self.session or not self.session.events:
             self.notify("No saved session events")
             return
-        index = next((i for i, e in enumerate(self.session.events) if e.id == self.selected_event), -1)
+        selected = self.event_sources.get(self.selected_event)
+        index = next((i for i, e in enumerate(self.session.events) if selected and e.id == selected[1].id), -1)
         index = max(0, min(len(self.session.events) - 1, index + offset))
-        self.navigate(("event", self.selected_decision, self.session.events[index].id))
+        self.navigate(("event", self.selected_decision, self.event_key(self.session, self.session.events[index])))
 
     @on(Input.Submitted, "#line-input")
     def goto_line(self, event: Input.Submitted):
@@ -480,10 +763,12 @@ class Explorer(App):
         except ValueError:
             self.notify("Enter a line number", severity="warning")
             return
-        if not 1 <= line <= area.document.line_count:
+        if not 1 <= line <= len(self.source_text.splitlines()):
             self.notify("Line is outside the current file", severity="warning")
             return
-        area.move_cursor((line - 1, 0), center=True)
+        self.source_focus = line
+        self.render_source()
+        area.move_cursor((line - area.line_number_start, 0), center=True)
         area.focus()
 
     @on(Input.Submitted, "#source-search")
@@ -496,17 +781,20 @@ class Explorer(App):
             return
         area = self.query_one("#current-code", TextArea)
         row, col = area.cursor_location
-        lines = area.text.splitlines(keepends=True)
+        lines = self.source_text.splitlines(keepends=True)
+        row += area.line_number_start - 1
         start = sum(len(line) for line in lines[:row]) + col + 1
-        position = area.text.find(query, start)
+        position = self.source_text.find(query, start)
         if position < 0:
-            position = area.text.find(query)
+            position = self.source_text.find(query)
         if position < 0:
             self.notify("No match in the current file", severity="warning")
             return
-        row = area.text.count("\n", 0, position)
-        col = position - (area.text.rfind("\n", 0, position) + 1)
-        area.move_cursor((row, col), center=True)
+        row = self.source_text.count("\n", 0, position)
+        col = position - (self.source_text.rfind("\n", 0, position) + 1)
+        self.source_focus = row + 1
+        self.render_source()
+        area.move_cursor((row - area.line_number_start + 1, col), center=True)
         area.focus()
 
     def action_back(self):
@@ -598,7 +886,17 @@ class Explorer(App):
                     "Browsing is read-only. /review explicitly creates a fresh saved review."
                 ))
             elif name == "/quit":
-                self.exit()
+                self.action_quit()
+            elif name == "/cancel":
+                self.reason_cancel.set()
+            elif name == "/reason":
+                args = shlex.split(argument)
+                if args and args[0] in {"codex", "claude"}:
+                    self.reason_agent = args.pop(0)
+                    self.query_one("#reason-agent", Select).value = self.reason_agent
+                if len(args) > 1:
+                    raise ValueError("Use /reason [codex|claude] [repository-relative-file]")
+                self.start_reasoning(file=args[0] if args else None)
             elif name == "/decisions":
                 self.action_sidebar()
             elif name == "/decision":
@@ -613,10 +911,17 @@ class Explorer(App):
             elif name == "/session":
                 self.query_one("#tabs", TabbedContent).active = "conversation-tab"
                 self.query_one("#events", OptionList).focus()
+            elif name == "/sessions":
+                entries = history.discover(Path(self.review.root), self.source_mode)
+                self.push_screen(MessageScreen("SESSIONS FOR THIS REPOSITORY\n\n" +
+                    ("\n\n".join(f"{s['agent']}:{s['id']}\n{s.get('timestamp') or 'Time not captured'}\n{s['cwd']}" for s in entries)
+                     or "No verified project sessions found.") +
+                    "\n\nUse /review codex, /review claude, /review both or /review agent:session-id."))
             elif name == "/event":
-                if not self.session or not any(e.id == argument for e in self.session.events):
-                    raise ValueError("No such event in the saved session")
-                self.navigate(("event", self.selected_decision, argument))
+                matches = [key for key, (_, e) in self.event_sources.items() if key == argument or e.id == argument]
+                if len(matches) != 1:
+                    raise ValueError("Event missing or ambiguous; select it in Conversation or use agent:session-id:event-id")
+                self.navigate(("event", self.selected_decision, matches[0]))
             elif name == "/code":
                 self.query_one("#tabs", TabbedContent).active = "code-tab"
             elif name == "/line":
@@ -630,10 +935,9 @@ class Explorer(App):
                 self.query_one("#filter", Input).value = argument
                 self.action_sidebar()
             elif name == "/ask":
-                if not self.selected_decision or not argument:
-                    raise ValueError("Select a decision and supply a question")
-                answer = service.ask(service.select(service.load_review(Path(self.review.root)), self.selected_decision), argument)
-                self.push_screen(MessageScreen(answer.answer + "\n\n" + answer.uncertainty))
+                if not argument:
+                    raise ValueError("Supply a question")
+                self.start_reasoning(argument, self.reason_file)
             elif name == "/origin":
                 self.query_one("#tabs", TabbedContent).active = "origin-tab"
             elif name == "/back":
@@ -649,30 +953,21 @@ class Explorer(App):
 
     def run_review(self, argument: str):
         # Explicit command only; browsing never generates or overwrites a review.
-        if self.reviewing:
+        if self.reviewing or self.reason_running:
             raise ValueError("A review is already running")
-        session_path = None
-        if argument:
-            from wy.ingestion.codex import CodexCollector
-
-            args = shlex.split(argument)
-            if len(args) != 1:
-                raise ValueError("Use /review followed by one session ID or quoted transcript path")
-            selected = args[0]
-            session_path = Path(selected)
-            if not session_path.is_file():
-                matches = [s for s in CodexCollector().discover() if s["id"] == selected]
-                if len(matches) != 1:
-                    raise ValueError("Session not found; supply its JSONL path")
-                session_path = Path(matches[0]["path"])
+        source = argument if argument in history.SOURCES else self.source_mode
+        if argument in history.SOURCES:
+            self.query_one("#history-source", Select).value = source
+        selectors = shlex.split(argument) if argument and argument not in history.SOURCES else []
+        paths = history.resolve(Path(self.review.root), selectors, source)
         self.notify("Analyzing local changes…")
         self.reviewing = True
-        self.review_worker(session_path)
+        self.review_worker(paths, source)
 
     @work(thread=True, exclusive=True)
-    def review_worker(self, session_path: Path | None):
+    def review_worker(self, paths: list[Path], source: str):
         try:
-            result = service.review(Path(self.review.root), session_path=session_path)
+            result = service.review(Path(self.review.root), session_paths=paths, history_source=source)
         except (ValueError, OSError, sqlite3.DatabaseError, subprocess.SubprocessError) as exc:
             self.reviewing = False
             self.call_from_thread(self.notify, redact(str(exc)), severity="error", timeout=8)
@@ -682,12 +977,17 @@ class Explorer(App):
     def apply_review(self, result: Review):
         self.reviewing = False
         self.review = result
-        self.session = presentation.saved_session(self.review)
+        self.load_history()
+        self.query_one("#session-select", Select).set_options(self.session_options())
+        self.query_one("#session-select", Select).value = "all"
         self.routes = []
         self.route_index = -1
         self.selected_decision = None
         self.selected_event = None
         self.current_file = None
+        self.source_text = ""
+        self.source_symbols = []
+        self.source_trace = None
         self.paired_event = None
         for selector in ("#saved-code", "#current-code", "#event-text"):
             self.query_one(selector, TextArea).load_text("")
@@ -696,6 +996,10 @@ class Explorer(App):
         self.query_one("#decision-copy", Static).update("No decisions found. See Origin for review limitations.")
         self.query_one("#code-status", Static).update("Select a code citation to inspect saved and current source.")
         self.query_one("#event-label", Static).update("Select a stored event")
+        self.query_one("#file-summary", Static).update("Choose a code citation to explore its file.")
+        with self.query_one("#file-outline", Select).prevent(Select.Changed):
+            self.query_one("#file-outline", Select).set_options([("File outline", "none")])
+            self.query_one("#file-outline", Select).value = "none"
         self.query_one("#paired-event", Button).disabled = True
         self.query_one("#filter", Input).value = ""
         self.query_one("#event-filter", Input).value = ""
@@ -711,8 +1015,8 @@ def start(repo: Path):
     try:
         review = service.load_review(repo)
     except ValueError as exc:
-        if str(exc) != "No review named latest":
+        if str(exc) != "No review named latest" and not str(exc).startswith("Cached session is not verifiably scoped"):
             raise
         review = Review(id="No saved review", root=str(repo_root(repo)), created_at="Not reviewed",
-                        warnings=["Type /review to analyze current changes, or /review <session-id-or-path> to include Codex evidence."])
+                        warnings=[str(exc), "Use /review codex, /review claude or /review both to include only this repository's agent history."])
     explore(review)

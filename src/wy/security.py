@@ -27,7 +27,7 @@ TEXT_SUFFIXES = {
     ".rs",
     ".java",
 }
-EXCLUDED = {".git", ".wy", ".venv", "venv", "node_modules", "dist", "build", "vendor", "__pycache__"}
+EXCLUDED = {".git", ".wy", ".codex", ".claude", ".venv", "venv", "node_modules", "dist", "build", "vendor", "__pycache__"}
 
 
 def safe_relative(file: str) -> bool:

@@ -81,6 +81,7 @@ def request(root: Path, target: str | None = None) -> dict:
         "request_id": "reflection-" + uuid4().hex[:12],
         "review_id": review.id,
         "source_session_id": review.session_id,
+        "source_sessions": [s.model_dump() for s in review.sessions],
         "instructions": INSTRUCTIONS,
         "decisions": [d.model_dump(exclude={"reflections", "stale"}) for d in decisions],
         "response_schema": ReflectionResponse.model_json_schema(),

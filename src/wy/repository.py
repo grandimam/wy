@@ -81,6 +81,7 @@ class Change:
     additions: dict[int, str] = field(default_factory=dict)
     removed: list[str] = field(default_factory=list)
     hunks: list[tuple[int, int]] = field(default_factory=list)
+    patch: str = ""
 
 
 def compare(before: dict[str, str], after: dict[str, str]) -> list[Change]:
@@ -95,6 +96,8 @@ def compare(before: dict[str, str], after: dict[str, str]) -> list[Change]:
             change.removed.extend(old[a:b])
             change.hunks.append((c + 1, max(c + 1, d)))
         if change.hunks:
+            change.patch = "\n".join(difflib.unified_diff(old, new, fromfile="a/" + name,
+                                                        tofile="b/" + name, n=4, lineterm=""))
             changes.append(change)
     return changes
 
@@ -116,6 +119,7 @@ def parse_diff(text: str) -> list[Change]:
                 name = name[2:]
             current = Change(name) if allowed(name) else None
             if current:
+                current.patch = f"--- a/{name}\n+++ b/{name}\n"
                 changes.append(current)
         elif line.startswith("@@ "):
             match = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
@@ -124,7 +128,9 @@ def parse_diff(text: str) -> list[Change]:
                 count = int(match[2] or 1)
                 current.hunks.append((max(1, line_no), max(1, line_no + count - 1)))
                 in_hunk = True
+                current.patch += line + "\n"
         elif current and in_hunk:
+            current.patch += line + "\n"
             if line.startswith("+"):
                 current.additions[line_no] = redact(line[1:])
                 line_no += 1

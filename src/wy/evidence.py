@@ -21,7 +21,7 @@ def code_evidence(file: str, text: str, line: int, hashes: dict[str, str]) -> Ev
 
 
 def retrieve(
-    file: str, line: int, token: str, texts: dict[str, str], hashes: dict[str, str], session: Session | None
+    file: str, line: int, token: str, texts: dict[str, str], hashes: dict[str, str], session: Session | list[Session] | None
 ) -> list[Evidence]:
     evidence = [code_evidence(file, texts[file], line, hashes)]
     # Bounded lexical retrieval is transparent and includes competing conventions.
@@ -43,34 +43,46 @@ def retrieve(
                     break
         if len(evidence) >= 7:
             break
-    if session:
+    sessions = session if isinstance(session, list) else [session] if session else []
+    candidates = []
+    for session in sessions:
+        matches = []
         basename = file.rsplit("/", 1)[-1]
         for event in session.events:
             if token.lower() in event.text.lower() and (file in event.text or basename in event.text):
-                evidence.append(
+                matches.append(
                     Evidence(
-                        id=f"session-{event.id}",
+                        id=f"session-{session.agent}-{digest(session.id + session.path)[:8]}-{event.id}",
                         kind="session",
                         file=session.path,
                         start_line=event.source_line,
                         end_line=event.source_line,
                         excerpt=event.text,
                         event_id=event.id,
+                        session_id=session.id,
+                        agent=session.agent,
                     )
                 )
-                if len(evidence) >= 10:
+                if len(matches) >= 3:
                     break
+        if matches:
+            candidates.append(matches)
+    for i in range(3):
+        for matches in candidates:
+            if i < len(matches) and len(evidence) < 12:
+                evidence.append(matches[i])
     return evidence
 
 
 def recorded_rationale(
-    evidence: list[Evidence], session: Session | None, token: str, file: str
+    evidence: list[Evidence], session: Session | list[Session] | None, token: str, file: str
 ) -> Evidence | None:
     if not session:
         return None
-    assistant_ids = {e.id for e in session.events if e.kind == "assistant"}
+    sessions = session if isinstance(session, list) else [session]
+    assistant_ids = {(s.path, e.id) for s in sessions for e in s.events if e.kind == "assistant"}
     for item in evidence:
-        if item.kind != "session" or item.event_id not in assistant_ids:
+        if item.kind != "session" or (item.file, item.event_id) not in assistant_ids:
             continue
         # Require a first-person completed choice, its subject, the affected file,
         # and a causal connective in the same sentence. No user requests, tool

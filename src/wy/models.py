@@ -28,6 +28,8 @@ class Evidence(Location):
     excerpt: str
     snapshot_hash: str = ""
     event_id: str | None = None
+    session_id: str | None = None
+    agent: Literal["codex", "claude"] | None = None
 
 
 class Event(Model):
@@ -47,6 +49,15 @@ class Session(Model):
     format: str = "codex-rollout"
     events: list[Event] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    agent: Literal["codex", "claude"] = "codex"
+
+
+class SessionRef(Model):
+    id: str
+    agent: Literal["codex", "claude"]
+    path: str
+    cwd: str | None
+    storage_key: str
 
 
 class ReflectionContent(Model):
@@ -120,6 +131,8 @@ class ChangedFile(Model):
     symbols: list[Location]
     added_lines: list[int]
     removed_line_count: int = Field(ge=0)
+    diff: str | None = None
+    diff_truncated: bool = False
 
 
 class Review(Model):
@@ -130,6 +143,7 @@ class Review(Model):
     head: str | None = None
     baseline_id: str | None = None
     session_id: str | None = None
+    sessions: list[SessionRef] = Field(default_factory=list)
     decisions: list[Decision] = Field(default_factory=list)
     changes: list[ChangedFile] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -137,6 +151,8 @@ class Review(Model):
     input_tokens: int = 0
     output_tokens: int = 0
     provider: str = "offline"
+    comparison_base: str | None = None
+    history_source: Literal["codex", "claude", "both", "none", "selected"] | None = None
 
 
 class Justification(Model):

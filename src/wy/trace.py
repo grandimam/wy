@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from wy.history import session_for_evidence
 from wy.models import Decision, Evidence, Review
-from wy.presentation import saved_session
 from wy.security import digest, read_source, redact
 
 
@@ -21,17 +21,26 @@ def select_evidence(decision: Decision, target: str) -> Evidence:
 def inspect(review: Review, decision: Decision, evidence: Evidence) -> dict:
     result = {
         "review_id": review.id,
+        "root": review.root,
         "decision_id": decision.id,
-        "session_id": review.session_id,
+        "session_id": evidence.session_id or review.session_id,
+        "agent": evidence.agent,
         "evidence": evidence.model_dump(mode="json"),
         "related_decisions": [
             {"number": n, "id": d.id, "question": d.question}
             for n, d in enumerate(review.decisions, 1)
             if d.id != decision.id and any(e.id == evidence.id for e in d.evidence)
         ],
+        "file_decisions": [
+            {"number": n, "id": d.id, "question": d.question, "line": d.location.start_line, "stale": d.stale}
+            for n, d in enumerate(review.decisions, 1) if d.location.file == evidence.file
+        ],
     }
     if evidence.kind == "session":
-        session = saved_session(review)
+        session = session_for_evidence(review, evidence)
+        if session:
+            result["agent"] = session.agent
+            result["session_id"] = session.id
         events = session.events if session else []
         index = next((i for i, e in enumerate(events) if e.id == evidence.event_id), None)
         result["context"] = []

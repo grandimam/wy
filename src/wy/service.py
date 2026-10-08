@@ -4,9 +4,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from wy import history
 from wy.engine import analyze
-from wy.ingestion.codex import CodexCollector
-from wy.models import ChangedFile, Decision, Location, Review
+from wy.models import ChangedFile, Decision, Location, Review, SessionRef
 from wy.provider import Answer, Provider, enrich
 from wy.repository import changed_symbols, committed_sources, compare, head, parse_diff, repo_root, sources
 from wy.security import digest, read_source, redact
@@ -38,6 +38,9 @@ def review(
     base: str | None = None,
     diff_path: Path | None = None,
     provider: Provider | None = None,
+    *,
+    session_paths: list[Path] | None = None,
+    history_source: str = "none",
 ) -> Review:
     root = repo_root(root)
     if sum(x is not None for x in (baseline_id, base, diff_path)) > 1:
@@ -72,21 +75,59 @@ def review(
         warnings.append(
             "No pre-session baseline: existing uncommitted changes cannot be distinguished from agent changes; attribution is unknown."
         )
-    session = CodexCollector().collect(session_path) if session_path else None
-    if session:
-        if session.cwd and Path(session.cwd).resolve() != root:
-            raise ValueError(
-                "Session working directory does not match this repository; refusing unrelated history"
-            )
-        warnings += session.warnings
-        if not session.cwd:
-            warnings.append(
-                "Session has no workspace metadata; its relation to this repository is unverified."
-            )
-        store.put("session", session.id, session.model_dump())
-    else:
+    if history_source not in history.SOURCES:
+        raise ValueError("History source must be codex, claude, both or none")
+    paths = list(dict.fromkeys(p.resolve() for p in [*([session_path] if session_path else []), *(session_paths or [])]))
+    automatic = not paths and history_source != "none"
+    if not automatic and len(paths) > 20:
+        raise ValueError("Select at most 20 sessions per review")
+    if automatic:
+        entries = history.discover(root, history_source)
+        # Interleave sources so one prolific agent cannot consume the entire budget.
+        queues = [[e for e in entries if e["agent"] == agent] for agent in ("codex", "claude")]
+        paths = [Path(queue[i]["path"]) for i in range(max(map(len, queues), default=0))
+                 for queue in queues if i < len(queue)]
+    sessions, refs, total_bytes = [], [], 0
+    for path in paths:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            if not automatic:
+                raise
+            warnings.append(f"Skipped unavailable session: {path}")
+            continue
+        if automatic and (len(sessions) >= 20 or total_bytes + size > 40_000_000 or size > 20_000_000):
+            warnings.append(f"Skipped session due to history budget (20 sessions / 40 MB total): {path}")
+            continue
+        if not automatic and total_bytes + size > 40_000_000:
+            raise ValueError("Selected histories exceed the 40 MB total input limit")
+        try:
+            session = history.collect(path)
+        except (ValueError, OSError) as exc:
+            if not automatic:
+                raise
+            warnings.append(f"Skipped unreadable or invalid session {path}: {redact(str(exc))}")
+            continue
+        if not history.belongs(session.cwd, root):
+            if automatic:
+                warnings.append(f"Skipped session whose collected workspace did not match this repository: {path}")
+                continue
+            raise ValueError("Session working directory does not match this repository or is missing; refusing unrelated or unverified history")
+        if history_source in {"codex", "claude"} and session.agent != history_source:
+            raise ValueError("Explicit session does not match the selected history source")
+        if any(s.agent == session.agent and s.id == session.id for s in sessions):
+            continue
+        total_bytes += size
+        sessions.append(session)
+        warnings += [f"{session.agent}:{session.id}: {w}" for w in session.warnings]
+    for session in sessions:
+        key = f"{session.agent}:{session.id}:{digest(session.model_dump_json())[:12]}"
+        store.put("session", key, session.model_dump())
+        refs.append(SessionRef(id=session.id, agent=session.agent, path=session.path,
+                               cwd=session.cwd, storage_key=key))
+    if not sessions:
         warnings.append("No agent history supplied; explanations use repository evidence only.")
-    decisions = analyze(changes, texts, hashes, session, baseline is not None)
+    decisions = analyze(changes, texts, hashes, sessions, baseline is not None)
     if len(decisions) == 12:
         warnings.append("Annotation limit reached (12); lower-priority candidates may be omitted.")
     if provider:
@@ -107,7 +148,8 @@ def review(
         created_at=datetime.now(timezone.utc).isoformat(),
         head=head(root),
         baseline_id=baseline_id,
-        session_id=session.id if session else None,
+        session_id=sessions[0].id if len(sessions) == 1 else None,
+        sessions=refs,
         decisions=decisions,
         changes=[
             ChangedFile(
@@ -118,12 +160,16 @@ def review(
                 ),
                 added_lines=sorted(c.additions),
                 removed_line_count=len(c.removed),
+                diff=redact(c.patch)[:40000],
+                diff_truncated=len(redact(c.patch)) > 40000,
             )
             for c in changes
         ],
         warnings=warnings,
         file_hashes=hashes,
         provider="ollama" if provider else "offline",
+        comparison_base=baseline_id or (f"imported patch: {diff_path}" if diff_path else base or head(root)),
+        history_source="selected" if session_path or session_paths else history_source,
         input_tokens=provider.input_tokens if provider else 0,
         output_tokens=provider.output_tokens if provider else 0,
     )
@@ -146,6 +192,9 @@ def load_review(root: Path) -> Review:
     result = Store(root).latest()
     if result.root != str(root):
         raise ValueError("Cached review belongs to another repository; run wy review again")
+    history.saved_sessions(result)
+    if result.head != head(root):
+        result.warnings.append("This saved review predates the current Git HEAD. Run /review or /reason to inspect current changes.")
     for decision in result.decisions:
         decision.stale = not fresh(decision, root)
     return result

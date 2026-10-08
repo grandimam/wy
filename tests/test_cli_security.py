@@ -55,7 +55,9 @@ def test_redaction_common_shapes():
 def test_json_session_flag(repo):
     (repo / "worker.py").write_text("pool = ThreadPoolExecutor(8)\n")
     fixture = Path(__file__).parent / "fixtures" / "codex-exec.jsonl"
-    result = runner.invoke(app, ["review", "--repo", str(repo), "--session", str(fixture), "--json"])
+    scoped = repo / "export.jsonl"
+    scoped.write_text(fixture.read_text() + json.dumps({"type": "session_meta", "payload": {"id": "exec-example", "cwd": str(repo)}}) + "\n")
+    result = runner.invoke(app, ["review", "--repo", str(repo), "--session", str(scoped), "--json"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["decisions"][0]["provenance"] == "recorded"
 

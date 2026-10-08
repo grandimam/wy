@@ -5,7 +5,9 @@ import pytest
 
 
 @pytest.fixture
-def repo(tmp_path: Path):
+def repo(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "agent-homes" / "codex"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "agent-homes" / "claude"))
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "test@example.invalid"], check=True)
     subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "wy tests"], check=True)

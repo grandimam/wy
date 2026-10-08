@@ -211,7 +211,7 @@ def analyze(
     changes: list[Change],
     texts: dict[str, str],
     hashes: dict[str, str],
-    session: Session | None = None,
+    session: Session | list[Session] | None = None,
     baseline: bool = False,
     limit: int = 12,
 ) -> list[Decision]:

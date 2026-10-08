@@ -16,7 +16,11 @@ runner = CliRunner()
 def reviewed(repo, with_session=False):
     (repo / "worker.py").write_text("pool = ThreadPoolExecutor(8)\n")
     fixture = Path(__file__).parent / "fixtures" / "codex-exec.jsonl"
-    return service.review(repo, fixture if with_session else None)
+    path = repo / ".wy" / "test-session.jsonl"
+    if with_session:
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(fixture.read_text() + json.dumps({"type": "session_meta", "payload": {"id": "exec-example", "cwd": str(repo)}}) + "\n")
+    return service.review(repo, path if with_session else None)
 
 
 def test_index_origin_number_and_json_compatibility(repo):
@@ -77,11 +81,12 @@ def test_trace_source_moved_changed_ambiguous_missing_and_redacted(repo):
 def test_session_trace_has_neighbors_and_tool_pairs(repo):
     review = reviewed(repo, True)
     store = Store(repo)
-    session = Session.model_validate(store.get("session", review.session_id))
+    key = review.sessions[0].storage_key
+    session = Session.model_validate(store.get("session", key))
     # Deliberately nonadjacent pair: relationship comes from call_id, not proximity.
     session.events[0].call_id = "call-a"
     session.events[-1].call_id = "call-a"
-    store.put("session", session.id, session.model_dump())
+    store.put("session", key, session.model_dump())
     event = session.events[0]
     evidence = Evidence(id="session-" + event.id, kind="session", file=session.path,
                         start_line=event.source_line, end_line=event.source_line,
@@ -195,7 +200,7 @@ def test_missing_session_and_literal_markup(repo):
     Store(repo).save_review(review)
     output = runner.invoke(app, ["explain", "1", "--repo", str(repo)])
     assert "[bold]literal[/bold]" in output.output
-    assert "None supplied" in output.output
+    assert "None" in output.output
     output = runner.invoke(app, ["session", "--repo", str(repo)])
     assert output.exit_code == 1 and "No saved session" in output.output
 

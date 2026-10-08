@@ -55,6 +55,8 @@ class CodexCollector:
                 if not isinstance(p, dict):
                     continue
                 if typ == "session_meta":
+                    if session.cwd and p.get("cwd") and session.cwd != p["cwd"]:
+                        raise ValueError("Session contains conflicting working directories")
                     session.id = str(p.get("id", p.get("session_id", session.id)))
                     session.cwd = p.get("cwd")
                     continue
