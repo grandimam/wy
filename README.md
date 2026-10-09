@@ -21,6 +21,10 @@ Connect Git diffs to saved Codex or Claude Code conversations, and ask for an ex
 
 Your agent adds a cache. **Why was it needed, and what happens when the cached data changes?** wy brings the code and relevant conversation into one review so you can check the stated reason and investigate the tradeoff.
 
+![wy terminal UI showing changed files, a cache diff, and cited agent notes side by side](docs/assets/terminal-preview.png)
+
+*Current UI with sample data. Choose a file to see its changes and saved agent notes together.*
+
 ## Get started
 
 Install directly from GitHub with **Rust 1.88+, Git and a C toolchain**:

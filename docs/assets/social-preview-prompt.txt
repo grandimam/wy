@@ -1,0 +1,17 @@
+Generated with the built-in image_gen tool.
+Reference: docs/assets/wy-owl-upright.png
+
+Use case: compositing / ads-marketing.
+Asset type: GitHub repository social preview for wy.
+Primary request: Transform the supplied wy owl asset into a complete, polished social preview banner. Exact canvas 1280 x 640 pixels, landscape 2:1. The finished banner must be opaque.
+Input image 1: the existing wy owl to preserve and incorporate. Keep its recognizable upright, front-facing, symmetrical pixel-art identity: navy body, ivory eyes and belly, mint edging and wings, tiny amber beak and feet. Preserve its chunky pixel silhouette and colors. One owl only, full ears and feet visible.
+Design: refined, minimal developer-tool branding with generous negative space, precise alignment, crisp readable typography. Deep ink background #101620, subtle navy #182335 geometry, mint #78DCCE accents, ivory #FFF3D8 text. Restrained flat background; no busy code, gradients, glow, fake terminal UI, photography or additional characters.
+Composition: left text column approximately 64–770 px, owl hero on the right approximately 880–1216 px. Keep all important content at least 56 px inside every edge. Large lowercase wordmark "wy" in a bold monospaced face near the upper left. Below it, the three-line headline in large, clean ivory type; equal leading, left aligned. A small but clearly readable footer sentence near the lower left. Owl occupies the right third and remains recognizable when the whole image is reduced to 640 x 320.
+Text (verbatim; no additional text):
+"wy"
+"See the change."
+"Read the reason."
+"Open the evidence."
+"Review AI-generated code."
+The three short headline sentences each occupy their own line. Hierarchy: wy wordmark, headline, footer.
+Constraints: professional finished banner, exactly 1280 x 640 px, crisp edges, no clipping, no watermark, no third-party logos, no browser chrome, no invented UI, no badges. Preserve the existing owl rather than redesigning it.
