@@ -102,6 +102,8 @@ Use `/agent codex|claude` to choose the answering agent and `/source both|codex|
 
 wy has no subcommands. `wy` opens the workspace for the current repository; `--repo PATH` opens another one, and `--version` prints the version. The workspace needs an interactive terminal.
 
+wy keeps reviews, source snapshots and redacted conversation excerpts in `.wy/` inside the repository. Add `.wy/` to your `.gitignore` before sharing the repository; it is local data, not encrypted, and redaction is best-effort.
+
 Startup compares HEAD with the current working tree, including staged and non-ignored untracked files. wy cannot tell edits made before the agent session apart from the agent's own edits, so attribution remains unknown. Press **r** to refresh after more changes.
 
 ## Project history
