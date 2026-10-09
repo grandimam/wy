@@ -1,3 +1,6 @@
+mod edits;
+mod recent;
+pub use recent::{recent_code, saved_edit, edit_ref};
 use anyhow::{Result,ensure,bail};
 use serde_json::{json,Value};
 use std::{collections::{HashSet,HashMap},fs::File,io::{BufRead,BufReader,Read},path::{Path,PathBuf}};
@@ -76,10 +79,10 @@ pub fn collect(path:&Path)->Result<Value>{
     for (i,line) in raw.lines().enumerate(){
         let row=match serde_json::from_str::<Value>(line){Ok(v) if v.is_object()=>v,_=>{warnings.push(format!("Skipped malformed session line {}",i+1));continue;}};
         let typ=s(&row["type"]);let p=&row["payload"];
-        let (cwd,identity)=if agent=="claude"{(&row["cwd"],&row["sessionId"])}else{(&p["cwd"],p.get("id").or_else(||p.get("session_id")).unwrap_or(&Value::Null))};
+        let (cwd,identity)=if agent=="claude"{(&row["cwd"],&row["sessionId"])}else{(&p["cwd"],if typ=="session_meta"{p.get("id").or_else(||p.get("session_id")).unwrap_or(&Value::Null)}else{&Value::Null})};
         if cwd.is_string(){ensure!(session["cwd"].is_null()||session["cwd"]==*cwd,"Session contains conflicting working directories");session["cwd"]=cwd.clone();}
         if identity.is_string(){ensure!(events.is_empty()||session["id"]==*identity,"Session contains conflicting session identities");session["id"]=identity.clone();}
-        let mut pending:Vec<(String,String,Value,Value,Vec<String>,String)>=vec![];
+        let mut pending:Vec<(String,String,Value,Value,Vec<String>,String,bool)>=vec![];
         if agent=="claude" {
             if !["user","assistant"].contains(&typ){continue;}
             let content=&row["message"]["content"];
@@ -91,7 +94,7 @@ pub fn collect(path:&Path)->Result<Value>{
                     "tool_use" if typ=="assistant"=>{tool=block["name"].clone();call=block["id"].clone();if let Some(f)=block["input"]["file_path"].as_str(){files.push(f.into());}let t=block["input"].to_string();(kind(s(&tool),&t),t)},
                     "tool_result" if typ=="user"=>{call=block["tool_use_id"].clone();("tool_output",visible(&block["content"]))},_=>continue};
                 let identity=format!("{}:{b}",row.get("uuid").map(Value::to_string).unwrap_or(i.to_string()));
-                if seen.insert(identity){pending.push((k.into(),t,tool,call,files,format!("event-{}-{b}",i+1)));}
+                if seen.insert(identity){pending.push((k.into(),t,tool,call,files,format!("event-{}-{b}",i+1),block["is_error"]==true));}
             }
         }else{
             let mut tool=Value::Null;let mut call=Value::Null;let mut files=vec![];
@@ -105,11 +108,16 @@ pub fn collect(path:&Path)->Result<Value>{
                 "item.completed"=>{let item=&row["item"];match s(&item["type"]){
                     "agent_message"=>("assistant",s(&item["text"]).into()),
                     "command_execution"=>{tool=json!("shell");(kind("shell",s(&item["command"])),format!("{}\n{}",s(&item["command"]),s(&item["aggregated_output"])))},
-                    "file_change"=>{files=arr(&item["changes"]).iter().filter_map(|c|c["path"].as_str().map(str::to_owned)).collect();("change",item["changes"].to_string())},
+                    "file_change"=>{tool=json!("file_change");files=arr(&item["changes"]).iter().filter_map(|c|c["path"].as_str().map(str::to_owned)).collect();("change",item["changes"].to_string())},
                     "mcp_tool_call"=>{tool=item["tool"].clone();("tool_call",format!("{}\n{}",visible(&item["arguments"]),visible(&item["result"])))},_=>continue}},_=>continue};
-            let t=short(&redact(&t),16000);if seen.insert(format!("{k}:{t}")){pending.push((k.into(),t,tool,call,files,format!("event-{}",i+1)));}
+            let key=if call.is_string(){format!("{k}:{}",s(&call))}else if tool.is_string(){format!("{k}:line:{i}")}else{format!("{k}:{}",short(&redact(&t),16000))};if seen.insert(key){pending.push((k.into(),t,tool,call,files,format!("event-{}",i+1),p["is_error"]==true||row["item"]["status"]=="failed"));}
         }
-        for (kind,text,tool,call_id,files,id) in pending{if !text.is_empty(){events.push(json!({"id":id,"kind":kind,"text":short(&redact(&text),16000),"source_line":i+1,"tool":tool,"call_id":call_id,"files":files}));}}
+        for (kind,text,tool,call_id,mut files,id,failed) in pending{if !text.is_empty(){
+            let code_edits=edits::extract(s(&tool),&text);
+            if !code_edits.is_empty(){files.clear();}
+            for edit in &code_edits{let file=s(&edit["file"]).to_owned();if !files.contains(&file){files.push(file);}}
+            events.push(json!({"id":id,"kind":if code_edits.is_empty(){kind.as_str()}else{"change"},"text":short(&redact(&text),16000),"source_line":i+1,"tool":tool,"call_id":call_id,"files":files,"timestamp":row["timestamp"],"failed":failed,"code_edits":code_edits}));
+        }}
     }
     session["events"]=json!(events);session["warnings"]=json!(warnings);crate::validate("Session",&session)?;Ok(session)
 }

@@ -1,0 +1,13 @@
+Generated using the built-in image_gen tool.
+Reference: docs/assets/wy-mascot.png
+
+Use case: logo-brand.
+Asset type: compact pixel-art mascot icon for the terminal code-review tool wy, to appear at 144px wide in its GitHub README and as a project avatar.
+Input image 1: edit target and approved character identity. Transform this exact owl into a polished terminal-era pixel-art mascot.
+Primary request: Keep the owl's recognizable curious expression, subtly tilted head, one raised eyebrow, large ivory eyes, ink-navy body, mint wing accents, and tiny amber beak and feet. Make the design more restrained and compact, with a large head and very short body. Remove the entire "wy" wordmark; this deliverable is only the owl.
+Style: precise intentionally designed pixel art on a coarse approximately 48 by 48 pixel logical grid, shown enlarged with hard square pixel edges. Solid pixel clusters, economical detail, strong silhouette, clean stepped diagonals, charming but understated developer-tool identity. No smooth curves, no antialiasing, no blur, no texture or shading gradients. The appearance should evoke a small terminal companion and retain the approved owl's skeptical curiosity.
+Composition: one owl centered on a square canvas, complete ears and feet visible, about 80 percent of the canvas occupied, balanced transparent padding. No other objects, no terminal window, no scene.
+Colors: tightly limited palette from the reference: ink navy #182335, ivory #FFF3D8, mint #78DCCE, amber #E7B66D. Solid flat colors. Add a very thin ivory pixel keyline immediately around the outer dark silhouette so its ears and body remain legible on dark GitHub backgrounds, without creating a badge or broad sticker border. Eyes and brow must read at small sizes.
+Text: none. Remove all lettering.
+Background: actual transparent alpha, including the padding and all spaces outside the owl.
+Constraints: preserve the owl character and its questioning personality, make it simpler and more icon-like. No new accessories, symbols, speech bubbles, shadows, background panels, circles, wordmarks, or multiple variants. Deliver one finished transparent mascot icon.

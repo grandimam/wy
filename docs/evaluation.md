@@ -6,4 +6,6 @@ Workspace checks cover tree expansion, filtering and diff previews, reuse of ans
 
 Automated checks establish implementation behavior, not real-world explanation accuracy. Human evaluation should inspect the original change and observable transcript, score decision usefulness, check whether citations support each claim, and distinguish recorded statements from hypotheses.
 
+Session-code checks cover committed files with a clean Git diff, captured code surviving later deletion, static wrapped patches, Claude writes and edits, failed tool calls, private-path exclusion, redaction, recency bounds and Codex event IDs. Workspace checks also cover separate answers for a diff and its historical edit, code beside prose, clickable and keyboard-selected sources, and narrow-terminal access to both panes.
+
 Useful measurements include decision precision, explanation relevance, unsupported claims, uncertainty honesty, stale-source handling and provider-reported token usage. Compare model output with the actual evidence packet, and verify cost against provider accounting. No real-model quality or cost results are claimed.

@@ -263,6 +263,7 @@ fn explain(
             file: options.file,
             target,
             source: options.history.source,
+            session_edit: None,
         },
         &Arc::new(AtomicBool::new(false)),
         |message| eprintln!("{message}"),

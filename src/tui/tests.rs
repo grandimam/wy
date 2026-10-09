@@ -228,7 +228,7 @@ fn diff_and_why_toggle_reuses_the_answer_for_the_exact_change() {
         .areas
         .tabs
         .iter()
-        .find(|(_, view)| *view == View::Explanation)
+        .find(|(_, view, _)| *view == View::Explanation)
         .unwrap()
         .0;
     app.mouse(MouseEvent {
@@ -256,8 +256,13 @@ fn recorded_reason_leads_with_the_original_quote_and_openable_reference() {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.find(quote).unwrap() < text.find("Answer").unwrap());
-    assert!(text.contains("Recorded in the conversation [1] [2]"));
+    assert!(text.find(quote).unwrap() < text.find("Repeated requests can reuse").unwrap());
+    assert!(text.contains(&format!("“{quote}” [1]")));
+    assert!(
+        !text
+            .lines()
+            .any(|l| ["Answer", "The request or constraint", "Tradeoffs"].contains(&l))
+    );
     assert!(!text.contains("No explicit reason"));
     let source = document::evidence(answer, 0).unwrap();
     assert!(source.lines.iter().any(|line| line.to_string() == quote));
@@ -552,7 +557,7 @@ fn renders_review_diff_explanation_and_empty_states() {
     preview("diff", &terminal);
     app.open(document::explanation(artifact(Some("src/cache.rs"))));
     let (text, terminal) = screen(&mut app, 140, 44);
-    assert!(text.contains("Inferred · not an agent statement [1]"));
+    assert!(text.contains("Inferred:"));
     assert!(text.contains("No agent conversation was available"));
     preview("explanation", &terminal);
     app.open_evidence(0).unwrap();
@@ -580,6 +585,132 @@ fn renders_review_diff_explanation_and_empty_states() {
     }
 }
 // Optional render artifacts for visual QA, from the same terminal buffer users see.
+#[test]
+fn session_code_appears_without_a_git_diff_and_keeps_a_distinct_answer() {
+    let mut review = review();
+    let record = json!({"id":"recorded-edit","file":"src/recent.rs","agent":"codex","session_id":"coding-session","session_key":"saved-key","event_id":"event-4","timestamp":"2026-10-09T08:00:00Z","state":"recorded","format":"code","text":"fn generated() { return 42; }","truncated":false});
+    review["changes"] = json!([]);
+    review["recent_code"] = json!([record]);
+    let mut app = Workspace::from_review(Path::new("/example/payments"), review);
+    assert_eq!(app.document.kind, View::SessionCode);
+    let options = app.why_options(false).unwrap();
+    assert_eq!(options.file.as_deref(), Some("src/recent.rs"));
+    assert!(options.target.is_none());
+    assert_eq!(
+        options.session_edit.as_ref().unwrap()["id"],
+        "recorded-edit"
+    );
+    let (text, terminal) = screen(&mut app, 140, 38);
+    assert!(text.contains("· session"));
+    assert!(text.contains("fn generated()"));
+    assert!(text.contains("execution not confirmed"));
+    preview("session-code", &terminal);
+    let mut answer = (*artifact(Some("src/recent.rs"))).clone();
+    answer["packet"]["focus_session_edit"] = crate::history::edit_ref(&record);
+    app.open(document::explanation(Arc::new(answer)));
+    assert_eq!(app.code.as_ref().unwrap().kind, View::SessionCode);
+    press(&mut app, KeyCode::Char('i'));
+    assert_eq!(
+        app.question_options("Why?").session_edit.unwrap()["id"],
+        "recorded-edit"
+    );
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Char('w'));
+    assert!(app.job.is_none());
+    assert_eq!(app.document.kind, View::Explanation);
+
+    // A current diff and a historical session edit of the same file have separate answers.
+    app.review["changes"] =
+        json!([{"file":"src/recent.rs","diff":"+current code","symbols":[],"added_lines":[1]}]);
+    app.explorer.rebuild(&app.review);
+    let mut current = (*artifact(Some("src/recent.rs"))).clone();
+    current["id"] = json!("current-answer");
+    app.open(document::explanation(Arc::new(current)));
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Char('w'));
+    assert_eq!(
+        app.document.artifact.as_ref().unwrap()["id"],
+        "current-answer"
+    );
+    press(&mut app, KeyCode::Char('c'));
+    press(&mut app, KeyCode::Char('w'));
+    assert_eq!(
+        app.document.artifact.as_ref().unwrap()["packet"]["focus_session_edit"]["id"],
+        "recorded-edit"
+    );
+    assert!(app.job.is_none());
+}
+
+#[test]
+fn explanation_stays_right_of_code_and_sources_open_by_mouse_and_keyboard() {
+    let mut app = workspace();
+    select(&mut app, "src/cache.rs");
+    press(&mut app, KeyCode::Enter);
+    app.open(document::explanation(artifact(Some("src/cache.rs"))));
+    let (text, terminal) = screen(&mut app, 140, 38);
+    assert!(app.areas.code.width > 30);
+    assert!(app.areas.reader.x > app.areas.code.right());
+    assert_eq!(app.areas.input.x, app.areas.reader.x);
+    assert!(text.contains("cache.get(key)"));
+    assert!(text.contains("Repeated requests can reuse"));
+    preview("code-and-explanation", &terminal);
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.focus, Focus::Files);
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.focus, Focus::Code);
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.focus, Focus::Reader);
+    press(&mut app, KeyCode::Char('s'));
+    screen(&mut app, 140, 38);
+    let (source, _) = app.areas.sources[0];
+    app.mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: source.x + 1,
+        row: source.y,
+        modifiers: KeyModifiers::NONE,
+    })
+    .unwrap();
+    assert_eq!(app.document.kind, View::Evidence);
+    assert!(app.code.is_some());
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.document.kind, View::Explanation);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.document.kind, View::Evidence);
+
+    // Narrow terminals keep both documents accessible as full-width readers.
+    app.focus = Focus::Code;
+    let (text, _) = screen(&mut app, 70, 24);
+    assert!(text.contains("cache.get(key)"));
+    press(&mut app, KeyCode::Tab);
+    let (text, _) = screen(&mut app, 70, 24);
+    assert!(text.contains("CAPTURED CODE"));
+}
+
+#[test]
+fn source_navigation_reaches_references_beyond_nine_and_code_scrolls_independently() {
+    let mut app = workspace();
+    let mut answer = (*artifact(Some("src/cache.rs"))).clone();
+    answer["packet"]["evidence"] = json!((0..12).map(|i| json!({"id":format!("code-{i}"),"kind":"code","file":format!("src/evidence_{i}.rs"),"start_line":1,"text":format!("source number {i}")})).collect::<Vec<_>>());
+    answer["explanation"]["answer"]["evidence_ids"] =
+        json!((0..12).map(|i| format!("code-{i}")).collect::<Vec<_>>());
+    app.open(document::explanation(Arc::new(answer)));
+    app.code.as_mut().unwrap().lines = (0..100).map(|i| Line::raw(format!("line {i}"))).collect();
+    screen(&mut app, 120, 24);
+    app.focus = Focus::Code;
+    press(&mut app, KeyCode::PageDown);
+    assert!(app.code.as_ref().unwrap().scroll > 0);
+    assert_eq!(app.document.scroll, 0);
+    press(&mut app, KeyCode::Char('s'));
+    for _ in 0..11 {
+        press(&mut app, KeyCode::Down);
+    }
+    screen(&mut app, 120, 24);
+    assert!(app.areas.sources.iter().any(|(_, index)| *index == 11));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.document.title, "[12] src/evidence_11.rs");
+}
+
 fn preview(name: &str, terminal: &Terminal<TestBackend>) {
     let Some(path) = std::env::var_os("WY_TUI_PREVIEW_DIR") else {
         return;

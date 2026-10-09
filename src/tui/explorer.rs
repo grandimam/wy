@@ -4,6 +4,16 @@ use ratatui::widgets::ListState;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 
+pub(super) fn files(review: &Value) -> Vec<&Value> {
+    let mut files: Vec<_> = arr(&review["changes"]).iter().collect();
+    for code in arr(&review["recent_code"]) {
+        if !files.iter().any(|f| f["file"] == code["file"]) {
+            files.push(code);
+        }
+    }
+    files
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Target {
     pub file: String,
@@ -45,6 +55,8 @@ pub(super) struct Row {
     pub count: usize,
     pub added: usize,
     pub removed: usize,
+    pub session: bool,
+    pub diff: bool,
 }
 
 #[derive(Default)]
@@ -81,6 +93,8 @@ impl<'a> Folder<'a> {
                 count: folder.count(),
                 added: 0,
                 removed: 0,
+                session: false,
+                diff: false,
             });
             if expanded {
                 folder.flatten(&path, depth + 1, explorer);
@@ -105,6 +119,8 @@ impl<'a> Folder<'a> {
                 count: symbols.len(),
                 added: arr(&change["added_lines"]).len(),
                 removed: n(&change["removed_line_count"]),
+                session: change["session_key"].is_string(),
+                diff: change["diff"].is_string(),
             });
             if !expanded {
                 continue;
@@ -151,6 +167,8 @@ impl<'a> Folder<'a> {
                     count: 0,
                     added: 0,
                     removed: 0,
+                    session: false,
+                    diff: false,
                 });
                 parents.push(symbol);
             }
@@ -178,13 +196,20 @@ impl Explorer {
         let key = self.selected().map(|r| r.key.clone());
         let mut tree = Folder::default();
         let query = self.filter.to_lowercase();
-        for change in arr(&review["changes"]) {
+        for change in files(review) {
             if s(&change["file"]).to_lowercase().contains(&query) {
                 tree.insert(s(&change["file"]), change);
             }
         }
         self.rows.clear();
         tree.flatten("", 0, self);
+        for row in &mut self.rows {
+            if row.kind == Kind::File {
+                row.session = arr(&review["recent_code"])
+                    .iter()
+                    .any(|r| r["file"] == row.key);
+            }
+        }
         let selected = key
             .and_then(|key| self.rows.iter().position(|r| r.key == key))
             .unwrap_or_else(|| {
@@ -252,11 +277,13 @@ impl Explorer {
     }
     pub fn refresh(&mut self, old: &Value, new: &Value) {
         self.reviewed.retain(|file| {
-            let before = arr(&old["changes"]).iter().find(|c| c["file"] == *file);
-            let after = arr(&new["changes"]).iter().find(|c| c["file"] == *file);
+            let before = files(old).into_iter().find(|c| c["file"] == *file);
+            let after = files(new).into_iter().find(|c| c["file"] == *file);
             after.is_some()
                 && before == after
                 && old["file_hashes"][file] == new["file_hashes"][file]
+                && arr(&old["recent_code"]).iter().find(|c| c["file"] == *file)
+                    == arr(&new["recent_code"]).iter().find(|c| c["file"] == *file)
         });
         self.rebuild(new);
     }

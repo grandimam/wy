@@ -8,6 +8,7 @@ use std::sync::Arc;
 pub(super) enum View {
     Empty,
     Diff,
+    SessionCode,
     Explanation,
     Evidence,
     Help,
@@ -17,6 +18,7 @@ impl View {
         match self {
             Self::Empty => "Changes",
             Self::Diff => "Diff",
+            Self::SessionCode => "Session code",
             Self::Explanation => "Why this change?",
             Self::Evidence => "Evidence",
             Self::Help => "Help",
@@ -30,6 +32,9 @@ pub(super) struct Document {
     pub lines: Vec<Line<'static>>,
     pub target: Option<Target>,
     pub artifact: Option<Arc<Value>>,
+    pub session_edit: Option<Value>,
+    pub sources: Vec<(usize, usize)>,
+    pub source_selection: Option<usize>,
     pub scroll: u16,
     pub horizontal: u16,
     pub notice: Option<(String, Color)>,
@@ -42,13 +47,16 @@ impl Document {
             lines: vec![],
             target: None,
             artifact: None,
+            session_edit: None,
+            sources: vec![],
+            source_selection: None,
             scroll: 0,
             horizontal: 0,
             notice: None,
         }
     }
     pub fn code(&self) -> bool {
-        self.kind == View::Diff
+        matches!(self.kind, View::Diff | View::SessionCode)
     }
     pub fn text(&mut self, text: impl AsRef<str>, color: Color) {
         self.lines.extend(
@@ -81,13 +89,105 @@ pub(super) fn totals(review: &Value) -> (usize, usize) {
 }
 pub(super) fn empty(review: &Value) -> Document {
     let mut doc = Document::new(View::Empty, "Changes");
-    if arr(&review["changes"]).is_empty() {
+    if super::explorer::files(review).is_empty() {
         doc.heading("No changed files");
-        doc.text("After your agent edits code, press r to refresh.", MUTED);
+        doc.text("No working-tree diff or recent session code. After your agent edits code, press r to refresh.", MUTED);
     } else {
         doc.heading("Select a changed file");
         doc.text("Browse its diff, then choose Why this change?", MUTED);
     }
+    doc
+}
+
+pub(super) fn recent_edit<'a>(review: &'a Value, file: &str) -> Option<&'a Value> {
+    arr(&review["recent_code"])
+        .iter()
+        .find(|c| c["file"] == file)
+}
+pub(super) fn preview(review: &Value, target: Target) -> Document {
+    if !arr(&review["changes"])
+        .iter()
+        .any(|c| c["file"] == target.file)
+    {
+        if let Some(code) = session_code(review, target.clone()) {
+            return code;
+        }
+    }
+    diff(review, target)
+}
+pub(super) fn session_code(review: &Value, target: Target) -> Option<Document> {
+    let edit = recent_edit(review, &target.file)?;
+    Some(recorded_code(edit))
+}
+pub(super) fn recorded_code(edit: &Value) -> Document {
+    let mut doc = Document::new(View::SessionCode, s(&edit["file"]));
+    let date = edit["timestamp"]
+        .as_str()
+        .map(|t| t.replace('T', " "))
+        .unwrap_or_else(|| "date unavailable".into());
+    doc.text(format!("{} · {date}", s(&edit["agent"])), ACCENT);
+    doc.text(
+        format!(
+            "Session {} · {}",
+            s(&edit["session_id"]),
+            s(&edit["event_id"])
+        ),
+        MUTED,
+    );
+    doc.text(
+        if edit["state"] == "applied" {
+            "Tool reported success."
+        } else {
+            "Recorded tool input · execution not confirmed."
+        },
+        MUTED,
+    );
+    if edit["format"] == "patch" {
+        doc.text(
+            "Patch excerpt · line numbers may be relative to the edit.",
+            MUTED,
+        );
+    }
+    doc.gap();
+    if s(&edit["text"]).is_empty() {
+        doc.text(
+            "This session recorded a file change without a code excerpt.",
+            AMBER,
+        );
+    }
+    for (i, line) in s(&edit["text"]).lines().enumerate() {
+        if edit["format"] == "code" {
+            doc.text(
+                format!("{:>5}  {}", i + 1, line.replace('\t', "    ")),
+                TEXT,
+            );
+        } else {
+            let style = if line.starts_with('+') {
+                Style::default().fg(GREEN).bg(ADD_BG)
+            } else if line.starts_with('-') {
+                Style::default().fg(RED).bg(REMOVE_BG)
+            } else if line.starts_with("@@") {
+                Style::default().fg(ACCENT).bg(PANEL)
+            } else {
+                Style::default().fg(TEXT)
+            };
+            doc.lines
+                .push(Line::styled(line.replace('\t', "    "), style));
+        }
+    }
+    if edit["truncated"] == true {
+        doc.text("Recorded code truncated at the capture limit.", AMBER);
+    }
+    doc.notice = Some((
+        "Latest captured edit to this file · may differ from current code".into(),
+        AMBER,
+    ));
+    doc.target = Some(Target {
+        file: s(&edit["file"]).into(),
+        symbol: None,
+        line: 1,
+    });
+    doc.session_edit = Some(crate::history::edit_ref(edit));
     doc
 }
 
@@ -175,12 +275,21 @@ pub(super) fn explanation(artifact: Arc<Value>) -> Document {
     doc.target = target;
     let cited = presentation::citations(&artifact);
     let result = &artifact["explanation"];
+    if let Some(edit) = artifact["packet"]["focus_session_edit"].as_object() {
+        doc.text(
+            format!(
+                "Recorded session edit · {} · {}",
+                s(&edit["agent"]),
+                s(&edit["timestamp"])
+            ),
+            MUTED,
+        );
+    }
     let judgments = arr(&result["judgments"]);
     let recorded: Vec<_> = judgments
         .iter()
         .filter(|j| j["status"] == "recorded")
         .collect();
-    doc.heading("Agent's recorded reason");
     if recorded.is_empty() {
         let has_history = arr(&artifact["packet"]["evidence"])
             .iter()
@@ -194,49 +303,45 @@ pub(super) fn explanation(artifact: Arc<Value>) -> Document {
             AMBER,
         );
         doc.text(
-            "The explanation below is an interpretation of the available evidence.",
+            "This explanation is an interpretation of the available evidence.",
             MUTED,
         );
+        doc.gap();
     } else {
         for judgment in recorded {
-            doc.text(s(&judgment["choice"]), TEXT);
-            doc.text(format!("“{}”", s(&judgment["quote"])), GREEN);
-            judgment_claim(&mut doc, judgment, &cited);
+            let reference = cited
+                .iter()
+                .position(|e| e["id"] == judgment["quote_id"])
+                .map(|i| format!(" [{}]", i + 1))
+                .unwrap_or_default();
+            doc.text(
+                format!("The agent wrote: “{}”{reference}", s(&judgment["quote"])),
+                GREEN,
+            );
+            doc.gap();
         }
     }
-    if !s(&result["answer"]["text"]).is_empty() {
-        doc.heading("Answer");
-        claim(&mut doc, &result["answer"], &cited);
+    claim(&mut doc, &result["answer"], &cited);
+    for judgment in judgments.iter().filter(|j| j["status"] != "recorded") {
+        let prefix = if judgment["status"] == "inferred" {
+            "Inferred"
+        } else {
+            "Reason not established"
+        };
+        doc.text(
+            format!(
+                "{prefix}: {}{}",
+                s(&judgment["reason"]),
+                references(judgment, &cited)
+            ),
+            AMBER,
+        );
+        doc.gap();
     }
-    if !s(&result["problem"]["text"]).is_empty() {
-        doc.heading("The request or constraint");
-        claim(&mut doc, &result["problem"], &cited);
-    }
-    let inferred: Vec<_> = judgments
-        .iter()
-        .filter(|j| j["status"] != "recorded")
-        .collect();
-    if !inferred.is_empty() {
-        doc.heading("What may explain the approach");
-    }
-    for judgment in inferred {
-        doc.text(s(&judgment["choice"]), TEXT);
-        judgment_claim(&mut doc, judgment, &cited);
-    }
-    if !arr(&result["steps"]).is_empty() {
-        doc.heading("How this connects to the code");
-    }
-    for step in arr(&result["steps"]) {
-        claim(&mut doc, step, &cited);
-    }
-    if !arr(&result["tradeoffs"]).is_empty() {
-        doc.heading("Tradeoffs");
-    }
-    for tradeoff in arr(&result["tradeoffs"]) {
-        claim(&mut doc, tradeoff, &cited);
-    }
-    if !arr(&result["unknowns"]).is_empty() {
-        doc.heading("Still unclear");
+    for key in ["steps", "tradeoffs"] {
+        for item in arr(&result[key]) {
+            claim(&mut doc, item, &cited);
+        }
     }
     for unknown in arr(&result["unknowns"]) {
         let mut text = s(unknown).to_owned();
@@ -244,16 +349,17 @@ pub(super) fn explanation(artifact: Arc<Value>) -> Document {
             let label = cited
                 .iter()
                 .position(|e| e["id"] == evidence["id"])
-                .map(|i| format!("ref {}", i + 1))
+                .map(|i| format!("[{}]", i + 1))
                 .unwrap_or_else(|| s(&evidence["file"]).into());
             let id = s(&evidence["id"]);
             if !id.is_empty() {
                 text = text.replace(id, &label);
             }
         }
-        doc.text(format!("• {text}"), AMBER);
+        doc.text(text, AMBER);
+        doc.gap();
     }
-    doc.heading("Sources · press a reference number to open");
+    doc.heading("Sources · click or press s");
     for (i, evidence) in cited.iter().enumerate() {
         let label = if evidence["kind"] == "session" {
             format!(
@@ -264,7 +370,8 @@ pub(super) fn explanation(artifact: Arc<Value>) -> Document {
         } else {
             format!("{}:{}", s(&evidence["file"]), n(&evidence["start_line"]))
         };
-        doc.text(format!("[{}] {label}", i + 1), MUTED);
+        doc.sources.push((doc.lines.len(), i));
+        doc.text(format!("[{}] {label}", i + 1), ACCENT);
     }
     if cited.len() > 9 {
         doc.text("/evidence NUMBER opens any reference.", MUTED);
@@ -290,26 +397,21 @@ pub(super) fn explanation(artifact: Arc<Value>) -> Document {
     doc.artifact = Some(artifact);
     doc
 }
-fn judgment_claim(doc: &mut Document, judgment: &Value, cited: &[Value]) {
-    let claim_value = serde_json::json!({"text":judgment["reason"], "basis":judgment["status"], "evidence_ids":judgment["evidence_ids"]});
-    claim(doc, &claim_value, cited);
-}
-fn claim(doc: &mut Document, claim: &Value, cited: &[Value]) {
-    let (label, color) = match s(&claim["basis"]) {
-        "observed" => ("From evidence", ACCENT),
-        "recorded" => ("Recorded in the conversation", GREEN),
-        "assessment" => ("Interpretation", VIOLET),
-        "inferred" => ("Inferred · not an agent statement", AMBER),
-        "proposed" => ("Suggestion", VIOLET),
-        _ => ("Not established", AMBER),
-    };
-    let refs = arr(&claim["evidence_ids"])
+fn references(claim: &Value, cited: &[Value]) -> String {
+    arr(&claim["evidence_ids"])
         .iter()
         .filter_map(|id| cited.iter().position(|e| e["id"] == *id))
         .map(|i| format!(" [{}]", i + 1))
-        .collect::<String>();
-    doc.text(s(&claim["text"]), TEXT);
-    doc.text(format!("{label}{refs}"), color);
+        .collect()
+}
+fn claim(doc: &mut Document, claim: &Value, cited: &[Value]) {
+    if s(&claim["text"]).is_empty() {
+        return;
+    }
+    doc.text(
+        format!("{}{}", s(&claim["text"]), references(claim, cited)),
+        TEXT,
+    );
     doc.gap();
 }
 pub(super) fn evidence(artifact: Arc<Value>, index: usize) -> Option<Document> {
@@ -377,15 +479,17 @@ pub(super) fn help() -> Document {
     for (title, body) in [
         (
             "Start with a change",
-            "Select a file or function in the tree to see its diff.
+            "Select a file or function in the tree to see its diff. Files marked session also include recent recorded code.
 w  Why this change? — find what led to this implementation
 The answer distinguishes the agent's recorded statements from inferences.",
         ),
         (
             "Follow the answer",
-            "1–9  open the cited code or conversation
+            "Click a source, or s then ↑/↓ and Enter to open it.
+1–9  open a numbered source directly
 i  ask a follow-up about the answer
 d  return to the diff · w  reopen the answer
+c  read the latest code recorded in the file's agent session
 R  request an updated answer · p  last saved answer
 Esc  back / cancel a running request",
         ),
@@ -394,7 +498,7 @@ Esc  back / cancel a running request",
             "↑/↓ or j/k  select files or scroll the focused pane
 ←/→ or h/l  expand the tree or pan a diff
 Space  expand changed symbols · Enter  read the diff
-Tab  switch panes · f  filter file paths
+Tab  switch files, code and explanation · f  filter file paths
 PageUp/PageDown  scroll · Home/End  start/end
 r  refresh changes · b  toggle files · m  mark reviewed
 q / Ctrl+Q / Ctrl+C  quit",

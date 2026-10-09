@@ -591,6 +591,77 @@
         ],
         "default": null,
         "title": "History Source"
+      },
+      "recent_code": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "file": {
+              "type": "string"
+            },
+            "format": {
+              "enum": [
+                "code",
+                "patch"
+              ]
+            },
+            "operation": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "truncated": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "session_key": {
+              "type": "string"
+            },
+            "event_id": {
+              "type": "string"
+            },
+            "session_path": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "source_line": {
+              "type": "integer"
+            },
+            "timestamp": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "file",
+            "format",
+            "operation",
+            "text",
+            "truncated",
+            "id",
+            "agent",
+            "session_id",
+            "session_key",
+            "event_id",
+            "session_path",
+            "state"
+          ]
+        }
       }
     },
     "required": [
@@ -662,6 +733,49 @@
             },
             "title": "Files",
             "type": "array"
+          },
+          "code_edits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "file": {
+                  "type": "string"
+                },
+                "format": {
+                  "enum": [
+                    "code",
+                    "patch"
+                  ]
+                },
+                "operation": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "truncated": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "file",
+                "format",
+                "operation",
+                "text",
+                "truncated"
+              ]
+            }
+          },
+          "timestamp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failed": {
+            "type": "boolean"
           }
         },
         "required": [

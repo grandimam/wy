@@ -43,7 +43,6 @@ mod theme {
     pub const TEXT: Color = Color::Rgb(222, 230, 240);
     pub const MUTED: Color = Color::Rgb(145, 161, 183);
     pub const ACCENT: Color = Color::Rgb(113, 218, 199);
-    pub const VIOLET: Color = Color::Rgb(179, 167, 245);
     pub const GREEN: Color = Color::Rgb(149, 214, 163);
     pub const RED: Color = Color::Rgb(243, 151, 159);
     pub const AMBER: Color = Color::Rgb(237, 193, 129);
@@ -55,6 +54,7 @@ use theme::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Focus {
     Files,
+    Code,
     Reader,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +80,7 @@ struct QuestionContext {
     file: Option<String>,
     target: Option<String>,
     previous: Option<Arc<Value>>,
+    session_edit: Option<Value>,
 }
 impl QuestionContext {
     fn label(&self) -> &str {
@@ -104,6 +105,7 @@ impl QuestionContext {
             question,
             agent: agent.into(),
             source: source.into(),
+            session_edit: self.session_edit.clone(),
         }
     }
 }
@@ -111,15 +113,18 @@ impl QuestionContext {
 struct Areas {
     files: Rect,
     reader: Rect,
+    code: Rect,
     input: Rect,
-    tabs: Vec<(Rect, View)>,
+    tabs: Vec<(Rect, View, Focus)>,
+    sources: Vec<(Rect, usize)>,
 }
 struct Workspace {
     root: PathBuf,
     review: Value,
     explorer: Explorer,
     document: Document,
-    back: Vec<(Document, Focus)>,
+    back: Vec<(Document, Focus, Option<Document>)>,
+    code: Option<Document>,
     answers: Vec<Arc<Value>>,
     focus: Focus,
     agent: String,
@@ -134,6 +139,8 @@ struct Workspace {
     areas: Areas,
     scroll_max: u16,
     page_size: u16,
+    code_scroll_max: u16,
+    code_page_size: u16,
 }
 impl Workspace {
     fn new(root: &Path) -> Result<Self> {
@@ -154,7 +161,7 @@ impl Workspace {
         }
         let document = explorer
             .target()
-            .map(|target| document::diff(&review, target))
+            .map(|target| document::preview(&review, target))
             .unwrap_or_else(|| document::empty(&review));
         Self {
             root: root.into(),
@@ -162,6 +169,7 @@ impl Workspace {
             explorer,
             document,
             back: vec![],
+            code: None,
             answers: vec![],
             focus: Focus::Files,
             agent: "codex".into(),
@@ -176,6 +184,8 @@ impl Workspace {
             areas: Areas::default(),
             scroll_max: 0,
             page_size: 12,
+            code_scroll_max: 0,
+            code_page_size: 12,
         }
     }
     fn message(&mut self, message: impl Into<String>) {
@@ -191,20 +201,57 @@ impl Workspace {
         if document.kind == View::Explanation {
             if let Some(artifact) = &document.artifact {
                 let target = document::artifact_target(artifact).map(|t| t.selector());
-                self.answers
-                    .retain(|a| document::artifact_target(a).map(|t| t.selector()) != target);
+                self.answers.retain(|a| {
+                    document::artifact_target(a).map(|t| t.selector()) != target
+                        || a["packet"]["focus_session_edit"]["id"]
+                            != artifact["packet"]["focus_session_edit"]["id"]
+                });
                 self.answers.push(artifact.clone());
                 if self.answers.len() > 20 {
                     self.answers.remove(0);
                 }
             }
         }
+        let code = self.code_for_answer(&document);
         let old = std::mem::replace(&mut self.document, document);
-        self.back.push((old, self.focus));
+        let old_code = std::mem::replace(&mut self.code, code);
+        self.back.push((old, self.focus, old_code));
         if self.back.len() > 40 {
             self.back.remove(0);
         }
         self.focus = Focus::Reader;
+    }
+    fn code_for_answer(&self, document: &Document) -> Option<Document> {
+        let artifact = document.artifact.as_ref()?;
+        let target = document::artifact_target(artifact)?;
+        let recorded = &artifact["packet"]["focus_session_edit"];
+        for code in std::iter::once(&self.document).chain(self.code.as_ref()) {
+            if code.code()
+                && code
+                    .target
+                    .as_ref()
+                    .is_some_and(|t| t.selector() == target.selector())
+                && code
+                    .session_edit
+                    .as_ref()
+                    .map(|e| &e["id"])
+                    .unwrap_or(&Value::Null)
+                    == &recorded["id"]
+            {
+                return Some(code.clone());
+            }
+        }
+        if recorded.is_object() {
+            if let Some(edit) = document::recent_edit(&self.review, &target.file)
+                .filter(|e| e["id"] == recorded["id"])
+            {
+                return Some(document::recorded_code(edit));
+            }
+            return crate::history::saved_edit(&self.root, recorded)
+                .ok()
+                .map(|(edit, _)| document::recorded_code(&edit));
+        }
+        Some(document::diff(&self.review, target))
     }
     fn check_freshness(&self, document: &mut Document) {
         let Some(artifact) = &document.artifact else {
@@ -243,6 +290,8 @@ impl Workspace {
     fn target(&self) -> Option<Target> {
         if self.focus == Focus::Files {
             self.explorer.target()
+        } else if self.focus == Focus::Code {
+            self.code.as_ref().and_then(|d| d.target.clone())
         } else {
             self.document
                 .target
@@ -259,12 +308,15 @@ impl Workspace {
     }
     fn preview_selection(&mut self) {
         let target = self.explorer.target();
-        if self.document.kind == View::Diff && self.document.target == target {
+        if matches!(self.document.kind, View::Diff | View::SessionCode)
+            && self.document.target == target
+        {
             return;
         }
         self.document = target
-            .map(|target| document::diff(&self.review, target))
+            .map(|target| document::preview(&self.review, target))
             .unwrap_or_else(|| document::empty(&self.review));
+        self.code = None;
     }
     fn why_change(&mut self, refresh: bool) {
         let existing = (self.focus == Focus::Reader)
@@ -287,7 +339,16 @@ impl Workspace {
                 .answers
                 .iter()
                 .rev()
-                .find(|a| document::artifact_target(a).map(|t| t.selector()) == options.target)
+                .find(|a| {
+                    document::artifact_target(a).map(|t| t.selector())
+                        == options.target.clone().or(options.file.clone())
+                        && &a["packet"]["focus_session_edit"]["id"]
+                            == options
+                                .session_edit
+                                .as_ref()
+                                .map(|e| &e["id"])
+                                .unwrap_or(&Value::Null)
+                })
                 .cloned()
             {
                 self.open(document::explanation(answer));
@@ -307,11 +368,42 @@ impl Workspace {
         } else {
             Some(self.target()?)
         };
-        Some(self.options(
+        let session_edit = if self.focus == Focus::Code {
+            self.code.as_ref().and_then(|d| d.session_edit.clone())
+        } else if self.focus == Focus::Reader {
+            self.document.session_edit.clone().or_else(|| {
+                if refresh {
+                    self.document.artifact.as_ref().and_then(|a| {
+                        a["packet"]["focus_session_edit"]
+                            .as_object()
+                            .map(|_| a["packet"]["focus_session_edit"].clone())
+                    })
+                } else {
+                    None
+                }
+            })
+        } else {
+            target
+                .as_ref()
+                .filter(|t| {
+                    !arr(&self.review["changes"])
+                        .iter()
+                        .any(|c| c["file"] == t.file)
+                })
+                .and_then(|t| document::recent_edit(&self.review, &t.file))
+                .map(crate::history::edit_ref)
+        };
+        let mut options = self.options(
             target,
             true,
             Some(reasoning::prompt("change_reason").into()),
-        ))
+        );
+        if let Some(edit) = session_edit {
+            options.target = None;
+            options.file = edit["file"].as_str().map(str::to_owned);
+            options.session_edit = Some(edit);
+        }
+        Some(options)
     }
     fn options(
         &self,
@@ -330,6 +422,7 @@ impl Workspace {
                 .filter(|t| design || t.symbol.is_some())
                 .map(Target::selector),
             file: target.map(|t| t.file),
+            session_edit: None,
         }
     }
     fn start(&mut self, options: reasoning::Options) {
@@ -418,6 +511,9 @@ impl Workspace {
                         .as_str()
                         .map(str::to_owned),
                     previous: Some(artifact.clone()),
+                    session_edit: artifact["packet"]["focus_session_edit"]
+                        .as_object()
+                        .map(|_| artifact["packet"]["focus_session_edit"].clone()),
                 };
             }
             if self.document.target.is_none() {
@@ -432,6 +528,7 @@ impl Workspace {
                 .filter(|t| t.symbol.is_some())
                 .map(Target::selector),
             previous: None,
+            session_edit: self.document.session_edit.clone(),
         }
     }
     fn question_options(&self, question: &str) -> reasoning::Options {
@@ -549,7 +646,16 @@ impl Workspace {
         match view {
             View::Diff => {
                 if let Some(target) = self.required_target() {
-                    self.open(document::diff(&self.review, target));
+                    self.open(document::preview(&self.review, target));
+                }
+            }
+            View::SessionCode => {
+                if let Some(target) = self.required_target() {
+                    if let Some(doc) = document::session_code(&self.review, target) {
+                        self.open(doc);
+                    } else {
+                        self.message("No recent code excerpt was captured for this file");
+                    }
                 }
             }
             View::Explanation => self.why_change(false),
@@ -559,8 +665,8 @@ impl Workspace {
     }
     fn mark(&mut self) {
         if let Some(target) = self.required_target() {
-            if !arr(&self.review["changes"])
-                .iter()
+            if !explorer::files(&self.review)
+                .into_iter()
                 .any(|c| c["file"] == target.file)
             {
                 self.message("Only changed files can be marked reviewed");
@@ -590,17 +696,44 @@ impl Workspace {
         // Reading history belongs to the previous snapshot.
         self.back.clear();
         self.answers.clear();
+        self.code = None;
         self.document = document::empty(&self.review);
         self.preview_selection();
         self.message("Offline review refreshed · review marks reset for changed files");
         Ok(())
     }
     fn scroll(&mut self, delta: isize) {
-        self.document.scroll = self
-            .document
+        let max = if self.focus == Focus::Code {
+            self.code_scroll_max
+        } else {
+            self.scroll_max
+        };
+        let doc = self.active_document();
+        doc.source_selection = None;
+        doc.scroll = doc
             .scroll
             .saturating_add_signed(delta.clamp(i16::MIN as isize, i16::MAX as isize) as i16)
-            .min(self.scroll_max);
+            .min(max);
+    }
+    fn active_document(&mut self) -> &mut Document {
+        if self.focus == Focus::Code {
+            self.code.as_mut().unwrap_or(&mut self.document)
+        } else {
+            &mut self.document
+        }
+    }
+    fn select_source(&mut self, delta: isize) {
+        if self.document.sources.is_empty() {
+            return;
+        }
+        self.document.source_selection = Some(
+            self.document
+                .source_selection
+                .unwrap_or(0)
+                .saturating_add_signed(delta)
+                .min(self.document.sources.len() - 1),
+        );
+        self.focus = Focus::Reader;
     }
     fn key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
         if modifiers.contains(KeyModifiers::CONTROL)
@@ -656,16 +789,21 @@ impl Workspace {
             }
             KeyCode::Char('f') => self.edit(Input::Filter),
             KeyCode::Tab | KeyCode::BackTab => {
-                self.focus = if self.focus == Focus::Files {
-                    Focus::Reader
-                } else {
-                    self.sidebar = true;
-                    Focus::Files
+                self.focus = match self.focus {
+                    Focus::Files if self.code.is_some() => Focus::Code,
+                    Focus::Files => Focus::Reader,
+                    Focus::Code => Focus::Reader,
+                    Focus::Reader => {
+                        self.sidebar = true;
+                        Focus::Files
+                    }
                 };
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.focus == Focus::Files {
                     self.explorer.step(-1);
+                } else if self.focus == Focus::Reader && self.document.source_selection.is_some() {
+                    self.select_source(-1);
                 } else {
                     self.scroll(-1);
                 }
@@ -673,6 +811,8 @@ impl Workspace {
             KeyCode::Down | KeyCode::Char('j') => {
                 if self.focus == Focus::Files {
                     self.explorer.step(1);
+                } else if self.focus == Focus::Reader && self.document.source_selection.is_some() {
+                    self.select_source(1);
                 } else {
                     self.scroll(1);
                 }
@@ -680,32 +820,49 @@ impl Workspace {
             KeyCode::Right | KeyCode::Char('l') => {
                 if self.focus == Focus::Files {
                     self.explorer.expand(&self.review);
-                } else if self.document.code() {
-                    self.document.horizontal = self.document.horizontal.saturating_add(4);
+                } else if self.active_document().code() {
+                    let doc = self.active_document();
+                    doc.horizontal = doc.horizontal.saturating_add(4);
                 }
             }
             KeyCode::Left | KeyCode::Char('h') => {
                 if self.focus == Focus::Files {
                     self.explorer.collapse(&self.review);
                 } else {
-                    self.document.horizontal = self.document.horizontal.saturating_sub(4);
+                    let doc = self.active_document();
+                    doc.horizontal = doc.horizontal.saturating_sub(4);
                 }
             }
             KeyCode::Char(' ') if self.focus == Focus::Files => self.explorer.toggle(&self.review),
-            KeyCode::PageDown => self.scroll(self.page_size as isize),
-            KeyCode::PageUp => self.scroll(-(self.page_size as isize)),
+            KeyCode::PageDown => self.scroll(if self.focus == Focus::Code {
+                self.code_page_size
+            } else {
+                self.page_size
+            } as isize),
+            KeyCode::PageUp => self.scroll(
+                -(if self.focus == Focus::Code {
+                    self.code_page_size
+                } else {
+                    self.page_size
+                } as isize),
+            ),
             KeyCode::Home => {
                 if self.focus == Focus::Files {
                     self.explorer.step(isize::MIN);
                 } else {
-                    self.document.scroll = 0;
+                    self.active_document().scroll = 0;
                 }
             }
             KeyCode::End => {
                 if self.focus == Focus::Files {
                     self.explorer.step(isize::MAX);
                 } else {
-                    self.document.scroll = self.scroll_max;
+                    let max = if self.focus == Focus::Code {
+                        self.code_scroll_max
+                    } else {
+                        self.scroll_max
+                    };
+                    self.active_document().scroll = max;
                 }
             }
             KeyCode::Char('b') => {
@@ -717,9 +874,11 @@ impl Workspace {
                 };
             }
             KeyCode::Char('w') => self.why_change(false),
+            KeyCode::Char('s') if self.document.artifact.is_some() => self.select_source(0),
             KeyCode::Char('R') => self.why_change(true),
             KeyCode::Char('p') => self.saved_explanation()?,
             KeyCode::Char('d') => self.change_view(View::Diff)?,
+            KeyCode::Char('c') => self.change_view(View::SessionCode)?,
             KeyCode::Char('m') => self.mark(),
             KeyCode::Char('r') => {
                 if self.job.is_none() {
@@ -729,7 +888,10 @@ impl Workspace {
                 }
             }
             KeyCode::Enter => {
-                if self.focus == Focus::Files
+                if self.focus == Focus::Reader && self.document.source_selection.is_some() {
+                    let index = self.document.sources[self.document.source_selection.unwrap()].1;
+                    self.open_evidence(index)?;
+                } else if self.focus == Focus::Files
                     && self
                         .explorer
                         .selected()
@@ -746,12 +908,17 @@ impl Workspace {
             KeyCode::Esc => {
                 if self.job.is_some() {
                     self.cancel();
+                } else if self.focus == Focus::Reader
+                    && self.document.source_selection.take().is_some()
+                {
+                    // Leave the source list and return to reading this explanation.
                 } else if self.focus == Focus::Files && !self.explorer.filter.is_empty() {
                     self.explorer.filter.clear();
                     self.explorer.rebuild(&self.review);
-                } else if let Some((mut doc, focus)) = self.back.pop() {
+                } else if let Some((mut doc, focus, code)) = self.back.pop() {
                     self.check_freshness(&mut doc);
                     self.document = doc;
+                    self.code = code;
                     self.focus = if !self.sidebar { Focus::Reader } else { focus };
                 }
             }
@@ -772,14 +939,21 @@ impl Workspace {
         }
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Some((_, view)) = self
+                if let Some((_, index)) = self
                     .areas
-                    .tabs
+                    .sources
                     .iter()
                     .find(|(area, _)| area.contains(point))
                 {
+                    self.open_evidence(*index)?;
+                } else if let Some((_, view, focus)) = self
+                    .areas
+                    .tabs
+                    .iter()
+                    .find(|(area, _, _)| area.contains(point))
+                {
                     let view = *view;
-                    self.focus = Focus::Reader;
+                    self.focus = *focus;
                     self.change_view(view)?;
                 } else if self.areas.files.contains(point) {
                     let index =
@@ -789,6 +963,8 @@ impl Workspace {
                         self.focus = Focus::Files;
                         self.key(KeyCode::Enter, KeyModifiers::NONE)?;
                     }
+                } else if self.areas.code.contains(point) {
+                    self.focus = Focus::Code;
                 } else if self.areas.reader.contains(point) {
                     self.focus = Focus::Reader;
                 } else if self.areas.input.contains(point) {
@@ -806,6 +982,9 @@ impl Workspace {
                     self.focus = Focus::Files;
                     self.explorer.step(delta);
                     self.preview_selection();
+                } else if self.areas.code.contains(point) {
+                    self.focus = Focus::Code;
+                    self.scroll(delta);
                 } else if self.areas.reader.contains(point) {
                     self.focus = Focus::Reader;
                     self.scroll(delta);

@@ -1,0 +1,12 @@
+Generated using the built-in image_gen tool.
+
+Use case: logo-brand.
+Asset type: mascot logo for the open-source terminal tool "wy", suitable for its GitHub README and project avatar.
+Primary request: Create one distinctive, beautifully simple mascot identity that expresses curiosity and careful inspection. wy helps people review AI-generated code, browse diffs, ask about design choices, and inspect supporting evidence. It is a modest, useful tool, with a thoughtful personality.
+Subject: a small inquisitive owl, compact rounded silhouette, head tilted slightly, one eyebrow subtly raised as if asking "why?". Big attentive cream eyes with dark pupils, tiny amber beak, little folded wings, two tiny feet. Clever and approachable, with a slightly dry expression. Simple enough to recognize as a tiny icon. Give the face and silhouette original, memorable proportions.
+Style/medium: flat graphic logo illustration, bold clean shapes, restrained soft curves, crisp edges, beautifully balanced negative space, professional independent open-source project identity. Minimal interior detail.
+Palette: use the project's existing colors: deep ink navy #182335 as the main silhouette, warm ivory face, small muted mint #78DCCE accents, tiny warm amber #E7B66D beak. Keep the dark silhouette dominant.
+Composition: one centered complete owl mascot above a compact lowercase "wy" wordmark, with comfortable transparent padding. Mascot is the focus and can visually stand alone. Wordmark uses bold, rounded, carefully spaced lowercase lettering in ink navy.
+Text (verbatim): "wy". Only these two lowercase letters, no additional text.
+Background: genuine transparent alpha background.
+Avoid: gradients, 3D rendering, shadows, texture, photorealism, decorative borders, badges, circles behind the mascot, code screens, computers, magnifying glasses, hats, costumes, sparkles, robots, brains, circuit patterns, extra symbols, mockups, multiple variations on one canvas. Do not resemble the Duolingo owl; no green body, no excited expression.

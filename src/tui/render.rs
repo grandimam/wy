@@ -16,10 +16,14 @@ impl Workspace {
             return;
         }
         let area = frame.area().inner(Margin::new(1, 0));
-        let input_height = if self.editing.is_some() {
+        let inline_input = self.document.artifact.is_some()
+            && matches!(self.editing, None | Some(Input::Question));
+        let input_height = if inline_input {
+            0
+        } else if self.editing.is_some() {
             3
         } else {
-            u16::from(self.document.artifact.is_some())
+            0
         };
         let status_height = u16::from(self.job.is_some() || !self.status.is_empty());
         let rows = Layout::vertical([
@@ -32,13 +36,19 @@ impl Workspace {
         .split(area);
         self.draw_header(frame, rows[0]);
         let narrow = area.width < 88;
+        let paired = self.code.is_some() && self.document.artifact.is_some();
+        let split = paired && area.width >= 108;
         let show_files = self.sidebar && (!narrow || self.focus == Focus::Files);
         let show_reader = !show_files || !narrow;
         let file_width = if show_files {
             if narrow {
                 rows[1].width
             } else {
-                (rows[1].width / 3).clamp(28, 44)
+                if split {
+                    (rows[1].width / 5).clamp(24, 34)
+                } else {
+                    (rows[1].width / 3).clamp(28, 44)
+                }
             }
         } else {
             0
@@ -53,9 +63,24 @@ impl Workspace {
             self.draw_files(frame, columns[0]);
         }
         if show_reader {
-            self.draw_reader(frame, columns[2]);
+            if split {
+                let panes = Layout::horizontal([
+                    Constraint::Percentage(46),
+                    Constraint::Length(1),
+                    Constraint::Percentage(54),
+                ])
+                .split(columns[2]);
+                self.draw_code(frame, panes[0]);
+                self.draw_answer(frame, panes[2], inline_input);
+            } else if paired && self.focus == Focus::Code {
+                self.draw_code(frame, columns[2]);
+            } else {
+                self.draw_answer(frame, columns[2], inline_input);
+            }
         }
-        self.draw_input(frame, rows[2]);
+        if !inline_input {
+            self.draw_input(frame, rows[2]);
+        }
         let status = if let Some(job) = &self.job {
             let spinner =
                 ['◐', '◓', '◑', '◒'][(job.started.elapsed().as_millis() / 180 % 4) as usize];
@@ -82,10 +107,14 @@ impl Workspace {
             " Enter submit   Esc cancel   Ctrl+U clear"
         } else if area.width < 70 {
             " w Why this change?  Tab panes  ? help"
+        } else if self.document.source_selection.is_some() && self.focus == Focus::Reader {
+            " ↑↓ sources   Enter open   Esc read explanation   ? help"
         } else if self.document.artifact.is_some() && self.focus == Focus::Reader {
-            " d Diff   1–9 Sources   R Update answer   Esc back   ? help"
+            " s Sources   1–9 open   Tab code   R Update answer   Esc back   ? help"
         } else if self.focus == Focus::Files {
             " ↑↓ navigate   Enter read   w Why this change?   Tab panes   ? help"
+        } else if self.focus == Focus::Code {
+            " ↑↓ code   w Why this change?   Tab explanation   ? help"
         } else {
             " ↑↓ scroll   w Why this change?   Tab files   Esc back   ? help"
         };
@@ -94,6 +123,26 @@ impl Workspace {
             rows[4],
         );
     }
+    fn draw_code(&mut self, frame: &mut Frame, area: Rect) {
+        if let Some(code) = self.code.take() {
+            let answer = std::mem::replace(&mut self.document, code);
+            self.draw_reader(frame, area, Focus::Code);
+            self.code = Some(std::mem::replace(&mut self.document, answer));
+        }
+    }
+    fn draw_answer(&mut self, frame: &mut Frame, area: Rect, inline_input: bool) {
+        if inline_input {
+            let parts = Layout::vertical([
+                Constraint::Min(1),
+                Constraint::Length(if self.editing.is_some() { 3 } else { 1 }),
+            ])
+            .split(area);
+            self.draw_reader(frame, parts[0], Focus::Reader);
+            self.draw_input(frame, parts[1]);
+        } else {
+            self.draw_reader(frame, area, Focus::Reader);
+        }
+    }
     fn draw_header(&self, frame: &mut Frame, area: Rect) {
         let repo = self.root.file_name().unwrap_or_default().to_string_lossy();
         let (added, removed) = document::totals(&self.review);
@@ -101,7 +150,7 @@ impl Workspace {
             Span::styled(" wy ", Style::default().fg(BG).bg(ACCENT).bold()),
             Span::styled(format!("  {repo}  "), Style::default().fg(TEXT).bold()),
             Span::styled(
-                format!("·  {} files  ", arr(&self.review["changes"]).len()),
+                format!("·  {} files  ", explorer::files(&self.review).len()),
                 Style::default().fg(MUTED),
             ),
             Span::styled(format!("+{added} "), Style::default().fg(GREEN)),
@@ -128,8 +177,8 @@ impl Workspace {
             ))
     }
     fn draw_files(&mut self, frame: &mut Frame, area: Rect) {
-        let matched = arr(&self.review["changes"])
-            .iter()
+        let matched = explorer::files(&self.review)
+            .into_iter()
             .filter(|c| {
                 s(&c["file"])
                     .to_lowercase()
@@ -185,7 +234,15 @@ impl Workspace {
                 let suffix = match row.kind {
                     Kind::Folder => format!(" {}", row.count),
                     Kind::File if reviewed => " ✓".into(),
-                    Kind::File => format!(" +{} −{}", row.added, row.removed),
+                    Kind::File => format!(
+                        "{}{}",
+                        if row.diff {
+                            format!(" +{} −{}", row.added, row.removed)
+                        } else {
+                            String::new()
+                        },
+                        if row.session { " · session" } else { "" }
+                    ),
                     Kind::Symbol => {
                         format!(" :{}", row.target.as_ref().map(|t| t.line).unwrap_or(0))
                     }
@@ -222,7 +279,7 @@ impl Workspace {
         if items.is_empty() {
             frame.render_widget(
                 Paragraph::new(if self.explorer.filter.is_empty() {
-                    " No changed files\n r refreshes"
+                    " No changed files or session code\n r refreshes"
                 } else {
                     " No matching files\n f edits · Esc clears"
                 })
@@ -238,7 +295,7 @@ impl Workspace {
                 &mut self.explorer.state,
             );
         }
-        let detail = " ←→ folders · Space symbols";
+        let detail = " ←→ expand · Space toggle";
         frame.render_widget(
             Paragraph::new(detail)
                 .wrap(Wrap { trim: false })
@@ -251,15 +308,20 @@ impl Workspace {
             sections[2],
         );
     }
-    fn draw_reader(&mut self, frame: &mut Frame, area: Rect) {
-        self.areas.reader = area;
+    fn draw_reader(&mut self, frame: &mut Frame, area: Rect, pane: Focus) {
+        if pane == Focus::Code {
+            self.areas.code = area;
+        } else {
+            self.areas.reader = area;
+        }
         let block = self
-            .panel(self.document.kind.label(), Focus::Reader)
+            .panel(self.document.kind.label(), pane)
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let title_height = if inner.height < 6 { 1 } else { 2 };
-        let tabs_height = u16::from(inner.height >= 6);
+        let tabs_height =
+            u16::from(inner.height >= 6 && !(pane == Focus::Reader && self.areas.code.width > 0));
         let notice_height = self
             .document
             .notice
@@ -280,7 +342,16 @@ impl Workspace {
         ])
         .split(inner);
         let mut x = rows[0].x;
-        for (key, view) in [("d", View::Diff), ("w", View::Explanation)] {
+        let file = self.document.target.as_ref().map(|t| t.file.as_str());
+        let mut tabs = vec![];
+        if file.is_none_or(|f| arr(&self.review["changes"]).iter().any(|c| c["file"] == f)) {
+            tabs.push(("d", View::Diff));
+        }
+        if file.is_some_and(|f| document::recent_edit(&self.review, f).is_some()) {
+            tabs.push(("c", View::SessionCode));
+        }
+        tabs.push(("w", View::Explanation));
+        for (key, view) in tabs {
             let label = format!(" {key} {} ", view.label());
             let width = Line::from(label.as_str()).width() as u16;
             if rows[0].height == 0 || x + width > rows[0].right() {
@@ -295,7 +366,7 @@ impl Workspace {
                 }),
                 area,
             );
-            self.areas.tabs.push((area, view));
+            self.areas.tabs.push((area, view, pane));
             x += width + 1;
         }
         frame.render_widget(
@@ -315,15 +386,60 @@ impl Workspace {
                 rows[2],
             );
         }
-        let mut paragraph = Paragraph::new(self.document.lines.clone());
+        let mut lines = self.document.lines.clone();
+        let mut source_positions = vec![];
+        for (position, (line, index)) in self.document.sources.iter().enumerate() {
+            let offset = if *line == 0 {
+                0
+            } else {
+                Paragraph::new(lines[..*line].to_vec())
+                    .wrap(Wrap { trim: false })
+                    .line_count(rows[3].width)
+            };
+            let height = Paragraph::new(lines[*line].clone())
+                .wrap(Wrap { trim: false })
+                .line_count(rows[3].width)
+                .max(1);
+            if self.document.source_selection == Some(position) {
+                lines[*line] = lines[*line]
+                    .clone()
+                    .style(Style::default().fg(ACCENT).bg(SELECT).bold());
+                let scroll = usize::from(self.document.scroll);
+                if offset < scroll {
+                    self.document.scroll = offset.min(u16::MAX as usize) as u16;
+                } else if offset + height > scroll + usize::from(rows[3].height) {
+                    self.document.scroll = (offset + height)
+                        .saturating_sub(usize::from(rows[3].height))
+                        .min(u16::MAX as usize) as u16;
+                }
+            }
+            source_positions.push((offset, height, *index));
+        }
+        let mut paragraph = Paragraph::new(lines);
         if !self.document.code() {
             paragraph = paragraph.wrap(Wrap { trim: false });
         }
         let count = paragraph.line_count(rows[3].width);
-        self.scroll_max = count
+        let scroll_max = count
             .saturating_sub(rows[3].height as usize)
             .min(u16::MAX as usize) as u16;
-        self.document.scroll = self.document.scroll.min(self.scroll_max);
+        self.document.scroll = self.document.scroll.min(scroll_max);
+        for (offset, height, index) in source_positions {
+            let scroll = usize::from(self.document.scroll);
+            let top = offset.max(scroll);
+            let bottom = (offset + height).min(scroll + usize::from(rows[3].height));
+            if bottom > top {
+                self.areas.sources.push((
+                    Rect::new(
+                        rows[3].x,
+                        rows[3].y + (top - scroll) as u16,
+                        rows[3].width,
+                        (bottom - top) as u16,
+                    ),
+                    index,
+                ));
+            }
+        }
         let longest = self
             .document
             .lines
@@ -336,7 +452,14 @@ impl Workspace {
                 .saturating_sub(rows[3].width as usize)
                 .min(u16::MAX as usize) as u16,
         );
-        self.page_size = rows[3].height.saturating_sub(2).max(1);
+        let page_size = rows[3].height.saturating_sub(2).max(1);
+        if pane == Focus::Code {
+            self.code_scroll_max = scroll_max;
+            self.code_page_size = page_size;
+        } else {
+            self.scroll_max = scroll_max;
+            self.page_size = page_size;
+        }
         frame.render_widget(
             paragraph.scroll((self.document.scroll, self.document.horizontal)),
             rows[3],

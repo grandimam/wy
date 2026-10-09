@@ -1,0 +1,16 @@
+Generated using the built-in image_gen tool.
+Reference: docs/assets/wy-owl-terminal.png
+
+Use case: logo-brand.
+Asset type: upright idle mascot sprite for the interactive terminal application wy, also used as the README icon.
+Input image 1: edit target. This is the approved wy owl, but the tilt and decorative detail must be removed.
+Primary request: Redesign this owl as a very small, straight, front-facing terminal companion. Think of a tiny character that occupies a fixed few terminal cells and can blink or move its pupils while its body stays still. Deliver one neutral idle pose only.
+CRITICAL GEOMETRY: absolutely upright, zero rotation, zero head tilt. Strict bilateral symmetry of the silhouette, ears, face patches, wings and feet. Both ear tips on exactly the same horizontal row. Two equal-size eyes on exactly the same horizontal row. Pupils looking directly forward at the same height. Beak on the exact vertical centerline. Feet on the same baseline. Level shoulders. No raised eyebrow, no angled brow, no perspective or three-quarter view.
+Simplification: very compact almost-square owl, oversized head integrated into a tiny short body, two identical little ear tufts. Reduce to a few deliberate rectangular pixel clusters, approximately a 24 by 24 logical pixel grid. Two simple ivory eye patches, each with one dark square pupil. Tiny centered amber beak. Navy body, small mint wing accents, minimal tiny feet. Remove extra feather stripes, chest feather flourishes, cheek details, highlights and decorative edges. It should read as a small terminal character rather than a detailed illustration.
+Style: authentic extremely simple low-resolution pixel sprite, nearest-neighbor enlarged, hard square pixel edges, flat fills, chunky grid-aligned shapes, no antialiasing, gradients, texture, lighting, drop shadow, gloss, blur or 3D effects. Retain the original owl's general identity and palette while making its structure much simpler and more regular.
+Palette: ink navy #182335, warm ivory #FFF3D8, mint #78DCCE, tiny amber #E7B66D accents. A clean single logical-pixel mint outer edge can define the navy silhouette on both light and dark terminal backgrounds. No cream sticker border.
+Composition: square canvas, single owl centered, about 75 percent canvas occupancy, balanced transparent padding. All limbs attached, no floating parts. Complete ears and feet visible.
+Animation-oriented form: stable upright silhouette and fixed eye sockets; pupils and eyelids should be obvious small simple shapes that could later move independently. Do not show an animation strip or multiple states.
+Background: genuinely transparent alpha.
+Text: none.
+Avoid: tilted anatomy, unequal eyes, raised eyebrows, diagonal posture, rounded rendered sticker style, large body, elaborate feathers, wordmark, prompt symbols, terminal window, badges, background panels, multiple mascots.
