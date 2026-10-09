@@ -21,30 +21,9 @@ wy puts the agent's own explanation above each change it produced, straight from
 
 Your agent adds a cache. **Why was it needed, and what happens when the cached data changes?** wy shows what the agent said just before it made the edit, next to the edit itself, so you can check the stated reason and investigate the tradeoff.
 
-```
- wy  payments · 4 files                                              codex
+![wy terminal UI: the file tree on the left; on the right, the agent's numbered reason above the diff hunks it produced](docs/assets/terminal-preview.png)
 
-  ▾ src/ 2              │  src/cache.rs
-    ▾ http/ 1           │
-      ▸ client.rs +3    │  █1█ I'll keep responses in memory.  gpt-5.4
-›   ▸ cache.rs +4 −2    │  ┃ Repeated reads can then reuse a response without
-  ▾ tests/ 1            │  ┃ another network call; the upstream API is rate limited.
-      cache.rs +6       │  ┃ You asked: "Avoid fetching the same response repeatedly."
-    README.md +2 −1     │
-                        │  @@ line 10 · fn get()  +2 −1  turn ›
-                        │   fn get() {
-                        │  -    fetch()
-                        │  +    cache.get(key)
-                        │  +        .unwrap_or_else(fetch)
-                        │   }
-                        │
-                        │  @@ line 42 · fn refresh()  +1 −0  · no recorded reason
-                        │  +    log::debug!("hit");
-                        │
- ↑↓ files   Tab read   e explain   ? more
-```
-
-*Sample data. The file tree on the left; one reader on the right with each reason placed above the changes it explains. wy uses your terminal's own colours.*
+*Sample data, rendered from the app. Each numbered reason is what the agent wrote just before the edit, placed above the changes it made.*
 
 ## Get started
 

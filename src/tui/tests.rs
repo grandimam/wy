@@ -1231,11 +1231,13 @@ fn preview(name: &str, terminal: &Terminal<TestBackend>) {
         return;
     };
     let buffer = terminal.backend().buffer();
+    // Named terminal colours are written as their names; a renderer maps them to a palette.
     let color = |c: Color| match c {
         Color::Rgb(r, g, b) => json!([r, g, b]),
-        _ => Value::Null,
+        Color::Reset => Value::Null,
+        other => json!(format!("{other:?}")),
     };
-    let cells = buffer.content.iter().map(|c| json!({"text":c.symbol(),"fg":color(c.fg),"bg":color(c.bg),"bold":c.modifier.contains(Modifier::BOLD)})).collect::<Vec<_>>();
+    let cells = buffer.content.iter().map(|c| json!({"text":c.symbol(),"fg":color(c.fg),"bg":color(c.bg),"bold":c.modifier.contains(Modifier::BOLD),"reversed":c.modifier.contains(Modifier::REVERSED),"dim":c.modifier.contains(Modifier::DIM)})).collect::<Vec<_>>();
     std::fs::create_dir_all(&path).unwrap();
     std::fs::write(
         Path::new(&path).join(format!("{name}.json")),
