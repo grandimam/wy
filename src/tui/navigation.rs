@@ -81,24 +81,27 @@ impl Workspace {
                 if let Ok((_, session)) = crate::history::saved_edit(&self.root, edit) {
                     let mut review = self.review.clone();
                     review["sessions"] = serde_json::json!([{"id":session["id"],"agent":session["agent"],"storage_key":edit["session_key"]}]);
-                    return document::recorded(&review, &[session], code, &self.unfolded);
+                    return document::recorded(&review, &[session], code, self.brief);
                 }
             }
         }
-        document::recorded(&self.review, &self.sessions, code, &self.unfolded)
+        document::recorded(&self.review, &self.sessions, code, self.brief)
     }
-    pub(super) fn show_code(&mut self, mut code: Document, notes: bool) {
-        if code.kind == View::Diff && !code.annotated {
-            document::annotate(&mut code, &self.review, &self.sessions);
-        }
+    pub(super) fn show_code(&mut self, code: Document, notes: bool) {
         let key = code_key(&code);
         self.remember_view();
         if !notes {
             if let Some(saved) = self.views.iter().find(|v| v.key == key).cloned() {
                 self.document = if saved.document.kind == View::Recorded {
-                    self.answer_for(&key)
-                        .map(document::explanation)
-                        .unwrap_or(saved.document)
+                    match self.answer_for(&key) {
+                        Some(answer) => document::explanation(answer),
+                        None => {
+                            // Rebuild the reader (reasons may have changed) but keep the position.
+                            let mut doc = self.local_notes(&code);
+                            doc.scroll = saved.document.scroll;
+                            doc
+                        }
+                    }
                 } else {
                     saved.document
                 };
@@ -127,7 +130,6 @@ impl Workspace {
         if let Some(code) = code {
             self.show_code(code, true);
             self.focus = Focus::Reader;
-            self.notes_view = true;
         }
     }
     pub(super) fn show_enriched(&mut self) {

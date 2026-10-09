@@ -21,7 +21,7 @@ use navigation::{ReadingState, artifact_key, options_key};
 use ratatui::{
     prelude::*,
     widgets::{
-        Block, List, ListItem, Paragraph, Scrollbar,
+        List, ListItem, Paragraph, Scrollbar,
         ScrollbarOrientation, ScrollbarState, Wrap,
     },
 };
@@ -39,27 +39,23 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// The terminal's own palette: wy adds no backgrounds, so it follows the user's theme
+/// and works on light terminals. Hierarchy comes from bold and dim before colour.
 mod theme {
     use ratatui::style::Color;
-    pub const BG: Color = Color::Rgb(16, 22, 32);
-    pub const PANEL: Color = Color::Rgb(22, 31, 44);
-    pub const SELECT: Color = Color::Rgb(35, 57, 70);
-    pub const BORDER: Color = Color::Rgb(58, 73, 92);
-    pub const TEXT: Color = Color::Rgb(222, 230, 240);
-    pub const MUTED: Color = Color::Rgb(145, 161, 183);
-    pub const ACCENT: Color = Color::Rgb(113, 218, 199);
-    pub const GREEN: Color = Color::Rgb(149, 214, 163);
-    pub const RED: Color = Color::Rgb(243, 151, 159);
-    pub const AMBER: Color = Color::Rgb(237, 193, 129);
-    pub const ADD_BG: Color = Color::Rgb(21, 43, 36);
-    pub const REMOVE_BG: Color = Color::Rgb(48, 29, 38);
+    pub const TEXT: Color = Color::Reset;
+    pub const MUTED: Color = Color::DarkGray;
+    pub const BORDER: Color = Color::DarkGray;
+    pub const ACCENT: Color = Color::Cyan;
+    pub const GREEN: Color = Color::Green;
+    pub const RED: Color = Color::Red;
+    pub const AMBER: Color = Color::Yellow;
 }
 use theme::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Focus {
     Files,
-    Code,
     Reader,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,7 +121,6 @@ struct Areas {
     file_divider: Rect,
     files: Rect,
     reader: Rect,
-    code: Rect,
     input: Rect,
     tabs: Vec<(Rect, View, Focus)>,
     sources: Vec<(Rect, Link)>,
@@ -148,10 +143,8 @@ struct Workspace {
     editing: Option<Input>,
     draft: Option<QuestionContext>,
     sidebar: bool,
-    /// Whether the reader shows Notes (true) or Changes while browsing files.
-    notes_view: bool,
-    /// Changes whose code is unfolded in the Why view.
-    unfolded: std::collections::HashSet<String>,
+    /// Collapse every reason to its headline (w toggles).
+    brief: bool,
     pane_sizes: PaneSizes,
     dragging: Option<Divider>,
     status: String,
@@ -160,8 +153,6 @@ struct Workspace {
     areas: Areas,
     scroll_max: u16,
     page_size: u16,
-    code_scroll_max: u16,
-    code_page_size: u16,
 }
 impl Workspace {
     fn new(root: &Path) -> Result<Self> {
@@ -219,8 +210,7 @@ impl Workspace {
             editing: None,
             draft: None,
             sidebar: true,
-            notes_view: true,
-            unfolded: Default::default(),
+            brief: false,
             pane_sizes: PaneSizes::default(),
             dragging: None,
             status: String::new(),
@@ -229,8 +219,6 @@ impl Workspace {
             areas: Areas::default(),
             scroll_max: 0,
             page_size: 12,
-            code_scroll_max: 0,
-            code_page_size: 12,
         };
         app.preview_selection();
         app
@@ -333,8 +321,6 @@ impl Workspace {
     fn target(&self) -> Option<Target> {
         if self.focus == Focus::Files {
             self.explorer.target()
-        } else if self.focus == Focus::Code {
-            self.code.as_ref().and_then(|d| d.target.clone())
         } else if self.document.historical() {
             None
         } else {
@@ -422,9 +408,7 @@ impl Workspace {
         } else {
             Some(self.target()?)
         };
-        let session_edit = if self.focus == Focus::Code {
-            self.code.as_ref().and_then(|d| d.session_edit.clone())
-        } else if self.focus == Focus::Reader {
+        let session_edit = if self.focus == Focus::Reader {
             self.document.session_edit.clone().or_else(|| {
                 {
                     self.document.artifact.as_ref().and_then(|a| {
@@ -790,17 +774,15 @@ impl Workspace {
                 self.open(document::turn(&session, &edit));
                 Ok(())
             }
-            Link::Fold(id) => {
-                if !self.unfolded.remove(&id) {
-                    self.unfolded.insert(id);
-                }
-                self.rebuild_why();
+            Link::Line(line) => {
+                self.document.scroll = line.min(u16::MAX as usize) as u16;
+                self.document.source_selection = None;
                 Ok(())
             }
         }
     }
-    /// Rebuild the Why view in place, keeping the reading position.
-    fn rebuild_why(&mut self) {
+    /// Rebuild the reader for the selected file, keeping the reading position.
+    fn rebuild_reader(&mut self) {
         let Some(code) = self.code.clone() else { return };
         if self.document.kind != View::Recorded {
             return;
@@ -810,17 +792,6 @@ impl Workspace {
         self.document.scroll = scroll;
         self.document.source_selection =
             selection.filter(|&i| i < self.document.sources.len());
-    }
-    /// The hunk link nearest the top of the visible Changes.
-    fn code_link(&self) -> Option<Link> {
-        let code = self.code.as_ref().filter(|_| self.focus == Focus::Code)?;
-        let top = usize::from(code.scroll);
-        let bottom = top + usize::from(self.code_page_size) + 2;
-        code.sources
-            .iter()
-            .find(|(line, _)| (top..bottom).contains(line))
-            .or_else(|| code.sources.iter().rev().find(|(line, _)| *line < top))
-            .map(|(_, link)| link.clone())
     }
     fn open_commits(&mut self) -> Result<()> {
         let entries = crate::commits::recent(&self.root)?;
@@ -866,23 +837,7 @@ impl Workspace {
     }
     fn change_view(&mut self, view: View) -> Result<()> {
         match view {
-            View::Diff => {
-                if let Some(target) = self.required_target() {
-                    self.show_code(document::preview(&self.review, target), false);
-                    self.focus = Focus::Code;
-                }
-            }
-            View::SessionCode => {
-                if let Some(target) = self.required_target() {
-                    if let Some(doc) = document::session_code(&self.review, target) {
-                        self.show_code(doc, false);
-                        self.focus = Focus::Code;
-                    } else {
-                        self.message("No recent code excerpt was captured for this file");
-                    }
-                }
-            }
-            View::Recorded => self.show_notes(),
+            View::Diff | View::Recorded => self.show_notes(),
             View::Explanation => self.show_enriched(),
             _ => {}
         }
@@ -929,11 +884,7 @@ impl Workspace {
         Ok(())
     }
     fn scroll(&mut self, delta: isize) {
-        let max = if self.focus == Focus::Code {
-            self.code_scroll_max
-        } else {
-            self.scroll_max
-        };
+        let max = self.scroll_max;
         let doc = self.active_document();
         doc.source_selection = None;
         doc.scroll = doc
@@ -942,11 +893,7 @@ impl Workspace {
             .min(max);
     }
     fn active_document(&mut self) -> &mut Document {
-        if self.focus == Focus::Code {
-            self.code.as_mut().unwrap_or(&mut self.document)
-        } else {
-            &mut self.document
-        }
+        &mut self.document
     }
     fn select_source(&mut self, delta: isize) {
         if self.document.sources.is_empty() {
@@ -1023,12 +970,8 @@ impl Workspace {
                 self.focus = Focus::Files;
             }
             KeyCode::Tab => {
-                let paired = self.code.is_some();
                 self.focus = match self.focus {
-                    Focus::Files if paired && !self.notes_view => Focus::Code,
                     Focus::Files => Focus::Reader,
-                    Focus::Code => Focus::Reader,
-                    Focus::Reader if paired => Focus::Code,
                     Focus::Reader => {
                         self.sidebar = true;
                         Focus::Files
@@ -1076,18 +1019,8 @@ impl Workspace {
                 }
             }
             KeyCode::Char(' ') if self.focus == Focus::Files => self.explorer.toggle(&self.review),
-            KeyCode::PageDown => self.scroll(if self.focus == Focus::Code {
-                self.code_page_size
-            } else {
-                self.page_size
-            } as isize),
-            KeyCode::PageUp => self.scroll(
-                -(if self.focus == Focus::Code {
-                    self.code_page_size
-                } else {
-                    self.page_size
-                } as isize),
-            ),
+            KeyCode::PageDown => self.scroll(self.page_size as isize),
+            KeyCode::PageUp => self.scroll(-(self.page_size as isize)),
             KeyCode::Home => {
                 if self.focus == Focus::Files {
                     self.explorer.step(isize::MIN);
@@ -1103,12 +1036,7 @@ impl Workspace {
                 } else if self.document.kind == View::Commits {
                     self.select_source(isize::MAX);
                 } else {
-                    let max = if self.focus == Focus::Code {
-                        self.code_scroll_max
-                    } else {
-                        self.scroll_max
-                    };
-                    self.active_document().scroll = max;
+                    self.document.scroll = self.scroll_max;
                 }
             }
             KeyCode::Char('b') => {
@@ -1119,15 +1047,17 @@ impl Workspace {
                     Focus::Reader
                 };
             }
-            KeyCode::Char('w' | 'e') => self.why_change(false),
+            KeyCode::Char('e') => self.why_change(false),
+            KeyCode::Char('w') => {
+                self.brief = !self.brief;
+                self.rebuild_reader();
+            }
             KeyCode::Char('o') => self.show_notes(),
             KeyCode::Char('v') => self.show_enriched(),
             KeyCode::Char('x') => self.cancel(),
             KeyCode::Char('s') if !self.document.sources.is_empty() => self.select_source(0),
             KeyCode::Char('R') => self.why_change(true),
             KeyCode::Char('p') => self.saved_explanation()?,
-            KeyCode::Char('d') => self.change_view(View::Diff)?,
-            KeyCode::Char('c') => self.change_view(View::Diff)?,
             KeyCode::Char('m') => self.mark(),
             KeyCode::Char('r') => {
                 if self.job.is_none() {
@@ -1149,10 +1079,6 @@ impl Workspace {
                     && !self.document.sources.is_empty()
                 {
                     self.select_source(0);
-                } else if self.focus == Focus::Code
-                    && let Some(link) = self.code_link()
-                {
-                    self.follow(link)?;
                 } else if self.focus == Focus::Files
                     && self
                         .explorer
@@ -1161,7 +1087,11 @@ impl Workspace {
                 {
                     self.explorer.toggle(&self.review);
                 } else {
-                    self.change_view(View::Diff)?;
+                    // Enter in the tree moves into the reader for this file.
+                    if self.focus == Focus::Files {
+                        self.preview_selection();
+                    }
+                    self.focus = Focus::Reader;
                 }
             }
             KeyCode::Char(c @ '1'..='9') => {
@@ -1216,23 +1146,20 @@ impl Workspace {
                     .find(|(area, _, _)| area.contains(point))
                 {
                     let (view, focus) = (*view, *focus);
-                    if view == View::Diff && self.code.is_some() {
-                        // The Changes tab only switches what the reader shows.
-                        self.focus = Focus::Code;
-                    } else {
-                        self.focus = focus;
-                        self.change_view(view)?;
-                    }
+                    self.focus = focus;
+                    self.change_view(view)?;
                 } else if self.areas.files.contains(point) {
                     let index =
                         self.explorer.state.offset() + usize::from(event.row - self.areas.files.y);
                     if index < self.explorer.rows.len() {
                         self.explorer.state.select(Some(index));
                         self.focus = Focus::Files;
-                        self.key(KeyCode::Enter, KeyModifiers::NONE)?;
+                        // A click previews the file (or toggles a folder) without leaving the tree.
+                        if self.explorer.selected().is_some_and(|r| r.kind == Kind::Folder) {
+                            self.explorer.toggle(&self.review);
+                        }
+                        self.preview_selection();
                     }
-                } else if self.areas.code.contains(point) {
-                    self.focus = Focus::Code;
                 } else if self.areas.reader.contains(point) {
                     self.focus = Focus::Reader;
                 } else if self.areas.input.contains(point) {
@@ -1261,9 +1188,6 @@ impl Workspace {
                     self.focus = Focus::Files;
                     self.explorer.step(delta);
                     self.preview_selection();
-                } else if self.areas.code.contains(point) {
-                    self.focus = Focus::Code;
-                    self.scroll(delta);
                 } else if self.areas.reader.contains(point) {
                     self.focus = Focus::Reader;
                     self.scroll(delta);

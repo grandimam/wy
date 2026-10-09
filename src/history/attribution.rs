@@ -44,6 +44,9 @@ fn hunks(diff: &str) -> Vec<(usize, Lines)> {
     for (index, line) in diff.lines().enumerate() {
         if line.starts_with("@@") {
             result.push((index, Lines::default()));
+        } else if result.is_empty() && line.starts_with('+') && !line.starts_with("+++") {
+            result.push((index, Lines::default()));
+            result.last_mut().unwrap().1.added.extend(significant(line.strip_prefix('+').unwrap()));
         } else if let Some((_, hunk)) = result.last_mut() {
             if let Some(text) = line.strip_prefix('+').filter(|_| !line.starts_with("+++")) {
                 hunk.added.extend(significant(text));
@@ -179,6 +182,9 @@ fn hunk_blocks(diff: &str) -> Vec<(usize, String)> {
         } else if let Some((_, text)) = result.last_mut() {
             text.push_str(line);
             text.push('\n');
+        } else if line.starts_with('+') && !line.starts_with("+++") {
+            // A diff with no hunk headers (e.g. a whole new file): treat it as one hunk.
+            result.push((index, format!("@@ +1 @@\n{line}\n")));
         }
     }
     result
@@ -218,42 +224,44 @@ pub fn headline(text: &str) -> (String, String) {
     (text[..end].trim().to_owned(), text[end..].trim().to_owned())
 }
 
-/// The agent's reasons for the changes to one file, in conversation order.
+/// The agent's reasons for the changes to one file, with the hunks in file order.
 ///
 /// Each reason is the agent message written just before an edit, with the user
 /// request that started that turn and the agent's next message. Hunks produced by
-/// the same message are grouped under it. Hunks that match no recorded edit are
-/// returned separately, so they are shown without a made-up reason.
+/// the same message share one reason; `hunks[i].reason` is its index (null when no
+/// recorded edit matches) and `first` marks the hunk where that reason first appears.
+/// Reasons are numbered by that first appearance, so the view reads top to bottom.
 pub fn reasons(root: &Path, sessions: &[Value], file: &str, diff: Option<&str>) -> Value {
     let edits = edits(root, sessions, Some(file));
     // (edit, change) pairs: current hunks when the file has a diff, else the recorded edits.
-    let mut pairs: Vec<(Value, Value)> = vec![];
-    let mut unexplained = vec![];
+    let mut pairs: Vec<(Option<Value>, Value)> = vec![];
     if let Some(diff) = diff {
         let sources = hunk_sources(diff, &edits);
         for ((line, text), source) in hunk_blocks(diff).into_iter().zip(sources) {
             let (added, removed) = edit_size(&json!({"format":"patch","text":text}));
             let header = text.lines().next().unwrap_or("");
             let change = json!({"id":format!("{file}:{line}"),"label":hunk_label(header),"text":text,
-                "added":added,"removed":removed,"status":source["status"]});
-            if source["edit"].is_object() {
-                pairs.push((source["edit"].clone(), change));
-            } else {
-                unexplained.push(change);
-            }
+                "format":"patch","added":added,"removed":removed,"status":source["status"]});
+            pairs.push((source["edit"].as_object().map(|_| source["edit"].clone()), change));
         }
     } else {
         for edit in &edits {
             let (added, removed) = edit_size(edit);
             let change = json!({"id":format!("{file}:{}",s(&edit["id"])),"label":"recorded edit",
                 "text":edit["text"],"format":edit["format"],"added":added,"removed":removed,"status":"recorded"});
-            pairs.push((edit.clone(), change));
+            pairs.push((Some(edit.clone()), change));
         }
     }
     let mut groups: Vec<Value> = vec![];
-    for (edit, change) in pairs {
-        let Some(session) = sessions.iter().find(|x| x["id"] == edit["session_id"]) else {
-            unexplained.push(change);
+    let mut hunks = vec![];
+    for (edit, mut change) in pairs {
+        let session = edit
+            .as_ref()
+            .and_then(|e| sessions.iter().find(|x| x["id"] == e["session_id"]));
+        let (Some(edit), Some(session)) = (edit, session) else {
+            change["reason"] = Value::Null;
+            change["first"] = json!(false);
+            hunks.push(change);
             continue;
         };
         let turn = turn(session, &edit["event_id"]);
@@ -269,22 +277,27 @@ pub fn reasons(root: &Path, sessions: &[Value], file: &str, diff: Option<&str>) 
             .map(|e| s(&e["id"]))
             .unwrap_or(s(&edit["event_id"]));
         let key = format!("{}:{anchor}", s(&session["id"]));
-        if let Some(group) = groups.iter_mut().find(|g| g["key"] == key) {
-            if !arr(&group["changes"]).iter().any(|c| c["id"] == change["id"]) {
-                group["changes"].as_array_mut().unwrap().push(change);
+        let index = match groups.iter().position(|g| g["key"] == key) {
+            Some(index) => index,
+            None => {
+                let model = message
+                    .and_then(|m| m["model"].as_str())
+                    .or_else(|| {
+                        arr(&session["events"])
+                            .iter()
+                            .find(|e| e["id"] == edit["event_id"])
+                            .and_then(|e| e["model"].as_str())
+                    });
+                groups.push(json!({"key":key,"agent":session["agent"],"model":model,"session_id":session["id"],
+                    "message":message,"request":request,"after":after,"edit":edit}));
+                groups.len() - 1
             }
-            continue;
-        }
-        groups.push(json!({"key":key,"agent":session["agent"],"session_id":session["id"],
-            "message":message,"request":request,"after":after,"changes":[change],
-            "order":[edit["timestamp"],edit["source_line"]]}));
+        };
+        change["reason"] = json!(index);
+        change["first"] = json!(!hunks.iter().any(|h: &Value| h["reason"] == json!(index)));
+        hunks.push(change);
     }
-    groups.sort_by(|a, b| {
-        s(&a["order"][0])
-            .cmp(s(&b["order"][0]))
-            .then_with(|| crate::n(&a["order"][1]).cmp(&crate::n(&b["order"][1])))
-    });
-    json!({"reasons":groups,"unexplained":unexplained})
+    json!({"reasons":groups,"hunks":hunks})
 }
 
 #[cfg(test)]
@@ -366,10 +379,14 @@ mod tests {
         assert_eq!(reasons[0]["message"]["id"], "2");
         assert_eq!(reasons[0]["request"]["id"], "1");
         assert_eq!(reasons[0]["after"]["id"], "4");
-        assert_eq!(reasons[0]["changes"][0]["label"], "line 10");
-        assert_eq!(reasons[0]["changes"][0]["status"], "agent");
+        let hunks = arr(&result["hunks"]);
+        assert_eq!(hunks.len(), 2);
+        assert_eq!(hunks[0]["label"], "line 10");
+        assert_eq!(hunks[0]["status"], "agent");
+        assert_eq!(hunks[0]["reason"], 0);
+        assert_eq!(hunks[0]["first"], true);
         // The logging hunk has no recorded edit, so it carries no reason.
-        assert_eq!(arr(&result["unexplained"]).len(), 1);
-        assert_eq!(result["unexplained"][0]["added"], 1);
+        assert!(hunks[1]["reason"].is_null());
+        assert_eq!(hunks[1]["added"], 1);
     }
 }

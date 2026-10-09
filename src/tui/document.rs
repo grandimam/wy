@@ -25,8 +25,8 @@ pub(super) enum Link {
     Source(usize),
     /// The conversation turn that recorded an edit.
     Turn(Value),
-    /// Show or hide the code of one change in the Why view.
-    Fold(String),
+    /// Scroll the reader to a line (a reason's first change, or back to the reason).
+    Line(usize),
 }
 #[derive(Clone)]
 pub(super) struct Document {
@@ -43,8 +43,6 @@ pub(super) struct Document {
     pub notice: Option<(String, Color)>,
     pub commits: Vec<String>,
     pub originals: Vec<Value>,
-    /// Diff hunks already carry their agent-edit labels.
-    pub annotated: bool,
 }
 impl Document {
     pub fn new(kind: View, title: impl Into<String>) -> Self {
@@ -62,7 +60,6 @@ impl Document {
             notice: None,
             commits: vec![],
             originals: vec![],
-            annotated: false,
         }
     }
     pub fn code(&self) -> bool {
@@ -89,10 +86,7 @@ impl Document {
         )];
         if !agent.is_empty() {
             spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                format!(" {agent} "),
-                Style::default().fg(BG).bg(agent_color(agent)),
-            ));
+            spans.push(Span::styled(agent.to_owned(), Style::default().fg(MUTED)));
         }
         self.lines.push(Line::from(spans));
     }
@@ -107,13 +101,6 @@ impl Document {
     }
 }
 
-pub(super) fn agent_color(agent: &str) -> Color {
-    match agent {
-        "claude" => AMBER,
-        "codex" => ACCENT,
-        _ => MUTED,
-    }
-}
 
 pub(super) fn empty(review: &Value) -> Document {
     let mut doc = Document::new(View::Empty, "Changes");
@@ -194,11 +181,11 @@ pub(super) fn recorded_code(edit: &Value) -> Document {
             );
         } else {
             let style = if line.starts_with('+') {
-                Style::default().fg(GREEN).bg(ADD_BG)
+                Style::default().fg(GREEN)
             } else if line.starts_with('-') {
-                Style::default().fg(RED).bg(REMOVE_BG)
+                Style::default().fg(RED)
             } else if line.starts_with("@@") {
-                Style::default().fg(ACCENT).bg(PANEL)
+                Style::default().fg(ACCENT)
             } else {
                 Style::default().fg(TEXT)
             };
@@ -232,11 +219,11 @@ pub(super) fn diff(review: &Value, target: Target) -> Document {
         let skipped = diff_header(s(&change["diff"]));
         for line in s(&change["diff"]).lines().skip(skipped) {
             let style = if line.starts_with('+') {
-                Style::default().fg(GREEN).bg(ADD_BG)
+                Style::default().fg(GREEN)
             } else if line.starts_with('-') {
-                Style::default().fg(RED).bg(REMOVE_BG)
+                Style::default().fg(RED)
             } else if line.starts_with("@@") {
-                Style::default().fg(ACCENT).bg(PANEL)
+                Style::default().fg(ACCENT)
             } else {
                 Style::default().fg(TEXT)
             };
@@ -290,12 +277,13 @@ pub(super) fn citations(artifact: &Value) -> Vec<Value> {
         presentation::citations(artifact)
     }
 }
-/// The Why view: the agent's reasons for this file's changes, code folded underneath.
+/// The reader: this file's changes in order, each reason placed just above the
+/// hunks it explains. `brief` collapses every reason to its headline.
 pub(super) fn recorded(
     review: &Value,
     sessions: &[Value],
     code: &Document,
-    open: &std::collections::HashSet<String>,
+    brief: bool,
 ) -> Document {
     let target = code.target.clone().expect("code has a target");
     let notes = crate::history::notes(
@@ -311,27 +299,27 @@ pub(super) fn recorded(
             "evidence":notes["evidence"],"note_refs":notes["note_refs"],"gaps":notes["gaps"]}}),
     );
     let mut doc = Document::new(View::Recorded, target.label());
-    doc.target = Some(target);
+    doc.target = Some(target.clone());
     doc.session_edit = code.session_edit.clone();
     let root = std::path::Path::new(s(&review["root"]));
-    let file = doc.target.as_ref().map(|t| t.file.clone()).unwrap_or_default();
-    let found = attribution::reasons(root, sessions, &file, change_diff(review, &file));
+    let diff = change_diff(review, &target.file);
+    if diff.is_none() {
+        doc.notice = Some((
+            "No current Git diff · showing the recorded session edit, which may differ from the file now".into(),
+            AMBER,
+        ));
+    }
+    let mut found = attribution::reasons(root, sessions, &target.file, diff);
+    // A recorded edit kept from an earlier review may no longer have its session loaded.
+    if diff.is_none() && arr(&found["hunks"]).is_empty() {
+        if let Some(edit) = recent_edit(review, &target.file) {
+            let (added, removed) = attribution::edit_size(edit);
+            found["hunks"] = serde_json::json!([{"id":edit["id"],"label":"recorded edit","text":edit["text"],
+                "format":edit["format"],"added":added,"removed":removed,"status":"recorded","reason":null,"first":false}]);
+        }
+    }
     let reasons = arr(&found["reasons"]);
-    let unexplained = arr(&found["unexplained"]);
-    for (number, reason) in reasons.iter().enumerate() {
-        why(&mut doc, number + 1, reason, open);
-    }
-    if !unexplained.is_empty() {
-        if !reasons.is_empty() {
-            doc.heading("Changed without a recorded reason");
-        } else {
-            doc.text("No recorded reason for these changes.", MUTED);
-        }
-        doc.gap();
-        for change in unexplained {
-            fold(&mut doc, change, open);
-        }
-    }
+    let hunks = arr(&found["hunks"]);
     // Without a matching edit, fall back to conversation that mentions this file.
     let evidence = arr(&notes["evidence"]);
     if reasons.is_empty() && !evidence.is_empty() {
@@ -339,9 +327,8 @@ pub(super) fn recorded(
         doc.text("Matched by file mentions, not by a recorded edit.", MUTED);
         doc.gap();
         related(&mut doc, evidence);
-    }
-    if reasons.is_empty() && unexplained.is_empty() && evidence.is_empty() {
-        doc.text("No changes recorded for this file.", MUTED);
+        doc.heading("Changes");
+        doc.gap();
     }
     if reasons.is_empty() {
         for gap in arr(&notes["gaps"]) {
@@ -349,8 +336,32 @@ pub(super) fn recorded(
             doc.gap();
         }
     }
+    let mut first_lines = vec![0; reasons.len()];
+    for hunk in hunks {
+        if let Some(index) = hunk["reason"].as_u64().map(|i| i as usize) {
+            if hunk["first"] == true {
+                first_lines[index] = doc.lines.len();
+                why(&mut doc, index + 1, &reasons[index], brief);
+            } else {
+                doc.sources.push((doc.lines.len(), Link::Line(first_lines[index])));
+                doc.lines.push(Line::from(vec![
+                    Span::styled("↑ ", Style::default().fg(ACCENT)),
+                    badge(index + 1),
+                    Span::styled(" same reason as above", Style::default().fg(MUTED)),
+                ]));
+            }
+        }
+        change(&mut doc, hunk, reasons.get(hunk["reason"].as_u64().unwrap_or(u64::MAX) as usize));
+    }
+    if hunks.is_empty() {
+        doc.text("No changes recorded for this file.", MUTED);
+    }
     doc.artifact = Some(artifact);
     doc
+}
+/// The model that wrote a message, falling back to the agent CLI name.
+fn who_wrote<'a>(event: &'a Value, agent: &'a str) -> &'a str {
+    event["model"].as_str().filter(|m| !m.is_empty()).unwrap_or(agent)
 }
 fn change_diff<'a>(review: &'a Value, file: &str) -> Option<&'a str> {
     arr(&review["changes"])
@@ -358,43 +369,57 @@ fn change_diff<'a>(review: &'a Value, file: &str) -> Option<&'a str> {
         .find(|c| c["file"] == file)
         .and_then(|c| c["diff"].as_str())
 }
-/// One reason: the agent's headline, the rest of its message, the request, and its changes.
-fn why(doc: &mut Document, number: usize, reason: &Value, open: &std::collections::HashSet<String>) {
+/// The reason number as a solid badge, so it stands out from code and prose.
+fn badge(number: usize) -> Span<'static> {
+    Span::styled(
+        format!(" {number} "),
+        Style::default()
+            .fg(ACCENT)
+            .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+    )
+}
+/// One reason block: a numbered badge and the headline, then (unless brief)
+/// the rest of its message and the request that led to it.
+fn why(doc: &mut Document, number: usize, reason: &Value, brief: bool) {
     let message = &reason["message"];
-    let agent = s(&reason["agent"]);
+    let agent = reason["model"].as_str().unwrap_or(s(&reason["agent"]));
     let text = s(&message["text"]);
     let (title, rest) = if text.is_empty() {
         ("No message before this change".to_owned(), String::new())
     } else {
         attribution::headline(text)
     };
-    let mut spans = vec![
-        Span::styled(format!("{number}  "), Style::default().fg(MUTED)),
-        Span::styled(title, Style::default().fg(TEXT).bold()),
-    ];
-    if !agent.is_empty() {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            format!(" {agent} "),
-            Style::default().fg(BG).bg(agent_color(agent)),
-        ));
-    }
-    doc.lines.push(Line::from(spans));
+    let bar = Span::styled("┃ ", Style::default().fg(ACCENT));
+    doc.lines.push(Line::from(vec![
+        badge(number),
+        Span::raw(" "),
+        Span::styled(title, Style::default().fg(ACCENT).bold()),
+        Span::styled(format!("  {agent}"), Style::default().fg(MUTED)),
+    ]));
     if message.is_object() && !crate::history::provenance::original(message) {
-        doc.text(format!("   {}", crate::history::provenance::label(message)), AMBER);
+        doc.lines.push(Line::from(vec![
+            bar.clone(),
+            Span::styled(crate::history::provenance::label(message), Style::default().fg(AMBER)),
+        ]));
     }
-    if !rest.is_empty() {
-        let rest = crate::security::short(&rest, 900);
-        doc.text(indent(&rest), TEXT);
-    }
-    if let Some(request) = reason["request"]["text"].as_str() {
-        doc.text(
-            indent(&format!("You asked: “{}”", crate::security::short(request.trim(), 240))),
-            MUTED,
-        );
-    }
-    for change in arr(&reason["changes"]) {
-        fold(doc, change, open);
+    if !brief {
+        if !rest.is_empty() {
+            for line in crate::security::short(&rest, 900).lines() {
+                doc.lines.push(Line::from(vec![
+                    bar.clone(),
+                    Span::styled(line.to_owned(), Style::default().fg(TEXT)),
+                ]));
+            }
+        }
+        if let Some(request) = reason["request"]["text"].as_str() {
+            doc.lines.push(Line::from(vec![
+                bar.clone(),
+                Span::styled(
+                    format!("You asked: “{}”", crate::security::short(request.trim(), 240)),
+                    Style::default().fg(MUTED),
+                ),
+            ]));
+        }
     }
     doc.gap();
 }
@@ -415,7 +440,7 @@ fn related(doc: &mut Document, evidence: &[Value]) {
         let original = crate::history::provenance::original(event);
         let user = event["role"] == "user";
         let who = if !original { "Captured context" } else if user { "You" } else { "Agent" };
-        doc.speaker_line(who, if user { "" } else { s(&event["agent"]) });
+        doc.speaker_line(who, if user { "" } else { who_wrote(event, s(&event["agent"])) });
         if !original {
             doc.text(crate::history::provenance::label(event), AMBER);
         }
@@ -429,81 +454,42 @@ fn related(doc: &mut Document, evidence: &[Value]) {
         doc.gap();
     }
 }
-fn indent(text: &str) -> String {
-    text.lines().map(|l| format!("   {l}")).collect::<Vec<_>>().join("\n")
-}
-/// A folded change: `▸ line 10  +2 −1`; its code is shown when open.
-fn fold(doc: &mut Document, change: &Value, open: &std::collections::HashSet<String>) {
-    let id = s(&change["id"]).to_owned();
-    let shown = open.contains(&id);
+/// One hunk: `@@ line 10 · fn get()  +2 −1`, a status when needed, then its lines.
+/// The header opens the turn that made the change when a recorded edit matched.
+fn change(doc: &mut Document, hunk: &Value, reason: Option<&Value>) {
     let mut spans = vec![
-        Span::styled(if shown { "   ▾ " } else { "   ▸ " }, Style::default().fg(ACCENT)),
-        Span::styled(s(&change["label"]).to_owned(), Style::default().fg(TEXT)),
+        Span::styled("@@ ", Style::default().fg(ACCENT)),
+        Span::styled(s(&hunk["label"]).to_owned(), Style::default().fg(ACCENT).bold()),
         Span::styled(
-            format!("  +{} −{}", n(&change["added"]), n(&change["removed"])),
+            format!("  +{} −{}", n(&hunk["added"]), n(&hunk["removed"])),
             Style::default().fg(MUTED),
         ),
     ];
-    match s(&change["status"]) {
+    match s(&hunk["status"]) {
         "partial" => spans.push(Span::styled("  · edited after", Style::default().fg(AMBER))),
-        "recorded" => spans.push(Span::styled("  · recorded edit", Style::default().fg(MUTED))),
+        "none" => spans.push(Span::styled("  · no recorded reason", Style::default().fg(MUTED))),
         _ => {}
     }
-    doc.sources.push((doc.lines.len(), Link::Fold(id)));
-    doc.lines.push(Line::from(spans));
-    if !shown {
-        return;
+    if let Some(edit) = reason.map(|r| &r["edit"]).filter(|e| e.is_object()) {
+        spans.push(Span::styled("  turn ›", Style::default().fg(MUTED)));
+        doc.sources.push((doc.lines.len(), Link::Turn(edit.clone())));
     }
-    for line in s(&change["text"]).lines() {
-        let style = if line.starts_with('+') || change["format"] == "code" {
-            Style::default().fg(GREEN).bg(ADD_BG)
+    doc.lines.push(Line::from(spans));
+    for line in s(&hunk["text"]).lines().skip(usize::from(hunk["format"] == "patch")) {
+        let style = if line.starts_with('+') || hunk["format"] == "code" {
+            Style::default().fg(GREEN)
         } else if line.starts_with('-') {
-            Style::default().fg(RED).bg(REMOVE_BG)
-        } else if line.starts_with("@@") {
-            Style::default().fg(MUTED)
+            Style::default().fg(RED)
         } else {
             Style::default().fg(TEXT)
         };
-        doc.lines
-            .push(Line::styled(format!("     {}", line.replace('\t', "    ")), style));
+        doc.lines.push(Line::styled(line.replace('\t', "    "), style));
     }
+    doc.gap();
 }
 /// Lines before the first hunk (`diff --git`, `---`, `+++`).
 fn diff_header(diff: &str) -> usize {
     diff.lines().take_while(|l| !l.starts_with("@@")).count()
-}
-/// Mark each diff hunk with the recorded agent edit that produced it, if any.
-/// Files without any recorded agent edit get no labels.
-pub(super) fn annotate(doc: &mut Document, review: &Value, sessions: &[Value]) {
-    doc.annotated = true;
-    let Some(target) = doc.target.clone() else { return };
-    let Some(diff) = change_diff(review, &target.file) else { return };
-    let root = std::path::Path::new(s(&review["root"]));
-    let edits = attribution::edits(root, sessions, Some(&target.file));
-    if edits.is_empty() {
-        return;
-    }
-    let skipped = diff_header(diff);
-    for hunk in attribution::hunk_sources(diff, &edits) {
-        let index = n(&hunk["line"]) - skipped;
-        let Some(line) = doc.lines.get_mut(index) else { continue };
-        let agent = s(&hunk["edit"]["agent"]);
-        let mut spans = vec![Span::raw("   ")];
-        match s(&hunk["status"]) {
-            "agent" => spans.push(Span::styled("Agent ", Style::default().fg(TEXT).bold())),
-            "partial" => spans.push(Span::styled("Partly agent ", Style::default().fg(AMBER).bold())),
-            _ => spans.push(Span::styled("no recorded agent edit", Style::default().fg(MUTED))),
-        }
-        if !agent.is_empty() {
-            spans.push(Span::styled(
-                format!(" {agent} "),
-                Style::default().fg(BG).bg(agent_color(agent)),
-            ));
-            spans.push(Span::styled(" turn ›", Style::default().fg(ACCENT)));
-            doc.sources.push((index, Link::Turn(hunk["edit"].clone())));
-        }
-        line.spans.extend(spans);
-    }
 }
 /// The conversation around one recorded edit, with the edit itself in place.
 pub(super) fn turn(session: &Value, edit: &Value) -> Document {
@@ -519,9 +505,9 @@ pub(super) fn turn(session: &Value, edit: &Value) -> Document {
             ]));
             for line in s(&edit["text"]).lines() {
                 let style = if line.starts_with('+') || edit["format"] == "code" {
-                    Style::default().fg(GREEN).bg(ADD_BG)
+                    Style::default().fg(GREEN)
                 } else if line.starts_with('-') {
-                    Style::default().fg(RED).bg(REMOVE_BG)
+                    Style::default().fg(RED)
                 } else {
                     Style::default().fg(MUTED)
                 };
@@ -533,7 +519,7 @@ pub(super) fn turn(session: &Value, edit: &Value) -> Document {
         let original = crate::history::provenance::original(&event);
         let user = event["kind"] == "user";
         let who = if !original { "Captured context" } else if user { "You" } else { "Agent" };
-        doc.speaker_line(who, if user { "" } else { s(&session["agent"]) });
+        doc.speaker_line(who, if user { "" } else { who_wrote(&event, s(&session["agent"])) });
         if !original {
             doc.text(crate::history::provenance::label(&event), AMBER);
         }
@@ -742,7 +728,7 @@ pub(super) fn evidence(artifact: Arc<Value>, index: usize) -> Option<Document> {
         "Saved with this explanation. This excerpt may differ from current source.",
         MUTED,
     );
-    for key in ["agent", "role", "session_id", "event_id"] {
+    for key in ["agent", "model", "role", "session_id", "event_id"] {
         if let Some(value) = e[key].as_str() {
             doc.text(format!("{key}: {value}"), MUTED);
         }

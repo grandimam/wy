@@ -77,6 +77,7 @@ pub fn records(root: &Path, session: &Value, key: &str) -> Vec<Value> {
                 s(&edit["text"])
             )));
             record["agent"] = session["agent"].clone();
+            record["model"] = event["model"].clone();
             record["session_id"] = session["id"].clone();
             record["session_key"] = json!(key);
             record["session_path"] = session["path"].clone();

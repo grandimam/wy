@@ -4,10 +4,6 @@ use super::*;
 
 impl Workspace {
     pub(super) fn draw(&mut self, frame: &mut Frame) {
-        frame.render_widget(
-            Block::default().style(Style::default().bg(BG).fg(TEXT)),
-            frame.area(),
-        );
         self.areas = Areas::default();
         if frame.area().width < 32 || frame.area().height < 10 {
             frame.render_widget(
@@ -51,19 +47,9 @@ impl Workspace {
             self.areas.file_divider = columns[1];
             self.draw_divider(frame, columns[1]);
         }
-        // The reader remembers whether Changes or Notes was last shown.
-        match self.focus {
-            Focus::Reader => self.notes_view = true,
-            Focus::Code => self.notes_view = false,
-            Focus::Files => {}
-        }
         if show_reader {
             let reader = columns[2].inner(Margin::new(2, 0));
-            if self.shows_changes() {
-                self.draw_code(frame, reader);
-            } else {
-                self.draw_reader(frame, reader, Focus::Reader);
-            }
+            self.draw_reader(frame, reader);
         }
         self.draw_status(frame, rows[3]);
         if self.editing.is_some() {
@@ -72,27 +58,11 @@ impl Workspace {
             self.draw_keys(frame, rows[4]);
         }
     }
-    /// Changes is shown for the selected file unless Notes (or another view) is active.
-    fn shows_changes(&self) -> bool {
-        self.code.is_some()
-            && match self.focus {
-                Focus::Code => true,
-                Focus::Files => !self.notes_view,
-                Focus::Reader => false,
-            }
-    }
-    fn draw_code(&mut self, frame: &mut Frame, area: Rect) {
-        if let Some(code) = self.code.take() {
-            let answer = std::mem::replace(&mut self.document, code);
-            self.draw_reader(frame, area, Focus::Code);
-            self.code = Some(std::mem::replace(&mut self.document, answer));
-        }
-    }
     fn draw_header(&mut self, frame: &mut Frame, area: Rect) {
         let repo = self.root.file_name().unwrap_or_default().to_string_lossy();
         let files = explorer::files(&self.review).len();
         let title = Line::from(vec![
-            Span::styled(" wy ", Style::default().fg(BG).bg(ACCENT).bold()),
+            Span::styled(" wy", Style::default().fg(ACCENT).bold()),
             Span::styled(format!("  {repo}"), Style::default().fg(TEXT).bold()),
             Span::styled(
                 format!(" · {files} file{}", if files == 1 { "" } else { "s" }),
@@ -101,8 +71,8 @@ impl Workspace {
         ]);
         frame.render_widget(Paragraph::new(title), area);
         let agent = Line::from(Span::styled(
-            format!(" {} ", self.agent),
-            Style::default().fg(BG).bg(document::agent_color(&self.agent)),
+            format!("{} ", self.agent),
+            Style::default().fg(MUTED),
         ));
         frame.render_widget(Paragraph::new(agent).right_aligned(), area);
     }
@@ -208,9 +178,9 @@ impl Workspace {
             );
         } else {
             let highlight = if self.focus == Focus::Files {
-                Style::default().bg(SELECT).bold()
+                Style::default().add_modifier(Modifier::REVERSED)
             } else {
-                Style::default().bg(PANEL)
+                Style::default().bold()
             };
             frame.render_stateful_widget(
                 List::new(items)
@@ -221,47 +191,25 @@ impl Workspace {
             );
         }
     }
-    /// Title on the left, Changes · Notes · Enriched on the right.
-    fn draw_title(&mut self, frame: &mut Frame, area: Rect, pane: Focus) {
-        let mut tabs = vec![];
-        if self.code.is_some() || pane == Focus::Code {
-            tabs.push(("Why", View::Recorded, Focus::Reader));
-            tabs.push(("Code", View::Diff, Focus::Code));
-            if self
-                .current_key()
-                .is_some_and(|k| self.answer_for(&k).is_some())
-            {
-                tabs.push(("Enriched", View::Explanation, Focus::Reader));
-            }
-        }
-        let active = |view: View| match view {
-            View::Diff => pane == Focus::Code,
-            other => pane == Focus::Reader && self.document.kind == other,
-        };
+    /// Title on the left; an Enriched tab on the right when a saved answer exists.
+    fn draw_title(&mut self, frame: &mut Frame, area: Rect) {
         let mut x = area.right();
-        let mut placed = vec![];
-        for (label, view, focus) in tabs.into_iter().rev() {
+        let enriched = self.code.is_some()
+            && self
+                .current_key()
+                .is_some_and(|k| self.answer_for(&k).is_some());
+        if enriched && area.width > 30 {
+            let label = "Enriched";
             let width = label.len() as u16 + 2;
-            if x < area.x + width + 12 {
-                break;
-            }
             x -= width;
-            placed.push((Rect::new(x, area.y, width, 1), label, view, focus));
-        }
-        for (rect, label, view, focus) in placed {
-            let style = if active(view) {
+            let rect = Rect::new(x, area.y, width, 1);
+            let style = if self.document.kind == View::Explanation {
                 Style::default().fg(ACCENT).bold()
             } else {
                 Style::default().fg(MUTED)
             };
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(label, style),
-                    Span::raw("  "),
-                ])),
-                rect,
-            );
-            self.areas.tabs.push((rect, view, focus));
+            frame.render_widget(Paragraph::new(Span::styled(label, style)), rect);
+            self.areas.tabs.push((rect, View::Explanation, Focus::Reader));
         }
         let title_width = x.saturating_sub(area.x).saturating_sub(1);
         frame.render_widget(
@@ -270,12 +218,8 @@ impl Workspace {
             Rect::new(area.x, area.y, title_width, 1),
         );
     }
-    fn draw_reader(&mut self, frame: &mut Frame, area: Rect, pane: Focus) {
-        if pane == Focus::Code {
-            self.areas.code = area;
-        } else {
-            self.areas.reader = area;
-        }
+    fn draw_reader(&mut self, frame: &mut Frame, area: Rect) {
+        self.areas.reader = area;
         let notice_height = self
             .document
             .notice
@@ -294,7 +238,7 @@ impl Workspace {
             Constraint::Min(1),
         ])
         .split(area);
-        self.draw_title(frame, rows[0], pane);
+        self.draw_title(frame, rows[0]);
         if let Some((text, color)) = &self.document.notice {
             frame.render_widget(
                 Paragraph::new(text.as_str())
@@ -319,7 +263,7 @@ impl Workspace {
                 .line_count(content.width)
                 .max(1);
             if self.document.source_selection == Some(position) {
-                lines[*line] = lines[*line].clone().style(Style::default().bg(SELECT).bold());
+                lines[*line] = lines[*line].clone().style(Style::default().add_modifier(Modifier::REVERSED));
                 let scroll = usize::from(self.document.scroll);
                 if offset < scroll {
                     self.document.scroll = offset.min(u16::MAX as usize) as u16;
@@ -368,14 +312,8 @@ impl Workspace {
                 .saturating_sub(content.width as usize)
                 .min(u16::MAX as usize) as u16,
         );
-        let page_size = content.height.saturating_sub(2).max(1);
-        if pane == Focus::Code {
-            self.code_scroll_max = scroll_max;
-            self.code_page_size = page_size;
-        } else {
-            self.scroll_max = scroll_max;
-            self.page_size = page_size;
-        }
+        self.scroll_max = scroll_max;
+        self.page_size = content.height.saturating_sub(2).max(1);
         frame.render_widget(
             paragraph.scroll((self.document.scroll, self.document.horizontal)),
             content,
@@ -389,7 +327,7 @@ impl Workspace {
                     .begin_symbol(None)
                     .end_symbol(None)
                     .thumb_style(Style::default().fg(MUTED))
-                    .track_style(Style::default().fg(BG)),
+                    .track_style(Style::default().fg(BORDER)),
                 Rect::new(rows[3].right() - 1, rows[3].y, 1, rows[3].height),
                 &mut state,
             );
@@ -425,7 +363,7 @@ impl Workspace {
     /// At most four keys, chosen for what is on screen.
     fn draw_keys(&mut self, frame: &mut Frame, area: Rect) {
         let reader = self.focus == Focus::Reader;
-        let other = if self.shows_changes() { "why" } else { "code" };
+        let reasons = if self.brief { "reasons" } else { "brief" };
         let keys: Vec<(&str, &str)> = if reader && self.document.kind == View::Commits {
             vec![("↑↓", "commits"), ("Enter", "open"), ("Esc", "back")]
         } else if reader && self.document.source_selection.is_some() {
@@ -433,15 +371,13 @@ impl Workspace {
         } else if reader && self.document.historical() {
             vec![("↑↓", "scroll"), ("Esc", "back"), ("?", "more")]
         } else if reader && self.document.kind == View::Explanation {
-            vec![("i", "ask"), ("Tab", "code"), ("Esc", "back"), ("?", "more")]
-        } else if self.focus == Focus::Code && self.code_link().is_some() {
-            vec![("Enter", "turn"), ("Tab", "why"), ("e", "explain"), ("?", "more")]
-        } else if reader && self.document.kind == View::Recorded && !self.document.sources.is_empty() {
-            vec![("Enter", "show code"), ("Tab", "code"), ("e", "explain"), ("?", "more")]
+            vec![("i", "ask"), ("s", "sources"), ("Esc", "back"), ("?", "more")]
+        } else if reader && self.document.kind == View::Recorded {
+            vec![("Enter", "open turn"), ("w", reasons), ("e", "explain"), ("?", "more")]
         } else if self.focus == Focus::Files {
-            vec![("↑↓", "files"), ("Tab", other), ("e", "explain"), ("?", "more")]
+            vec![("↑↓", "files"), ("Tab", "read"), ("e", "explain"), ("?", "more")]
         } else {
-            vec![("↑↓", "scroll"), ("Tab", other), ("e", "explain"), ("?", "more")]
+            vec![("↑↓", "scroll"), ("Tab", "files"), ("e", "explain"), ("?", "more")]
         };
         let mut spans = vec![Span::raw(" ")];
         for (key, label) in keys {

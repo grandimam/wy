@@ -142,7 +142,8 @@ fn reading_focus_scroll_and_back_restore_the_actual_document() {
     select(&mut app, "src/cache.rs");
     screen(&mut app, 100, 24);
     press(&mut app, KeyCode::Enter);
-    assert_eq!(app.focus, Focus::Code);
+    assert_eq!(app.focus, Focus::Reader);
+    assert_eq!(app.document.kind, View::Recorded);
     assert_eq!(app.code.as_ref().unwrap().kind, View::Diff);
     let selected = app.explorer.state.selected();
     screen(&mut app, 100, 24);
@@ -218,12 +219,12 @@ fn diff_and_why_toggle_reuses_the_answer_for_the_exact_change() {
     app.open(document::explanation(artifact(Some("README.md"))));
     select(&mut app, "src/cache.rs");
     press(&mut app, KeyCode::Enter);
-    press(&mut app, KeyCode::Char('w'));
+    press(&mut app, KeyCode::Char('e'));
     assert_eq!(app.document.kind, View::Explanation);
     assert_eq!(app.document.target.as_ref().unwrap().file, "src/cache.rs");
     assert!(app.job.is_none());
     press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Char('w'));
+    press(&mut app, KeyCode::Char('e'));
     assert_eq!(app.document.kind, View::Explanation);
     press(&mut app, KeyCode::Char('o'));
     assert_eq!(app.document.kind, View::Recorded);
@@ -439,7 +440,7 @@ fn compact_layout_keeps_both_panes_accessible_and_input_cursor_visible() {
         assert!(app.areas.files.width > 0);
         press(&mut app, KeyCode::Tab);
         let (reader, _) = screen(&mut app, width, height);
-        assert!(reader.contains("Why") && reader.contains("Code"));
+        assert!(reader.contains(&app.document.title));
         assert!(app.areas.reader.width >= if width < 88 { width - 4 } else { 40 });
         press(&mut app, KeyCode::Char('/'));
         app.input = "/ask 这个函数为什么这样实现？ this is a long question about failures".into();
@@ -549,7 +550,6 @@ fn renders_review_diff_explanation_and_empty_states() {
     let mut app = workspace();
     let (text, terminal) = screen(&mut app, 140, 44);
     assert!(text.contains("e explain"));
-    assert!(text.contains("Why") && text.contains("Code"));
     assert!(!text.contains("Understand the work"));
     assert!(!text.contains("Overview"));
     assert!(!text.contains("Choices"));
@@ -566,7 +566,7 @@ fn renders_review_diff_explanation_and_empty_states() {
             .buffer()
             .content
             .iter()
-            .any(|c| c.fg == GREEN && c.bg == ADD_BG)
+            .any(|c| c.fg == GREEN && c.bg == Color::Reset)
     );
     preview("diff", &terminal);
     app.open(document::explanation(artifact(Some("src/cache.rs"))));
@@ -625,12 +625,11 @@ fn session_code_appears_without_a_git_diff_and_keeps_a_distinct_answer() {
         options.session_edit.as_ref().unwrap()["id"],
         "recorded-edit"
     );
-    // Why is the default view; the recorded code is one Tab away.
-    app.focus = Focus::Code;
-    let (text, terminal) = screen(&mut app, 140, 38);
+    // Without a Git diff the reader shows the recorded edit itself.
+    let (text, terminal) = screen(&mut app, 140, 50);
     assert!(text.contains("· recorded"));
     assert!(text.contains("fn generated()"));
-    assert!(text.contains("execution not confirmed"));
+    assert!(text.contains("No current Git diff"));
     preview("session-code", &terminal);
     let mut answer = (*artifact(Some("src/recent.rs"))).clone();
     answer["packet"]["focus_session_edit"] = crate::history::edit_ref(&record);
@@ -642,60 +641,46 @@ fn session_code_appears_without_a_git_diff_and_keeps_a_distinct_answer() {
         "recorded-edit"
     );
     press(&mut app, KeyCode::Esc);
-    press(&mut app, KeyCode::Char('d'));
-    press(&mut app, KeyCode::Char('w'));
+    press(&mut app, KeyCode::Char('e'));
     assert!(app.job.is_none());
     assert_eq!(app.document.kind, View::Explanation);
 
-    // A current diff and a historical session edit of the same file have separate answers.
+    // Once the file has a current diff, its answer is separate from the recorded edit's.
     app.review["changes"] =
         json!([{"file":"src/recent.rs","diff":"+current code","symbols":[],"added_lines":[1]}]);
     app.explorer.rebuild(&app.review);
     let mut current = (*artifact(Some("src/recent.rs"))).clone();
     current["id"] = json!("current-answer");
     app.open(document::explanation(Arc::new(current)));
-    press(&mut app, KeyCode::Char('d'));
-    press(&mut app, KeyCode::Char('w'));
+    select(&mut app, "src/recent.rs");
+    app.preview_selection();
+    assert_eq!(app.code.as_ref().unwrap().kind, View::Diff);
+    press(&mut app, KeyCode::Char('e'));
     assert_eq!(
         app.document.artifact.as_ref().unwrap()["id"],
         "current-answer"
-    );
-    // The legacy c shortcut also shows the unified current changes.
-    press(&mut app, KeyCode::Char('c'));
-    assert_eq!(app.code.as_ref().unwrap().kind, View::Diff);
-    app.change_view(View::SessionCode).unwrap();
-    press(&mut app, KeyCode::Char('w'));
-    assert_eq!(
-        app.document.artifact.as_ref().unwrap()["packet"]["focus_session_edit"]["id"],
-        "recorded-edit"
     );
     assert!(app.job.is_none());
 }
 
 #[test]
-fn explanation_and_changes_share_one_reader_and_sources_open_by_mouse_and_keyboard() {
+fn explanation_shares_the_reader_and_sources_open_by_mouse_and_keyboard() {
     let mut app = workspace();
     select(&mut app, "src/cache.rs");
     press(&mut app, KeyCode::Enter);
+    let (text, _) = screen(&mut app, 140, 60);
+    assert!(text.contains("cache.get(key)"));
     app.open(document::explanation(artifact(Some("src/cache.rs"))));
     let (text, terminal) = screen(&mut app, 140, 38);
-    assert_eq!(app.areas.code.width, 0);
     assert!(text.contains("Repeated requests can reuse"));
-    assert!(text.contains("Code") && text.contains("Enriched"));
+    assert!(text.contains("Enriched"));
     preview("code-and-explanation", &terminal);
-    // Tab switches the reader between Changes and the open answer.
+    // Tab moves between the tree and the reader; the answer stays open.
     press(&mut app, KeyCode::Tab);
-    assert_eq!(app.focus, Focus::Code);
-    let (text, _) = screen(&mut app, 140, 38);
-    assert!(text.contains("cache.get(key)"));
-    assert_eq!(app.areas.reader.width, 0);
-    press(&mut app, KeyCode::BackTab);
     assert_eq!(app.focus, Focus::Files);
-    // From the tree, Tab returns to whichever view was shown last.
-    press(&mut app, KeyCode::Tab);
-    assert_eq!(app.focus, Focus::Code);
     press(&mut app, KeyCode::Tab);
     assert_eq!(app.focus, Focus::Reader);
+    assert_eq!(app.document.kind, View::Explanation);
     press(&mut app, KeyCode::Char('s'));
     screen(&mut app, 140, 38);
     let (source, _) = app.areas.sources[0];
@@ -712,30 +697,25 @@ fn explanation_and_changes_share_one_reader_and_sources_open_by_mouse_and_keyboa
     assert_eq!(app.document.kind, View::Explanation);
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.document.kind, View::Evidence);
-
-    // Narrow terminals keep both documents accessible as full-width readers.
-    app.focus = Focus::Code;
-    let (text, _) = screen(&mut app, 70, 24);
+    // Esc from the answer returns to the reader for the file.
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Esc);
+    while app.document.kind != View::Recorded {
+        press(&mut app, KeyCode::Esc);
+    }
+    let (text, _) = screen(&mut app, 70, 40);
     assert!(text.contains("cache.get(key)"));
-    press(&mut app, KeyCode::Tab);
-    let (text, _) = screen(&mut app, 70, 24);
-    assert!(text.contains("CAPTURED CODE"));
 }
 
 #[test]
-fn source_navigation_reaches_references_beyond_nine_and_code_scrolls_independently() {
+fn source_navigation_reaches_references_beyond_nine() {
     let mut app = workspace();
     let mut answer = (*artifact(Some("src/cache.rs"))).clone();
     answer["packet"]["evidence"] = json!((0..12).map(|i| json!({"id":format!("code-{i}"),"kind":"code","file":format!("src/evidence_{i}.rs"),"start_line":1,"text":format!("source number {i}")})).collect::<Vec<_>>());
     answer["explanation"]["answer"]["evidence_ids"] =
         json!((0..12).map(|i| format!("code-{i}")).collect::<Vec<_>>());
     app.open(document::explanation(Arc::new(answer)));
-    app.code.as_mut().unwrap().lines = (0..100).map(|i| Line::raw(format!("line {i}"))).collect();
-    app.focus = Focus::Code;
     screen(&mut app, 120, 24);
-    press(&mut app, KeyCode::PageDown);
-    assert!(app.code.as_ref().unwrap().scroll > 0);
-    assert_eq!(app.document.scroll, 0);
     press(&mut app, KeyCode::Char('s'));
     for _ in 0..11 {
         press(&mut app, KeyCode::Down);
@@ -797,9 +777,7 @@ fn automatic_notes_are_offline_cited_and_offer_enrichment() {
     assert!(text.contains("e explain"));
     assert!(!text.contains("Session code"));
     assert!(!text.contains("Why this change?"));
-    // One reader: Notes replaces Changes instead of sitting beside it.
     assert!(app.areas.reader.width > 0);
-    assert_eq!(app.areas.code.width, 0);
     assert!(app.job.is_none());
     let options = app.why_options(false).unwrap();
     assert_eq!(options.note_refs.len(), 2);

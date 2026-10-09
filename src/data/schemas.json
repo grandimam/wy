@@ -782,6 +782,18 @@
                 "string",
                 "null"
               ]
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Model"
             }
           },
           "required": [
@@ -1000,6 +1012,18 @@
           },
           "truncated": {
             "type": "boolean"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
           }
         },
         "required": [

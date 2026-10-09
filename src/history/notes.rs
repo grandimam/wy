@@ -38,7 +38,7 @@ pub fn event_evidence(session: &Value, event: &Value) -> Value {
     ]);
     json!({"id":format!("event-{}-{}-{}",s(&session["agent"]),&security::digest(&identity.to_string())[..16],s(&event["id"])),
         "kind":"session","agent":session["agent"],"session_id":session["id"],"event_id":event["id"],
-        "role":event["kind"],"file":session["path"],"start_line":event["source_line"],"text":event["text"],
+        "role":event["kind"],"model":event["model"],"file":session["path"],"start_line":event["source_line"],"text":event["text"],
         "timestamp":event["timestamp"],"call_id":event["call_id"],"provenance":super::provenance::metadata(event),"lineage":session["lineage"],"truncated":event["truncated"]==true})
 }
 pub fn note_evidence(root: &Path, reference: &Value) -> Result<Value> {

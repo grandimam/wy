@@ -71,7 +71,7 @@ pub fn collect(path:&Path)->Result<Value>{
     }
     ensure!(!agent.is_empty(),"Unrecognized session format; expected a Codex or Claude Code JSONL transcript");
     let mut session=json!({"id":path.file_stem().unwrap_or_default().to_string_lossy(),"path":path.canonicalize()?,"cwd":null,"agent":agent,"format":if agent=="codex"{"codex-rollout"}else{"claude-code-jsonl"},"events":[],"warnings":[]});
-    let mut events=vec![];let mut warnings=vec![];let mut seen=HashSet::new();let mut turn=String::new();
+    let mut events=vec![];let mut warnings=vec![];let mut seen=HashSet::new();let mut turn=String::new();let mut model=String::new();
     for (i,line) in raw.lines().enumerate(){
         let row=match serde_json::from_str::<Value>(line){Ok(v) if v.is_object()=>v,_=>{warnings.push(format!("Skipped malformed session line {}",i+1));continue;}};
         let typ=s(&row["type"]);let p=&row["payload"];
@@ -79,6 +79,8 @@ pub fn collect(path:&Path)->Result<Value>{
         if cwd.is_string(){ensure!(session["cwd"].is_null()||session["cwd"]==*cwd,"Session contains conflicting working directories");session["cwd"]=cwd.clone();}
         if identity.is_string(){ensure!(events.is_empty()||session["id"]==*identity,"Session contains conflicting session identities");session["id"]=identity.clone();}
         provenance::observe(&row,&mut session,&mut turn);
+        // The model can change between turns (Codex) or messages (Claude); keep the latest seen.
+        if let Some(m)=p["model"].as_str().or_else(||row["message"]["model"].as_str()).filter(|m|!m.is_empty()){model=m.to_owned();}
         let compacted=provenance::compaction(&row,&session,i+1,&turn);
         if !compacted.is_empty(){events.extend(compacted);continue;}
         let mut pending:Vec<(String,String,Value,Value,Vec<String>,String,bool)>=vec![];
@@ -118,7 +120,7 @@ pub fn collect(path:&Path)->Result<Value>{
             if !code_edits.is_empty(){files.clear();}
             for edit in &code_edits{let file=s(&edit["file"]).to_owned();if !files.contains(&file){files.push(file);}}
             let provenance=provenance::classify(&row,&kind,&text,&turn);
-            events.push(json!({"id":id,"kind":if provenance["source_type"]=="compaction_summary"{"summary"}else if code_edits.is_empty(){kind.as_str()}else{"change"},"text":short(&redact(&text),16000),"source_line":i+1,"tool":tool,"call_id":call_id,"files":files,"timestamp":row["timestamp"],"failed":failed,"code_edits":code_edits,"provenance":provenance,"truncated":text.chars().count()>16000}));
+            events.push(json!({"id":id,"kind":if provenance["source_type"]=="compaction_summary"{"summary"}else if code_edits.is_empty(){kind.as_str()}else{"change"},"text":short(&redact(&text),16000),"source_line":i+1,"tool":tool,"call_id":call_id,"files":files,"timestamp":row["timestamp"],"failed":failed,"code_edits":code_edits,"provenance":provenance,"model":if model.is_empty(){Value::Null}else{json!(model)},"truncated":text.chars().count()>16000}));
         }}
     }
     session["events"]=json!(events);session["warnings"]=json!(warnings);crate::validate("Session",&session)?;Ok(session)
