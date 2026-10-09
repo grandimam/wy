@@ -57,23 +57,6 @@ pub fn compare(before:&Texts,after:&Texts)->Vec<Change>{
         c.hunks.dedup();c.patch=diff.unified_diff().context_radius(4).header(&format!("a/{name}"),&format!("b/{name}")).to_string();result.push(c);
     }result
 }
-pub fn parse_diff(text:&str)->Vec<Change>{
-    let re=regex::Regex::new(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@").unwrap();
-    let mut result:Vec<Change>=vec![];let mut current=None;let mut line_no=0;let mut in_hunk=false;
-    for line in text.lines(){
-        if line.starts_with("diff --git "){current=None;in_hunk=false;}
-        else if !in_hunk&&line.starts_with("+++ "){
-            let raw=line[4..].split('\t').next().unwrap_or("");let name=if raw.starts_with('"'){serde_json::from_str::<String>(raw).unwrap_or_default()}else{raw.into()};
-            let name=name.strip_prefix("b/").unwrap_or(&name);
-            current=None;if security::allowed(name){result.push(Change{file:name.into(),patch:format!("--- a/{name}\n+++ b/{name}\n"),..Default::default()});current=Some(result.len()-1);}
-        }else if let Some(i)=current{
-            let c=&mut result[i];
-            if let Some(m)=re.captures(line){line_no=m[1].parse().unwrap_or(0);let count=m.get(2).and_then(|m|m.as_str().parse::<usize>().ok()).unwrap_or(1);c.hunks.push((line_no.max(1),(line_no+count).saturating_sub(1).max(1)));in_hunk=true;}
-            else if in_hunk{if let Some(s)=line.strip_prefix('+'){c.additions.insert(line_no,redact(s));line_no+=1;}else if let Some(s)=line.strip_prefix('-'){c.removed.push(redact(s));}else if line.starts_with(' '){line_no+=1;}}
-            if in_hunk{c.patch.push_str(line);c.patch.push('\n');}
-        }
-    }result
-}
 pub fn location(file:&str,text:&str,line:usize)->Value{
     let found=source::outline(file,text).into_iter().filter(|s|s.start<=line&&line<=s.end).min_by_key(|s|s.end-s.start);
     if let Some(s)=found{json!({"file":file,"symbol":s.name,"start_line":s.start,"end_line":s.end})}else{json!({"file":file,"symbol":"<module>","start_line":line,"end_line":line})}

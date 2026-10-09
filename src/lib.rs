@@ -1,17 +1,13 @@
 pub mod agent;
 pub mod commits;
-pub mod engine;
 pub mod history;
 pub mod presentation;
-pub mod provider;
 pub mod reasoning;
-pub mod reflection;
 pub mod repository;
 pub mod security;
 pub mod service;
 pub mod source;
 pub mod storage;
-pub mod trace;
 pub mod tui;
 
 use anyhow::{Result, bail};

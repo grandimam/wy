@@ -1,10 +1,6 @@
 use serde_json::{Value, json};
-use std::{
-    fs,
-    path::Path,
-    process::{Command, Output},
-};
-use wy::{repository, storage::Store};
+use std::{fs, path::Path};
+use wy::{commits, history, repository, service, storage::Store};
 
 fn git(root: &Path, args: &[&str]) -> String {
     repository::git(root, args, true).unwrap().trim().to_owned()
@@ -22,23 +18,19 @@ fn repo() -> tempfile::TempDir {
     dir
 }
 
-fn call(root: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_wy"))
-        .arg("--repo")
-        .arg(root)
-        .args(args)
-        .output()
-        .unwrap()
+/// Same review the app runs on startup and on `r`.
+fn capture(root: &Path, source: &str) -> Value {
+    service::review(root, &service::ReviewOptions { source: source.into() }).unwrap()
 }
 
-fn output(root: &Path, args: &[&str]) -> Value {
-    let out = call(root, args);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    serde_json::from_slice(&out.stdout).unwrap()
+/// Commit lookup used by `g` and `/commit`.
+fn lookup(root: &Path, revision: &str) -> anyhow::Result<Value> {
+    commits::lookup(root, revision, "both")
+}
+
+/// Explicit association used by `/link`.
+fn link(root: &Path, revision: &str, review: Option<&str>) -> anyhow::Result<Value> {
+    commits::link(root, revision, review)
 }
 
 fn transcript(root: &Path, text: &str) -> std::path::PathBuf {
@@ -61,11 +53,8 @@ fn transcript(root: &Path, text: &str) -> std::path::PathBuf {
 }
 
 fn review(root: &Path, text: &str) -> Value {
-    let path = transcript(root, text);
-    output(
-        root,
-        &["review", "--session", path.to_str().unwrap(), "--json"],
-    )
+    transcript(root, text);
+    capture(root, "codex")
 }
 
 #[test]
@@ -79,19 +68,15 @@ fn automatically_matches_committed_review_and_reads_pinned_conversation() {
     git(root, &["commit", "-qm", "return agreed answer"]);
     let commit = git(root, &["rev-parse", "HEAD"]);
     // The pre-change HEAD is never itself treated as the resulting commit.
-    assert!(
-        !call(root, &["sessions", "--commit", &base])
-            .status
-            .success()
-    );
+    assert!(lookup(root, &base).is_err());
     // Neither a later transcript nor a new 'latest' review can replace the capture.
     transcript(root, "Later unrelated discussion.");
-    let latest = output(root, &["review", "--source", "none", "--json"]);
+    let latest = capture(root, "none");
     fs::remove_file(root.join(".codex/sessions/coding.jsonl")).unwrap();
     fs::write(root.join("lib.rs"), "pub fn answer() -> i32 { 99 }\n").unwrap();
     git(root, &["add", "lib.rs"]);
     git(root, &["commit", "-qm", "later change"]);
-    let found = output(root, &["session", "--commit", &commit[..10], "--json"]);
+    let found = lookup(root, &commit[..10]).unwrap();
     assert_eq!(found["commit"], commit);
     assert_eq!(found["links"][0]["review_id"], reviewed["id"]);
     assert_eq!(found["links"][0]["association"], "snapshot-match");
@@ -99,40 +84,10 @@ fn automatically_matches_committed_review_and_reads_pinned_conversation() {
         found["sessions"][0]["events"][0]["text"],
         "Return 42 because it is the agreed API value."
     );
-    let summary = output(root, &["sessions", "--commit", &commit, "--json"]);
-    assert_eq!(summary["sessions"][0]["event_count"], 1);
-    assert!(summary["sessions"][0]["events"].is_null());
-    assert_eq!(summary["links"].as_array().unwrap().len(), 1);
-    let selected = output(
-        root,
-        &[
-            "session",
-            "--commit",
-            &commit,
-            "--id",
-            "codex:coding",
-            "--event",
-            "event-2",
-            "--json",
-        ],
-    );
-    assert_eq!(selected, found);
-    for args in [
-        vec!["session", "--commit", &commit, "--id", "missing"],
-        vec!["session", "--commit", &commit, "--event", "event-999"],
-    ] {
-        assert!(!call(root, &args).status.success());
-    }
-    let text = call(root, &["session", "--commit", &commit]);
-    assert!(String::from_utf8_lossy(&text.stdout).contains("agreed API value"));
-    let filtered = output(
-        root,
-        &[
-            "sessions", "--commit", &commit, "--source", "claude", "--json",
-        ],
-    );
+    assert_eq!(found["links"].as_array().unwrap().len(), 1);
+    let filtered = commits::lookup(root, &commit, "claude").unwrap();
     assert!(filtered["sessions"].as_array().unwrap().is_empty());
-    assert_eq!(output(root, &["decisions", "--json"])["id"], latest["id"]);
+    assert_eq!(service::load(root).unwrap()["id"], latest["id"]);
     let store = Store::open(root).unwrap();
     assert_eq!(store.linked_reviews(&commit).unwrap().len(), 1);
 }
@@ -147,25 +102,12 @@ fn partial_or_modified_commits_do_not_automatically_match() {
     git(root, &["add", "lib.rs"]);
     git(root, &["commit", "-qm", "partial commit"]);
     let commit = git(root, &["rev-parse", "HEAD"]);
-    let missing = call(root, &["session", "--commit", &commit]);
-    assert!(!missing.status.success());
-    assert!(String::from_utf8_lossy(&missing.stderr).contains("wy link"));
+    let missing = lookup(root, &commit).unwrap_err();
+    assert!(missing.to_string().contains("/link"));
     // A user can explicitly associate the broader review with a partial commit.
-    let linked = output(
-        root,
-        &[
-            "link",
-            &commit,
-            "--review",
-            reviewed["id"].as_str().unwrap(),
-            "--json",
-        ],
-    );
+    let linked = link(root, &commit, reviewed["id"].as_str()).unwrap();
     assert_eq!(linked["association"], "explicit");
-    assert_eq!(
-        output(root, &["session", "--commit", &commit, "--json"])["sessions"][0]["id"],
-        "coding"
-    );
+    assert_eq!(lookup(root, &commit).unwrap()["sessions"][0]["id"], "coding");
 }
 
 #[test]
@@ -186,11 +128,7 @@ fn matching_uses_original_source_hashes_not_redacted_text() {
     fs::write(root.join("config.toml"), second).unwrap();
     git(root, &["add", "config.rs", "config.toml"]);
     git(root, &["commit", "-qm", "different configuration"]);
-    assert!(
-        !call(root, &["session", "--commit", "HEAD"])
-            .status
-            .success()
-    );
+    assert!(lookup(root, "HEAD").is_err());
 }
 
 #[test]
@@ -198,31 +136,15 @@ fn explicit_links_support_tags_multiple_reviews_and_distinct_snapshots() {
     let dir = repo();
     let root = dir.path();
     let original = review(root, "Original explanation.");
-    let same = output(
-        root,
-        &[
-            "review",
-            "--session",
-            root.join(".codex/sessions/coding.jsonl").to_str().unwrap(),
-            "--json",
-        ],
-    );
+    // Refreshing with an unchanged transcript reuses the same pinned snapshot.
+    let same = capture(root, "codex");
     let later = review(root, "Later explanation.");
     let commit = git(root, &["rev-parse", "HEAD"]);
     git(root, &["tag", "-a", "-m", "release", "release"]);
     for id in [&original["id"], &same["id"], &later["id"], &original["id"]] {
-        output(
-            root,
-            &[
-                "link",
-                "release",
-                "--review",
-                id.as_str().unwrap(),
-                "--json",
-            ],
-        );
+        link(root, "release", id.as_str()).unwrap();
     }
-    let found = output(root, &["session", "--commit", &commit[..8], "--json"]);
+    let found = lookup(root, &commit[..8]).unwrap();
     assert_eq!(found["links"].as_array().unwrap().len(), 3);
     assert_eq!(found["sessions"].as_array().unwrap().len(), 2);
     assert_eq!(
@@ -241,55 +163,39 @@ fn explicit_links_support_tags_multiple_reviews_and_distinct_snapshots() {
         found["sessions"][1]["events"][0]["text"],
         "Later explanation."
     );
-    assert_eq!(
-        output(root, &["link", "HEAD", "--json"])["review_id"],
-        later["id"]
-    );
-    assert_eq!(output(root, &["session", "--json"])[0]["id"], "coding");
+    assert_eq!(link(root, "HEAD", None).unwrap()["review_id"], later["id"]);
+    let saved = history::saved(&service::load(root).unwrap()).unwrap();
+    assert_eq!(saved[0]["id"], "coding");
 }
 
 #[test]
 fn rejects_invalid_commits_empty_reviews_and_missing_or_unrelated_evidence() {
     let dir = repo();
     let root = dir.path();
-    output(root, &["review", "--source", "none", "--json"]);
-    let empty = call(root, &["link", "HEAD"]);
-    assert!(!empty.status.success());
-    assert!(String::from_utf8_lossy(&empty.stderr).contains("no saved conversations"));
+    capture(root, "none");
+    let empty = link(root, "HEAD", None).unwrap_err();
+    assert!(empty.to_string().contains("no saved conversations"));
     let reviewed = review(root, "Original explanation.");
     for revision in ["missing-revision", "HEAD:lib.rs", "--all"] {
-        assert!(!call(root, &["link", "--", revision]).status.success());
-        assert!(
-            !call(root, &["sessions", &format!("--commit={revision}")])
-                .status
-                .success()
-        );
+        assert!(link(root, revision, None).is_err());
+        assert!(lookup(root, revision).is_err());
     }
     let mut foreign = reviewed.clone();
     foreign["root"] = json!("/another-repository");
     let store = Store::open(root).unwrap();
     store.put("review", "foreign", &foreign).unwrap();
-    assert!(
-        !call(root, &["link", "HEAD", "--review", "foreign"])
-            .status
-            .success()
-    );
-    output(root, &["link", "HEAD", "--json"]);
+    assert!(link(root, "HEAD", Some("foreign")).is_err());
+    link(root, "HEAD", None).unwrap();
     let key = reviewed["sessions"][0]["storage_key"].as_str().unwrap();
     let mut session = store.get("session", key).unwrap();
     session["cwd"] = json!("/another-repository");
     store.put("session", key, &session).unwrap();
-    assert!(
-        !call(root, &["session", "--commit", "HEAD"])
-            .status
-            .success()
-    );
+    assert!(lookup(root, "HEAD").is_err());
     let db = rusqlite::Connection::open(root.join(".wy/wy.sqlite3")).unwrap();
     db.execute("DELETE FROM artifacts WHERE kind='session' AND id=?", [key])
         .unwrap();
-    let missing = call(root, &["session", "--commit", "HEAD"]);
-    assert!(!missing.status.success());
-    assert!(String::from_utf8_lossy(&missing.stderr).contains("snapshot is missing"));
+    let missing = lookup(root, "HEAD").unwrap_err();
+    assert!(format!("{missing:#}").contains("snapshot is missing"));
 }
 
 #[test]
@@ -301,9 +207,9 @@ fn existing_v1_store_and_first_commit_are_supported() {
     db.execute_batch("DROP TABLE commit_reviews; PRAGMA user_version=1;")
         .unwrap();
     drop(db);
-    output(root, &["link", "HEAD", "--json"]);
+    link(root, "HEAD", None).unwrap();
     assert_eq!(
-        output(root, &["session", "--commit", "HEAD", "--json"])["sessions"][0]["events"][0]["text"],
+        lookup(root, "HEAD").unwrap()["sessions"][0]["events"][0]["text"],
         "Saved before the index existed."
     );
 
@@ -317,7 +223,7 @@ fn existing_v1_store_and_first_commit_are_supported() {
     git(root, &["add", "lib.rs"]);
     git(root, &["commit", "-qm", "initial"]);
     assert_eq!(
-        output(root, &["sessions", "--commit", "HEAD", "--json"])["links"][0]["association"],
+        lookup(root, "HEAD").unwrap()["links"][0]["association"],
         "snapshot-match"
     );
 }

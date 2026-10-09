@@ -31,7 +31,7 @@ fn relative(root: &Path, cwd: &str, file: &str) -> Option<String> {
     security::allowed(&file).then_some(file)
 }
 
-fn records(root: &Path, session: &Value, key: &str) -> Vec<Value> {
+pub fn records(root: &Path, session: &Value, key: &str) -> Vec<Value> {
     let mut result = vec![];
     for event in arr(&session["events"]) {
         if arr(&event["code_edits"]).is_empty() {

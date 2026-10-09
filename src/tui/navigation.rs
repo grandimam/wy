@@ -81,13 +81,16 @@ impl Workspace {
                 if let Ok((_, session)) = crate::history::saved_edit(&self.root, edit) {
                     let mut review = self.review.clone();
                     review["sessions"] = serde_json::json!([{"id":session["id"],"agent":session["agent"],"storage_key":edit["session_key"]}]);
-                    return document::recorded(&review, &[session], code);
+                    return document::recorded(&review, &[session], code, &self.unfolded);
                 }
             }
         }
-        document::recorded(&self.review, &self.sessions, code)
+        document::recorded(&self.review, &self.sessions, code, &self.unfolded)
     }
-    pub(super) fn show_code(&mut self, code: Document, notes: bool) {
+    pub(super) fn show_code(&mut self, mut code: Document, notes: bool) {
+        if code.kind == View::Diff && !code.annotated {
+            document::annotate(&mut code, &self.review, &self.sessions);
+        }
         let key = code_key(&code);
         self.remember_view();
         if !notes {
@@ -124,6 +127,7 @@ impl Workspace {
         if let Some(code) = code {
             self.show_code(code, true);
             self.focus = Focus::Reader;
+            self.notes_view = true;
         }
     }
     pub(super) fn show_enriched(&mut self) {

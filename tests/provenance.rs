@@ -235,7 +235,6 @@ fn explicit_original_references_survive_resume_and_deleted_transcripts() {
         &root,
         &wy::service::ReviewOptions {
             source: "codex".into(),
-            sessions: vec![path.clone()],
             ..Default::default()
         },
     )
@@ -445,11 +444,11 @@ fn recorded_validation_requires_original_and_secondary_only_rationale_stays_unkn
 }
 
 #[test]
-fn summary_cannot_create_an_offline_recorded_decision_and_provenance_reaches_packets() {
+fn summary_provenance_and_missing_original_reach_explanation_packets() {
     let dir = repo();
     let root = dir.path().canonicalize().unwrap();
     fs::write(root.join("lib.rs"), "fn value() { Redis(); }\n").unwrap();
-    let (path, _, _) = capture(
+    capture(
         &root,
         "coding",
         &[
@@ -461,17 +460,10 @@ fn summary_cannot_create_an_offline_recorded_decision_and_provenance_reaches_pac
         &root,
         &wy::service::ReviewOptions {
             source: "codex".into(),
-            sessions: vec![path],
             ..Default::default()
         },
     )
     .unwrap();
-    assert!(!arr(&review["decisions"]).is_empty());
-    assert!(
-        arr(&review["decisions"])
-            .iter()
-            .all(|d| d["provenance"] != "recorded")
-    );
     let packet = wy::reasoning::packet(&review, "Why a cache?", Some("lib.rs"), &[], None).unwrap();
     let summary = arr(&packet["evidence"])
         .iter()

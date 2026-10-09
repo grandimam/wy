@@ -45,15 +45,6 @@ pub fn outline(file:&str,text:&str)->Vec<Symbol>{
     }
     walk(tree.root_node(),text,&[],&mut found,0);found
 }
-pub fn syntax_at(file:&str,text:&str,line:usize,kinds:&[&str])->bool{
-    let Some(tree)=parse(file,text) else{return true};
-    if tree.root_node().has_error(){return false;}
-    let mut stack=vec![tree.root_node()];
-    while let Some(node)=stack.pop(){
-        if node.start_position().row+1==line && kinds.contains(&node.kind()){return true;}
-        let mut cur=node.walk();stack.extend(node.named_children(&mut cur));
-    }false
-}
 pub fn window(text:&str,symbols:&[Symbol],line:usize,limit:usize)->(usize,usize,String){
     let count=text.lines().count().max(1);let line=line.clamp(1,count);
     let symbol=symbols.iter().filter(|s|s.start<=line&&line<=s.end).min_by_key(|s|s.end-s.start);

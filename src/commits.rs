@@ -66,7 +66,7 @@ pub fn link(path: &Path, revision: &str, review_id: Option<&str>) -> Result<Valu
     let sessions = sessions(&store, &root, &review)?;
     ensure!(
         !sessions.is_empty(),
-        "Review has no saved conversations; run wy review --session <agent:id> first"
+        "Review has no saved conversations; refresh with r so agent history is captured first"
     );
     // Pin the concrete review ID, never the mutable 'latest' alias or its HEAD.
     let id = s(&review["id"]);
@@ -117,7 +117,7 @@ pub fn lookup(path: &Path, revision: &str, source: &str) -> Result<Value> {
     let links = store.linked_reviews(&commit)?;
     ensure!(
         !links.is_empty(),
-        "No saved conversations linked to commit {commit}. Use wy link {commit} --review <review-id> to attach a saved review."
+        "No saved conversations linked to commit {commit}. Use /link {commit} [review-id] to attach a saved review."
     );
     let mut saved: Vec<Value> = vec![];
     let mut positions = HashMap::new();
@@ -156,33 +156,3 @@ pub fn lookup(path: &Path, revision: &str, source: &str) -> Result<Value> {
     Ok(json!({"commit":commit,"links":links,"sessions":saved}))
 }
 
-pub fn summarize(result: &mut Value) {
-    for session in result["sessions"].as_array_mut().unwrap() {
-        session["event_count"] = json!(arr(&session["events"]).len());
-        session.as_object_mut().unwrap().remove("events");
-    }
-}
-
-pub fn select(result: &mut Value, id: Option<&str>, event: Option<&str>) -> Result<()> {
-    let sessions = result["sessions"].as_array_mut().unwrap();
-    sessions.retain(|session| {
-        id.is_none_or(|id| {
-            id == s(&session["id"])
-                || id == format!("{}:{}", s(&session["agent"]), s(&session["id"]))
-        })
-    });
-    if let Some(event) = event {
-        for session in sessions.iter_mut() {
-            session["events"]
-                .as_array_mut()
-                .unwrap()
-                .retain(|e| e["id"] == event);
-        }
-        sessions.retain(|session| !arr(&session["events"]).is_empty());
-    }
-    ensure!(
-        !sessions.is_empty(),
-        "No matching saved session or event for this commit"
-    );
-    Ok(())
-}

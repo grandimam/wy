@@ -379,7 +379,8 @@ fn diff_jumps_to_symbols_and_evidence_opens_the_cited_file() {
         line: 40,
     };
     let patch = json!({"changes":[{"file":"src/cache.rs","symbols":[{"start_line":40,"end_line":65}],"diff":"--- a/src/cache.rs\n+++ b/src/cache.rs\n@@ -1,2 +1,2 @@\n-old\n+new\n@@ -39,3 +39,3 @@\n-old\n+refresh"}]});
-    assert_eq!(document::diff(&patch, target).scroll, 5);
+    // File headers are not shown, so the second hunk starts on line 3.
+    assert_eq!(document::diff(&patch, target).scroll, 3);
     let doc = document::evidence(artifact(Some("README.md")), 0).unwrap();
     assert_eq!(doc.target.unwrap().file, "src/cache.rs");
     assert_eq!(
@@ -434,11 +435,12 @@ fn compact_layout_keeps_both_panes_accessible_and_input_cursor_visible() {
     for (width, height) in [(140, 44), (100, 30), (80, 24), (40, 12)] {
         app.focus = Focus::Files;
         let (files, _) = screen(&mut app, width, height);
-        assert!(files.contains("Files"));
+        assert!(files.contains("cache.rs"));
+        assert!(app.areas.files.width > 0);
         press(&mut app, KeyCode::Tab);
         let (reader, _) = screen(&mut app, width, height);
-        assert!(reader.contains("Changes"));
-        assert!(app.areas.code.width >= if width < 88 { width - 4 } else { 40 });
+        assert!(reader.contains("Why") && reader.contains("Code"));
+        assert!(app.areas.reader.width >= if width < 88 { width - 4 } else { 40 });
         press(&mut app, KeyCode::Char('/'));
         app.input = "/ask 这个函数为什么这样实现？ this is a long question about failures".into();
         let (_, mut terminal) = screen(&mut app, width, height);
@@ -546,8 +548,8 @@ fn cancellation_and_disconnected_workers_return_control() {
 fn renders_review_diff_explanation_and_empty_states() {
     let mut app = workspace();
     let (text, terminal) = screen(&mut app, 140, 44);
-    assert!(text.contains("Enrich explanation"));
-    assert!(text.contains("Changes"));
+    assert!(text.contains("e explain"));
+    assert!(text.contains("Why") && text.contains("Code"));
     assert!(!text.contains("Understand the work"));
     assert!(!text.contains("Overview"));
     assert!(!text.contains("Choices"));
@@ -623,6 +625,8 @@ fn session_code_appears_without_a_git_diff_and_keeps_a_distinct_answer() {
         options.session_edit.as_ref().unwrap()["id"],
         "recorded-edit"
     );
+    // Why is the default view; the recorded code is one Tab away.
+    app.focus = Focus::Code;
     let (text, terminal) = screen(&mut app, 140, 38);
     assert!(text.contains("· recorded"));
     assert!(text.contains("fn generated()"));
@@ -669,20 +673,25 @@ fn session_code_appears_without_a_git_diff_and_keeps_a_distinct_answer() {
 }
 
 #[test]
-fn explanation_stays_right_of_code_and_sources_open_by_mouse_and_keyboard() {
+fn explanation_and_changes_share_one_reader_and_sources_open_by_mouse_and_keyboard() {
     let mut app = workspace();
     select(&mut app, "src/cache.rs");
     press(&mut app, KeyCode::Enter);
     app.open(document::explanation(artifact(Some("src/cache.rs"))));
     let (text, terminal) = screen(&mut app, 140, 38);
-    assert!(app.areas.code.width > 30);
-    assert!(app.areas.reader.x > app.areas.code.right());
-    assert_eq!(app.areas.input.x, app.areas.reader.x);
-    assert!(text.contains("cache.get(key)"));
+    assert_eq!(app.areas.code.width, 0);
     assert!(text.contains("Repeated requests can reuse"));
+    assert!(text.contains("Code") && text.contains("Enriched"));
     preview("code-and-explanation", &terminal);
+    // Tab switches the reader between Changes and the open answer.
     press(&mut app, KeyCode::Tab);
+    assert_eq!(app.focus, Focus::Code);
+    let (text, _) = screen(&mut app, 140, 38);
+    assert!(text.contains("cache.get(key)"));
+    assert_eq!(app.areas.reader.width, 0);
+    press(&mut app, KeyCode::BackTab);
     assert_eq!(app.focus, Focus::Files);
+    // From the tree, Tab returns to whichever view was shown last.
     press(&mut app, KeyCode::Tab);
     assert_eq!(app.focus, Focus::Code);
     press(&mut app, KeyCode::Tab);
@@ -722,8 +731,8 @@ fn source_navigation_reaches_references_beyond_nine_and_code_scrolls_independent
         json!((0..12).map(|i| format!("code-{i}")).collect::<Vec<_>>());
     app.open(document::explanation(Arc::new(answer)));
     app.code.as_mut().unwrap().lines = (0..100).map(|i| Line::raw(format!("line {i}"))).collect();
-    screen(&mut app, 120, 24);
     app.focus = Focus::Code;
+    screen(&mut app, 120, 24);
     press(&mut app, KeyCode::PageDown);
     assert!(app.code.as_ref().unwrap().scroll > 0);
     assert_eq!(app.document.scroll, 0);
@@ -732,7 +741,7 @@ fn source_navigation_reaches_references_beyond_nine_and_code_scrolls_independent
         press(&mut app, KeyCode::Down);
     }
     screen(&mut app, 120, 24);
-    assert!(app.areas.sources.iter().any(|(_, index)| *index == 11));
+    assert!(app.areas.sources.iter().any(|(_, link)| *link == Link::Source(11)));
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.document.title, "[12] src/evidence_11.rs");
 }
@@ -773,7 +782,7 @@ fn mock_job(app: &mut Workspace, file: &str) -> mpsc::Sender<Update> {
     sender
 }
 #[test]
-fn automatic_notes_are_offline_cited_and_offer_enrichment_for_gaps() {
+fn automatic_notes_are_offline_cited_and_offer_enrichment() {
     let mut app = with_notes();
     let (text, terminal) = screen(&mut app, 140, 38);
     assert!(text.contains("because"));
@@ -783,16 +792,18 @@ fn automatic_notes_are_offline_cited_and_offer_enrichment_for_gaps() {
             .iter()
             .any(|l| l.to_string().contains("because repeated reads"))
     );
-    assert!(text.contains("alternatives and tradeoffs"));
-    assert!(text.contains("Enrich explanation"));
+    assert!(!text.contains("alternatives and tradeoffs"));
+    assert!(!text.contains("What made this approach"));
+    assert!(text.contains("e explain"));
     assert!(!text.contains("Session code"));
     assert!(!text.contains("Why this change?"));
-    assert!(app.areas.reader.x > app.areas.code.right());
+    // One reader: Notes replaces Changes instead of sitting beside it.
+    assert!(app.areas.reader.width > 0);
+    assert_eq!(app.areas.code.width, 0);
     assert!(app.job.is_none());
     let options = app.why_options(false).unwrap();
     assert_eq!(options.note_refs.len(), 2);
-    assert!(options.question.contains("alternatives and tradeoffs"));
-    assert!(app.areas.enrich.width > 0);
+    assert!(!options.question.contains("Notes about the captured excerpts"));
     preview("automatic-notes", &terminal);
     press(&mut app, KeyCode::Char('2'));
     assert_eq!(app.document.kind, View::Evidence);
@@ -868,8 +879,14 @@ fn completion_does_not_interrupt_drafts_or_sources_and_ready_button_reuses_answe
     assert_eq!(app.document.kind, View::Evidence);
     press(&mut app, KeyCode::Char('o'));
     let (text, _) = screen(&mut app, 140, 38);
-    assert!(text.contains("View enrichment"));
-    let button = app.areas.enrich;
+    assert!(text.contains("Enriched"));
+    let button = app
+        .areas
+        .tabs
+        .iter()
+        .find(|(_, view, _)| *view == View::Explanation)
+        .unwrap()
+        .0;
     app.mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: button.x + 1,
@@ -894,7 +911,7 @@ fn requests_queue_once_per_scope_and_cancel_clears_the_queue() {
     assert_eq!(app.queue.len(), 1);
     assert_eq!(app.file_state("README.md").unwrap().0, "queued");
     let (text, terminal) = screen(&mut app, 140, 38);
-    assert!(text.contains("Queued"));
+    assert!(text.contains("README.md · queued"));
     assert!(text.contains("1 queued"));
     preview("background-queued", &terminal);
     press(&mut app, KeyCode::Esc);
@@ -968,7 +985,6 @@ fn commit_workspace_with_rows(extra: &[Value]) -> (tempfile::TempDir, Workspace,
         root,
         &service::ReviewOptions {
             source: "codex".into(),
-            sessions: vec![path.clone()],
             ..Default::default()
         },
     )
@@ -1035,13 +1051,7 @@ fn interactive_commit_lookup_browses_saved_history_and_restores_previous_view() 
 fn interactive_commit_mouse_navigation_missing_history_and_explicit_linking() {
     let (_dir, mut app, base, _) = commit_workspace();
     screen(&mut app, 130, 30);
-    let button = app.areas.commits;
-    mouse_at(
-        &mut app,
-        MouseEventKind::Down(MouseButton::Left),
-        button.x + 1,
-        button.y,
-    );
+    press(&mut app, KeyCode::Char('g'));
     assert_eq!(app.document.kind, View::Commits);
     press(&mut app, KeyCode::End);
     assert_eq!(app.document.source_selection, Some(1));
@@ -1155,11 +1165,11 @@ fn commit_picker_handles_empty_repositories_and_long_lists_on_small_screens() {
     let (_, _) = screen(&mut app, 40, 16);
     assert_eq!(app.document.source_selection, Some(49));
     assert!(app.document.scroll > 0);
-    assert!(app.areas.sources.iter().any(|(_, i)| *i == 49));
+    assert!(app.areas.sources.iter().any(|(_, link)| *link == Link::Source(49)));
     press(&mut app, KeyCode::Home);
     screen(&mut app, 40, 16);
     assert_eq!(app.document.scroll, 0);
-    assert!(app.areas.sources.iter().any(|(_, i)| *i == 0));
+    assert!(app.areas.sources.iter().any(|(_, link)| *link == Link::Source(0)));
 }
 
 #[test]
@@ -1193,29 +1203,8 @@ fn pane_dividers_drag_resize_and_persist_without_changing_reading_context() {
         divider.x + 10,
         divider.y + 3,
     );
-    let divider = app.areas.content_divider;
-    let code_width = app.areas.code.width;
-    mouse_at(
-        &mut app,
-        MouseEventKind::Down(MouseButton::Left),
-        divider.x,
-        divider.y + 4,
-    );
-    mouse_at(
-        &mut app,
-        MouseEventKind::Drag(MouseButton::Left),
-        divider.x + 12,
-        divider.y + 4,
-    );
-    mouse_at(
-        &mut app,
-        MouseEventKind::Up(MouseButton::Left),
-        divider.x + 12,
-        divider.y + 4,
-    );
     let (_, terminal) = screen(&mut app, 160, 36);
-    assert!(app.areas.code.width > code_width);
-    assert!(app.areas.reader.width >= 28);
+    assert!(app.areas.reader.width >= 40);
     assert_eq!(app.explorer.target(), selected);
     assert_eq!(app.document.kind, original_kind);
     assert!(app.dragging.is_none());
@@ -1223,18 +1212,14 @@ fn pane_dividers_drag_resize_and_persist_without_changing_reading_context() {
     preview("adjusted-panes", &terminal);
     let restored = PaneSizes::load(dir.path()).unwrap();
     assert_eq!(restored.files, app.pane_sizes.files);
-    assert_eq!(restored.code_percent, app.pane_sizes.code_percent);
     // Terminal size changes clamp displayed widths without destroying preferences.
     app.focus = Focus::Reader;
     screen(&mut app, 40, 16);
     assert_eq!(app.areas.file_divider.width, 0);
-    assert_eq!(app.areas.content_divider.width, 0);
     screen(&mut app, 110, 28);
-    assert!(app.areas.code.width >= 28);
-    assert!(app.areas.reader.width >= 28);
+    assert!(app.areas.reader.width >= 40);
     screen(&mut app, 160, 36);
     assert_eq!(app.pane_sizes.files, restored.files);
-    assert_eq!(app.pane_sizes.code_percent, restored.code_percent);
 }
 
 #[test]
@@ -1247,25 +1232,19 @@ fn keyboard_resizes_active_dividers_preserves_typing_and_can_reset() {
     press(&mut app, KeyCode::Char(']'));
     screen(&mut app, 150, 32);
     assert_eq!(app.areas.file_divider.x, files + 3);
-    app.focus = Focus::Reader;
-    let code = app.areas.code.width;
-    press(&mut app, KeyCode::Char('['));
-    screen(&mut app, 150, 32);
-    assert!(app.areas.code.width < code);
-    let ratio = app.pane_sizes.code_percent;
+    let width = app.pane_sizes.files;
     press(&mut app, KeyCode::Char('/'));
     press(&mut app, KeyCode::Char('['));
     assert_eq!(app.input, "/[");
-    assert_eq!(app.pane_sizes.code_percent, ratio);
+    assert_eq!(app.pane_sizes.files, width);
     press(&mut app, KeyCode::Esc);
     run_command(&mut app, "/layout reset").unwrap();
     assert_eq!(app.pane_sizes.files, None);
-    assert_eq!(app.pane_sizes.code_percent, 46);
     assert_eq!(PaneSizes::load(dir.path()).unwrap().files, None);
     app.sidebar = false;
     screen(&mut app, 80, 24);
     press(&mut app, KeyCode::Char(']'));
-    assert_eq!(app.pane_sizes.code_percent, 46);
+    assert_eq!(app.pane_sizes.files, None);
     assert!(app.status.contains("Widen"));
 }
 

@@ -189,18 +189,6 @@ pub fn secondary_only(evidence: &[Value]) -> bool {
         e["kind"] == "session" && !original(e) && e["provenance"]["source_type"] != "tool_record"
     }) && !evidence.iter().any(recorded_evidence)
 }
-pub fn sanitize_decision(decision: &mut Value) {
-    if (decision["provenance"] == "recorded"
-        && !arr(&decision["evidence"]).iter().any(recorded_evidence))
-        || (decision["provenance"] == "inferred" && secondary_only(arr(&decision["evidence"])))
-    {
-        decision["provenance"] = json!("unexplained");
-        decision["explanation"] = json!(
-            "Original turn unavailable or unverified in this saved review. Original rationale unknown; re-import the transcript."
-        );
-    }
-}
-
 /// Old saved answers must not keep an unverified Recorded badge after upgrading.
 pub fn sanitize_artifact(artifact: &mut Value) {
     let evidence = arr(&artifact["packet"]["evidence"]).to_vec();

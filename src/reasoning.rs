@@ -22,14 +22,12 @@ pub fn resolve_target(root:&Path,target:&str)->Result<Value>{
     Ok(json!({"target":target,"file":file,"symbol":symbol.map(|s|s.name.as_str()).unwrap_or(""),"start_line":start,"end_line":end}))
 }
 pub fn ensure_current(root:&Path,source:&str)->Result<Value>{
-    let review=match service::load(root){Ok(r)=>r,Err(e) if e.to_string()=="No review named latest"||e.to_string().starts_with("Cached session is not verifiably scoped")=>return service::review(root,&ReviewOptions{source:source.into(),..Default::default()}),Err(e)=>return Err(e)};
+    let review=match service::load(root){Ok(r)=>r,Err(e) if e.to_string()=="No review named latest"||e.to_string().starts_with("Cached session is not verifiably scoped")=>return service::review(root,&ReviewOptions{source:source.into()}),Err(e)=>return Err(e)};
     let root=Path::new(s(&review["root"]));let hashes=repository::sources(root)?.hashes;
     let sessions=history::saved(&review)?;
     let mismatch=sessions.iter().any(|s|source=="none"||(["codex","claude"].contains(&source)&&s["agent"]!=source));
     if review["head"]!=json!(repository::head(root))||review["file_hashes"]!=json!(hashes)||review["history_source"]!=source||arr(&review["changes"]).iter().any(|c|c["diff"].is_null())||mismatch||review["recent_code"].is_null(){
-        let baseline=review["baseline_id"].as_str().map(str::to_owned);
-        let base=review["comparison_base"].as_str().filter(|b|baseline.is_none()&&!b.starts_with("imported patch:")&&review["head"]!=*b).map(str::to_owned);
-        return service::review(root,&ReviewOptions{source:source.into(),baseline,base,..Default::default()});
+        return service::review(root,&ReviewOptions{source:source.into()});
     }Ok(review)
 }
 fn select_context(review:&Value,agent:&str,question:&str,file:Option<&str>,cancel:&Cancel)->Result<Vec<Value>>{

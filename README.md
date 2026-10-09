@@ -15,7 +15,7 @@ Connect Git diffs to saved Codex or Claude Code conversations, and ask for an ex
 [![Offline by default](https://img.shields.io/badge/Offline-by_default-78DCCE?style=flat-square&labelColor=182335)](#local-by-default-ai-when-you-ask)
 [![MIT License](https://img.shields.io/badge/License-MIT-A9A1FF?style=flat-square&labelColor=182335)](LICENSE)
 
-[Get started](#get-started) · [How it works](#how-evidence-is-captured-and-explained) · [Command guide](docs/usage.md)
+[Get started](#get-started) · [How it works](#how-evidence-is-captured-and-explained) · [Usage guide](docs/usage.md)
 
 </div>
 
@@ -50,13 +50,13 @@ wy loads your changes and matching agent history automatically.
 
 Codex is the default answering agent; type `/agent claude` to switch. Enrichment requires the chosen CLI to be installed and signed in. Changes, agent notes and saved evidence work offline.
 
-[All shortcuts](docs/usage.md#terminal-workspace) · [Review an agent session](docs/usage.md#review-changes) · [Shell commands](docs/usage.md#shell-command-reference)
+There are no subcommands: everything happens inside the app. [All shortcuts](docs/usage.md#terminal-workspace) · [Agent explanations](docs/usage.md#agent-explanations)
 
 ## How evidence is captured and explained
 
 1. **Read existing session logs.** Work with Codex or Claude Code as usual. When you open wy, it discovers local logs whose recorded working directory belongs to your repository. You do not need to start a wy recorder before coding.
 2. **Keep code and context together.** wy reads the Git diff and source files, and imports visible messages, tool calls and results. Supported edit records preserve session code even after it has been committed. Excerpts retain their file, session and event references in local `.wy/` artifacts.
-3. **Explain when you ask.** Press **w** to have your installed agent CLI select relevant code and explain it using bounded, redacted code, diff and conversation excerpts. wy checks that citations refer to supplied evidence and that a **Recorded** reason includes an exact saved assistant quote.
+3. **Explain when you ask.** Press **e** to have your installed agent CLI select relevant code and explain it using bounded, redacted code, diff and conversation excerpts. wy checks that citations refer to supplied evidence and that a **Recorded** reason includes an exact saved assistant quote.
 
 *Illustrative explanation of a configuration cache:*
 
@@ -68,7 +68,7 @@ Codex is the default answering agent; type `/agent claude` to switch. Enrichment
 
 Opening a citation like `[1]` shows the saved assistant message and surrounding conversation; `[2]` shows the supporting code. The answer is a fresh assessment of that evidence. wy saves it with its sources and flags later code changes when you reopen it.
 
-After committing reviewed changes, press **g** in the workspace to browse commits, or enter `/commit <hash>` to read their saved conversations. Shell commands `wy sessions --commit <hash>` and `wy session --commit <hash>` expose the same lookup. wy automatically matches a saved review's base and source snapshot to the commit during lookup. Use `wy link <hash> --review <review-id>` for an explicit association. Drag the workspace's pane dividers or use **[ / ]** to resize them; sizes are remembered for the repository. See [conversation lookup by commit](docs/usage.md#find-conversations-by-commit) for matching rules and local-storage limits.
+After committing reviewed changes, press **g** in the workspace to browse commits, or enter `/commit <hash>` to read their saved conversations. wy automatically matches a saved review's base and source snapshot to the commit during lookup. Use `/link <hash> [review-id]` for an explicit association. Drag the workspace's pane dividers or use **[ / ]** to resize them; sizes are remembered for the repository. See [conversation lookup by commit](docs/usage.md#find-conversations-by-commit) for matching rules and local-storage limits.
 
 Compacted summaries are labeled **Secondary evidence**. Their source links open saved original messages when references can be verified. Otherwise wy explicitly shows **Original turn unavailable** and leaves the original rationale unknown. Summaries and unclassified older captures cannot establish a **Recorded** reason. See [summary provenance](docs/usage.md#summaries-and-original-turns) for resumed and branched sessions.
 
@@ -90,19 +90,16 @@ A recorded statement can still be wrong. A linked session does not prove authors
 
 | Mode | What runs | What you need |
 | --- | --- | --- |
-| **Offline review** · `wy review`, `wy explain`, `wy ask` | Local detection, evidence retrieval and cached investigation. No model or network request. | A Git repository. |
-| **Agent explanation** · `wy reason`, `wy why`, in-app `/reason`, `/why` or `/ask` | Your installed Codex or Claude CLI receives bounded, redacted evidence and returns a fresh assessment. | The selected CLI, sign-in and available account usage. |
-| **Optional model enrichment** · `--model` | A configured Ollama-compatible endpoint enriches detected decisions or answers follow-ups. | An explicitly configured model and endpoint. |
+| **Browsing** · changes, agent notes, sources, commits | Git diffs and saved conversation excerpts. No model or network request. | A Git repository. |
+| **Agent explanation** · **e**, `/reason`, `/why` or `/ask` | Your installed Codex or Claude CLI receives bounded, redacted evidence and returns a fresh assessment. | The selected CLI, sign-in and available account usage. |
 
 wy does not modify application source or execute the code it reviews. Reviews, source snapshots and normalized conversation excerpts stay in local `.wy/` artifacts unless you explicitly request model processing. Private reasoning is excluded. Redaction is best-effort; local artifacts are not encrypted. Add `.wy/` to your repository's `.gitignore` before sharing it.
 
-See the [model setup and reflection workflow](docs/usage.md#optional-model-analysis) for Ollama configuration and assessments supplied by an existing coding conversation.
-
 ## Experimental status
 
-**wy is experimental software (0.2.0).** The interface, commands and saved artifact formats are evolving. Use its explanations as a starting point for investigation, and verify important claims against the cited code and conversation.
+**wy is experimental software (0.2.0).** The interface and saved artifact formats are evolving. Use its explanations as a starting point for investigation, and verify important claims against the cited code and conversation.
 
-Offline detection is deliberately selective and capped at twelve decisions per review. It covers patterns for caching, dependency versions, operational limits, database schemas and retries; it does not discover every architectural decision. Rust, JavaScript, TypeScript and JSON use tree-sitter syntax navigation; other text files use line anchors. Retrieval is lexical, and citations need human judgment.
+Rust, JavaScript, TypeScript and JSON use tree-sitter syntax navigation; other text files use line anchors. Retrieval is lexical, and citations need human judgment.
 
 ## Development
 
@@ -115,6 +112,6 @@ cargo test --locked
 
 Automated checks verify regressions, not real-world accuracy. See [evaluation](docs/evaluation.md) for its scope.
 
-[Command guide](docs/usage.md) · [Release setup](docs/releasing.md) · [Architecture and limitations](docs/architecture.md) · [Security boundaries](docs/security.md) · [Codex format support](docs/codex-formats.md)
+[Usage guide](docs/usage.md) · [Release setup](docs/releasing.md) · [Architecture and limitations](docs/architecture.md) · [Security boundaries](docs/security.md) · [Codex format support](docs/codex-formats.md)
 
 Licensed under [MIT](LICENSE).

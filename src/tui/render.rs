@@ -1,3 +1,5 @@
+//! Two areas: the file tree and one reader that switches between Changes and Notes.
+//! No boxes; a single contextual hint line at the bottom.
 use super::*;
 
 impl Workspace {
@@ -15,76 +17,385 @@ impl Workspace {
             );
             return;
         }
-        let area = frame.area().inner(Margin::new(1, 0));
-        let inline_input = self.document.artifact.is_some()
-            && matches!(self.editing, None | Some(Input::Question));
-        let input_height = if inline_input {
-            0
-        } else if self.editing.is_some() {
-            3
-        } else {
-            0
-        };
+        let area = frame.area();
         let status_height = u16::from(self.job.is_some() || !self.status.is_empty());
         let rows = Layout::vertical([
             Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(3),
-            Constraint::Length(input_height),
             Constraint::Length(status_height),
             Constraint::Length(1),
         ])
         .split(area);
         self.draw_header(frame, rows[0]);
+        let body = rows[2];
+        self.areas.body = body;
         let narrow = area.width < 88;
-        let paired = self.code.is_some() && self.document.artifact.is_some();
-        let split = paired && area.width >= 108;
         let show_files = self.sidebar && (!narrow || self.focus == Focus::Files);
         let show_reader = !show_files || !narrow;
-        self.areas.body = rows[1];
-        let file_width = if show_files {
-            if narrow {
-                rows[1].width
-            } else {
-                self.pane_sizes.file_width(rows[1].width, split)
-            }
-        } else {
-            0
+        let file_width = match (show_files, narrow) {
+            (false, _) => 0,
+            (true, true) => body.width,
+            (true, false) => self.pane_sizes.file_width(body.width),
         };
         let columns = Layout::horizontal([
             Constraint::Length(file_width),
             Constraint::Length(u16::from(show_files && show_reader)),
             Constraint::Min(0),
         ])
-        .split(rows[1]);
+        .split(body);
         if show_files {
             self.draw_files(frame, columns[0]);
         }
         if show_files && show_reader {
             self.areas.file_divider = columns[1];
-            self.draw_divider(frame, columns[1], Divider::Files);
+            self.draw_divider(frame, columns[1]);
         }
-        self.areas.content = columns[2];
+        // The reader remembers whether Changes or Notes was last shown.
+        match self.focus {
+            Focus::Reader => self.notes_view = true,
+            Focus::Code => self.notes_view = false,
+            Focus::Files => {}
+        }
         if show_reader {
-            if split {
-                let panes = Layout::horizontal([
-                    Constraint::Length(self.pane_sizes.code_width(columns[2].width)),
-                    Constraint::Length(1),
-                    Constraint::Min(0),
-                ])
-                .split(columns[2]);
-                self.draw_code(frame, panes[0]);
-                self.draw_answer(frame, panes[2], inline_input);
-                self.areas.content_divider = panes[1];
-                self.draw_divider(frame, panes[1], Divider::Content);
-            } else if paired && self.focus != Focus::Reader {
-                self.draw_code(frame, columns[2]);
+            let reader = columns[2].inner(Margin::new(2, 0));
+            if self.shows_changes() {
+                self.draw_code(frame, reader);
             } else {
-                self.draw_answer(frame, columns[2], inline_input);
+                self.draw_reader(frame, reader, Focus::Reader);
             }
         }
-        if !inline_input {
-            self.draw_input(frame, rows[2]);
+        self.draw_status(frame, rows[3]);
+        if self.editing.is_some() {
+            self.draw_input(frame, rows[4]);
+        } else {
+            self.draw_keys(frame, rows[4]);
         }
+    }
+    /// Changes is shown for the selected file unless Notes (or another view) is active.
+    fn shows_changes(&self) -> bool {
+        self.code.is_some()
+            && match self.focus {
+                Focus::Code => true,
+                Focus::Files => !self.notes_view,
+                Focus::Reader => false,
+            }
+    }
+    fn draw_code(&mut self, frame: &mut Frame, area: Rect) {
+        if let Some(code) = self.code.take() {
+            let answer = std::mem::replace(&mut self.document, code);
+            self.draw_reader(frame, area, Focus::Code);
+            self.code = Some(std::mem::replace(&mut self.document, answer));
+        }
+    }
+    fn draw_header(&mut self, frame: &mut Frame, area: Rect) {
+        let repo = self.root.file_name().unwrap_or_default().to_string_lossy();
+        let files = explorer::files(&self.review).len();
+        let title = Line::from(vec![
+            Span::styled(" wy ", Style::default().fg(BG).bg(ACCENT).bold()),
+            Span::styled(format!("  {repo}"), Style::default().fg(TEXT).bold()),
+            Span::styled(
+                format!(" · {files} file{}", if files == 1 { "" } else { "s" }),
+                Style::default().fg(MUTED),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(title), area);
+        let agent = Line::from(Span::styled(
+            format!(" {} ", self.agent),
+            Style::default().fg(BG).bg(document::agent_color(&self.agent)),
+        ));
+        frame.render_widget(Paragraph::new(agent).right_aligned(), area);
+    }
+    fn draw_divider(&self, frame: &mut Frame, area: Rect) {
+        let lines: Vec<_> = (0..area.height).map(|_| Line::from("│")).collect();
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().fg(if self.dragging.is_some() {
+                ACCENT
+            } else {
+                BORDER
+            })),
+            area,
+        );
+    }
+    fn draw_files(&mut self, frame: &mut Frame, area: Rect) {
+        // The filter line appears only while a filter is being typed or applied.
+        let filtering = self.editing == Some(Input::Filter) || !self.explorer.filter.is_empty();
+        let sections = Layout::vertical([
+            Constraint::Length(u16::from(filtering)),
+            Constraint::Min(1),
+        ])
+        .split(area);
+        if filtering {
+            frame.render_widget(
+                Paragraph::new(format!(" / {}", self.explorer.filter))
+                    .style(Style::default().fg(ACCENT)),
+                sections[0],
+            );
+        }
+        self.areas.files = sections[1];
+        let available = sections[1].width.saturating_sub(3) as usize;
+        let items: Vec<_> = self
+            .explorer
+            .rows
+            .iter()
+            .map(|row| {
+                let icon = if row.expandable {
+                    if row.expanded { "▾" } else { "▸" }
+                } else if row.kind == Kind::Symbol {
+                    "·"
+                } else {
+                    " "
+                };
+                let reviewed = row.kind == Kind::File
+                    && row
+                        .target
+                        .as_ref()
+                        .is_some_and(|t| self.explorer.reviewed.contains(&t.file));
+                let label = format!(
+                    "{}{icon} {}{}",
+                    "  ".repeat(row.depth.min(6)),
+                    row.label,
+                    if row.kind == Kind::Folder { "/" } else { "" }
+                );
+                let state = row
+                    .target
+                    .as_ref()
+                    .filter(|_| row.kind == Kind::File)
+                    .and_then(|t| self.file_state(&t.file));
+                let suffix = match row.kind {
+                    Kind::File if state.is_some() => format!(" · {}", state.unwrap().0),
+                    Kind::Folder => format!(" {}", row.count),
+                    Kind::File if reviewed => " ✓".into(),
+                    Kind::File if row.diff => format!(" +{} −{}", row.added, row.removed),
+                    Kind::File if row.session => " · recorded".into(),
+                    Kind::File => String::new(),
+                    Kind::Symbol => {
+                        format!(" :{}", row.target.as_ref().map(|t| t.line).unwrap_or(0))
+                    }
+                };
+                let label = fit(
+                    &label,
+                    available
+                        .saturating_sub(Line::from(suffix.as_str()).width())
+                        .max(4),
+                );
+                let color = match row.kind {
+                    Kind::Folder => ACCENT,
+                    Kind::File if reviewed => GREEN,
+                    Kind::File => TEXT,
+                    Kind::Symbol => MUTED,
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(label, Style::default().fg(color)),
+                    Span::styled(
+                        suffix,
+                        Style::default().fg(state
+                            .map(|(_, color)| color)
+                            .unwrap_or(if reviewed { GREEN } else { MUTED })),
+                    ),
+                ]))
+            })
+            .collect();
+        if items.is_empty() {
+            frame.render_widget(
+                Paragraph::new(if self.explorer.filter.is_empty() {
+                    " No changed files or recorded edits\n r refreshes"
+                } else {
+                    " No matching files\n Esc clears the filter"
+                })
+                .style(Style::default().fg(MUTED)),
+                sections[1],
+            );
+        } else {
+            let highlight = if self.focus == Focus::Files {
+                Style::default().bg(SELECT).bold()
+            } else {
+                Style::default().bg(PANEL)
+            };
+            frame.render_stateful_widget(
+                List::new(items)
+                    .highlight_symbol("› ")
+                    .highlight_style(highlight),
+                sections[1],
+                &mut self.explorer.state,
+            );
+        }
+    }
+    /// Title on the left, Changes · Notes · Enriched on the right.
+    fn draw_title(&mut self, frame: &mut Frame, area: Rect, pane: Focus) {
+        let mut tabs = vec![];
+        if self.code.is_some() || pane == Focus::Code {
+            tabs.push(("Why", View::Recorded, Focus::Reader));
+            tabs.push(("Code", View::Diff, Focus::Code));
+            if self
+                .current_key()
+                .is_some_and(|k| self.answer_for(&k).is_some())
+            {
+                tabs.push(("Enriched", View::Explanation, Focus::Reader));
+            }
+        }
+        let active = |view: View| match view {
+            View::Diff => pane == Focus::Code,
+            other => pane == Focus::Reader && self.document.kind == other,
+        };
+        let mut x = area.right();
+        let mut placed = vec![];
+        for (label, view, focus) in tabs.into_iter().rev() {
+            let width = label.len() as u16 + 2;
+            if x < area.x + width + 12 {
+                break;
+            }
+            x -= width;
+            placed.push((Rect::new(x, area.y, width, 1), label, view, focus));
+        }
+        for (rect, label, view, focus) in placed {
+            let style = if active(view) {
+                Style::default().fg(ACCENT).bold()
+            } else {
+                Style::default().fg(MUTED)
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(label, style),
+                    Span::raw("  "),
+                ])),
+                rect,
+            );
+            self.areas.tabs.push((rect, view, focus));
+        }
+        let title_width = x.saturating_sub(area.x).saturating_sub(1);
+        frame.render_widget(
+            Paragraph::new(fit(&self.document.title, title_width as usize))
+                .style(Style::default().fg(TEXT).bold()),
+            Rect::new(area.x, area.y, title_width, 1),
+        );
+    }
+    fn draw_reader(&mut self, frame: &mut Frame, area: Rect, pane: Focus) {
+        if pane == Focus::Code {
+            self.areas.code = area;
+        } else {
+            self.areas.reader = area;
+        }
+        let notice_height = self
+            .document
+            .notice
+            .as_ref()
+            .map(|(text, _)| {
+                Paragraph::new(text.as_str())
+                    .wrap(Wrap { trim: false })
+                    .line_count(area.width)
+                    .clamp(1, 2) as u16
+            })
+            .unwrap_or(0);
+        let rows = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(notice_height),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(area);
+        self.draw_title(frame, rows[0], pane);
+        if let Some((text, color)) = &self.document.notice {
+            frame.render_widget(
+                Paragraph::new(text.as_str())
+                    .wrap(Wrap { trim: false })
+                    .style(Style::default().fg(*color)),
+                rows[1],
+            );
+        }
+        let content = Rect::new(rows[3].x, rows[3].y, rows[3].width.saturating_sub(1), rows[3].height);
+        let mut lines = self.document.lines.clone();
+        let mut source_positions = vec![];
+        for (position, (line, link)) in self.document.sources.iter().enumerate() {
+            let offset = if *line == 0 {
+                0
+            } else {
+                Paragraph::new(lines[..*line].to_vec())
+                    .wrap(Wrap { trim: false })
+                    .line_count(content.width)
+            };
+            let height = Paragraph::new(lines[*line].clone())
+                .wrap(Wrap { trim: false })
+                .line_count(content.width)
+                .max(1);
+            if self.document.source_selection == Some(position) {
+                lines[*line] = lines[*line].clone().style(Style::default().bg(SELECT).bold());
+                let scroll = usize::from(self.document.scroll);
+                if offset < scroll {
+                    self.document.scroll = offset.min(u16::MAX as usize) as u16;
+                } else if offset + height > scroll + usize::from(content.height) {
+                    self.document.scroll = (offset + height)
+                        .saturating_sub(usize::from(content.height))
+                        .min(u16::MAX as usize) as u16;
+                }
+            }
+            source_positions.push((offset, height, link.clone()));
+        }
+        let mut paragraph = Paragraph::new(lines);
+        if !self.document.code() {
+            paragraph = paragraph.wrap(Wrap { trim: false });
+        }
+        let count = paragraph.line_count(content.width);
+        let scroll_max = count
+            .saturating_sub(content.height as usize)
+            .min(u16::MAX as usize) as u16;
+        self.document.scroll = self.document.scroll.min(scroll_max);
+        for (offset, height, link) in source_positions {
+            let scroll = usize::from(self.document.scroll);
+            let top = offset.max(scroll);
+            let bottom = (offset + height).min(scroll + usize::from(content.height));
+            if bottom > top {
+                self.areas.sources.push((
+                    Rect::new(
+                        content.x,
+                        content.y + (top - scroll) as u16,
+                        content.width,
+                        (bottom - top) as u16,
+                    ),
+                    link,
+                ));
+            }
+        }
+        let longest = self
+            .document
+            .lines
+            .iter()
+            .map(Line::width)
+            .max()
+            .unwrap_or(0);
+        self.document.horizontal = self.document.horizontal.min(
+            longest
+                .saturating_sub(content.width as usize)
+                .min(u16::MAX as usize) as u16,
+        );
+        let page_size = content.height.saturating_sub(2).max(1);
+        if pane == Focus::Code {
+            self.code_scroll_max = scroll_max;
+            self.code_page_size = page_size;
+        } else {
+            self.scroll_max = scroll_max;
+            self.page_size = page_size;
+        }
+        frame.render_widget(
+            paragraph.scroll((self.document.scroll, self.document.horizontal)),
+            content,
+        );
+        if count > content.height as usize && content.height > 0 {
+            let mut state = ScrollbarState::new(count)
+                .position(self.document.scroll as usize)
+                .viewport_content_length(content.height as usize);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(None)
+                    .end_symbol(None)
+                    .thumb_style(Style::default().fg(MUTED))
+                    .track_style(Style::default().fg(BG)),
+                Rect::new(rows[3].right() - 1, rows[3].y, 1, rows[3].height),
+                &mut state,
+            );
+        }
+    }
+    fn draw_status(&mut self, frame: &mut Frame, area: Rect) {
         let status = if let Some(job) = &self.job {
             let spinner =
                 ['◐', '◓', '◑', '◒'][(job.started.elapsed().as_millis() / 180 % 4) as usize];
@@ -100,547 +411,68 @@ impl Workspace {
                 }
             )
         } else {
-            format!(" {} {}", if self.error { "!" } else { "·" }, self.status)
+            format!(" {}", self.status)
         };
-        frame.render_widget(
-            Paragraph::new(status).style(Style::default().fg(if self.error {
-                RED
-            } else if self.job.is_some() {
-                AMBER
-            } else {
-                MUTED
-            })),
-            rows[3],
-        );
-        let keys = if self.editing.is_some() {
-            " Enter submit   Esc cancel   Ctrl+U clear"
-        } else if self.document.kind == View::Commits && self.focus == Focus::Reader {
-            " ↑↓ commits   Enter open   /commit HASH   Esc back   ? help"
-        } else if self.document.source_selection.is_some() && self.focus == Focus::Reader {
-            " ↑↓ sources   Enter open   Esc read   ? help"
-        } else if self.document.historical() && self.focus == Focus::Reader {
-            if self.document.sources.is_empty() {
-                " ↑↓ scroll   g commits   Esc back   [ ] resize   ? help"
-            } else {
-                " s Sources   g commits   Esc back   [ ] resize   ? help"
-            }
-        } else if area.width < 70 {
-            " e Enrich   g commits   Tab panes   ? help"
-        } else if self.document.artifact.is_some() && self.focus == Focus::Reader {
-            if self.document.kind == View::Recorded {
-                " s Sources   e Enrich   Tab panes   ? help"
-            } else {
-                " s Sources   i Follow-up   o Agent notes   R Update   Esc back   ? help"
-            }
+        let color = if self.error {
+            RED
+        } else if self.job.is_some() {
+            AMBER
+        } else {
+            MUTED
+        };
+        frame.render_widget(Paragraph::new(status).style(Style::default().fg(color)), area);
+    }
+    /// At most four keys, chosen for what is on screen.
+    fn draw_keys(&mut self, frame: &mut Frame, area: Rect) {
+        let reader = self.focus == Focus::Reader;
+        let other = if self.shows_changes() { "why" } else { "code" };
+        let keys: Vec<(&str, &str)> = if reader && self.document.kind == View::Commits {
+            vec![("↑↓", "commits"), ("Enter", "open"), ("Esc", "back")]
+        } else if reader && self.document.source_selection.is_some() {
+            vec![("↑↓", "select"), ("Enter", "open"), ("Esc", "done")]
+        } else if reader && self.document.historical() {
+            vec![("↑↓", "scroll"), ("Esc", "back"), ("?", "more")]
+        } else if reader && self.document.kind == View::Explanation {
+            vec![("i", "ask"), ("Tab", "code"), ("Esc", "back"), ("?", "more")]
+        } else if self.focus == Focus::Code && self.code_link().is_some() {
+            vec![("Enter", "turn"), ("Tab", "why"), ("e", "explain"), ("?", "more")]
+        } else if reader && self.document.kind == View::Recorded && !self.document.sources.is_empty() {
+            vec![("Enter", "show code"), ("Tab", "code"), ("e", "explain"), ("?", "more")]
         } else if self.focus == Focus::Files {
-            " ↑↓ navigate   Enter code   e Enrich   g commits   [ ] resize   ? help"
-        } else if self.focus == Focus::Code {
-            " ↑↓ code   e Enrich   Tab agent notes   ? help"
+            vec![("↑↓", "files"), ("Tab", other), ("e", "explain"), ("?", "more")]
         } else {
-            " ↑↓ scroll   e Enrich   Tab files   Esc back   ? help"
+            vec![("↑↓", "scroll"), ("Tab", other), ("e", "explain"), ("?", "more")]
         };
-        frame.render_widget(
-            Paragraph::new(keys).style(Style::default().fg(ACCENT).bg(PANEL)),
-            rows[4],
-        );
-    }
-    fn draw_code(&mut self, frame: &mut Frame, area: Rect) {
-        if let Some(code) = self.code.take() {
-            let answer = std::mem::replace(&mut self.document, code);
-            self.draw_reader(frame, area, Focus::Code);
-            self.code = Some(std::mem::replace(&mut self.document, answer));
+        let mut spans = vec![Span::raw(" ")];
+        for (key, label) in keys {
+            spans.push(Span::styled(key, Style::default().fg(ACCENT).bold()));
+            spans.push(Span::styled(format!(" {label}   "), Style::default().fg(MUTED)));
         }
-    }
-    fn draw_answer(&mut self, frame: &mut Frame, area: Rect, inline_input: bool) {
-        if inline_input {
-            let parts = Layout::vertical([
-                Constraint::Min(1),
-                Constraint::Length(if self.editing.is_some() {
-                    3
-                } else if self
-                    .document
-                    .artifact
-                    .as_ref()
-                    .is_some_and(|a| document::is_recorded(a))
-                {
-                    2
-                } else {
-                    1
-                }),
-            ])
-            .split(area);
-            self.draw_reader(frame, parts[0], Focus::Reader);
-            self.draw_input(frame, parts[1]);
-        } else {
-            self.draw_reader(frame, area, Focus::Reader);
-        }
-    }
-    fn draw_header(&mut self, frame: &mut Frame, area: Rect) {
-        let repo = self.root.file_name().unwrap_or_default().to_string_lossy();
-        let (added, removed) = document::totals(&self.review);
-        let mut spans = vec![
-            Span::styled(" wy ", Style::default().fg(BG).bg(ACCENT).bold()),
-            Span::styled(format!("  {repo}  "), Style::default().fg(TEXT).bold()),
-            Span::styled(
-                format!("·  {} files  ", explorer::files(&self.review).len()),
-                Style::default().fg(MUTED),
-            ),
-            Span::styled(format!("+{added} "), Style::default().fg(GREEN)),
-            Span::styled(format!("−{removed}"), Style::default().fg(RED)),
-        ];
-        if area.width > 85 {
-            spans.push(Span::styled(
-                format!("    {} · enrichment on request", self.agent),
-                Style::default().fg(MUTED),
-            ));
-        }
-        let button_width = if area.width >= 70 { 13 } else { 0 };
-        let title = Rect::new(
-            area.x,
-            area.y,
-            area.width.saturating_sub(button_width),
-            area.height,
-        );
-        frame.render_widget(Paragraph::new(Line::from(spans)), title);
-        if button_width > 0 {
-            self.areas.commits = Rect::new(title.right(), area.y, button_width, 1);
-            frame.render_widget(
-                Paragraph::new(" g Commits ").style(Style::default().fg(ACCENT).bg(PANEL)),
-                self.areas.commits,
-            );
-        }
-    }
-    fn draw_divider(&self, frame: &mut Frame, area: Rect, divider: Divider) {
-        let lines: Vec<_> = (0..area.height).map(|_| Line::from("│")).collect();
-        frame.render_widget(
-            Paragraph::new(lines).style(Style::default().fg(if self.dragging == Some(divider) {
-                ACCENT
-            } else {
-                BORDER
-            })),
-            area,
-        );
-    }
-    fn panel(&self, title: impl Into<String>, focus: Focus) -> Block<'static> {
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(if self.focus == focus { ACCENT } else { BORDER }))
-            .title(Line::styled(
-                format!(" {} ", title.into()),
-                Style::default()
-                    .fg(if self.focus == focus { ACCENT } else { MUTED })
-                    .bold(),
-            ))
-    }
-    fn draw_files(&mut self, frame: &mut Frame, area: Rect) {
-        let matched = explorer::files(&self.review)
-            .into_iter()
-            .filter(|c| {
-                s(&c["file"])
-                    .to_lowercase()
-                    .contains(&self.explorer.filter.to_lowercase())
-            })
-            .count();
-        let block = self
-            .panel(format!("Files · {matched}"), Focus::Files)
-            .style(Style::default().bg(PANEL));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        let sections = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(1),
-            Constraint::Length(if inner.height > 8 { 2 } else { 0 }),
-        ])
-        .split(inner);
-        let filter = if self.explorer.filter.is_empty() {
-            " f  filter files".into()
-        } else {
-            format!(" / {}", self.explorer.filter)
-        };
-        frame.render_widget(
-            Paragraph::new(filter).style(Style::default().fg(MUTED)),
-            sections[0],
-        );
-        self.areas.files = sections[1];
-        let items =
-            self.explorer
-                .rows
-                .iter()
-                .map(|row| {
-                    let icon = if row.expandable {
-                        if row.expanded { "▾" } else { "▸" }
-                    } else if row.kind == Kind::Symbol {
-                        "·"
-                    } else {
-                        " "
-                    };
-                    let indent = "  ".repeat(row.depth.min(6));
-                    let reviewed = row.kind == Kind::File
-                        && row
-                            .target
-                            .as_ref()
-                            .is_some_and(|t| self.explorer.reviewed.contains(&t.file));
-                    let label = format!(
-                        "{}{} {}{}",
-                        indent,
-                        icon,
-                        row.label,
-                        if row.kind == Kind::Folder { "/" } else { "" }
-                    );
-                    let state = row
-                        .target
-                        .as_ref()
-                        .filter(|_| row.kind == Kind::File)
-                        .and_then(|t| self.file_state(&t.file));
-                    let suffix = match row.kind {
-                        Kind::File if state.is_some() => format!(" · {}", state.unwrap().0),
-                        Kind::Folder => format!(" {}", row.count),
-                        Kind::File if reviewed => " ✓".into(),
-                        Kind::File => format!(
-                            "{}{}",
-                            if row.diff {
-                                format!(" +{} −{}", row.added, row.removed)
-                            } else {
-                                String::new()
-                            },
-                            if row.session && !row.diff {
-                                " · recorded"
-                            } else {
-                                ""
-                            }
-                        ),
-                        Kind::Symbol => {
-                            format!(" :{}", row.target.as_ref().map(|t| t.line).unwrap_or(0))
-                        }
-                    };
-                    let available = sections[1].width.saturating_sub(3) as usize;
-                    let label = fit(
-                        &label,
-                        available
-                            .saturating_sub(Line::from(suffix.as_str()).width())
-                            .max(4),
-                    );
-                    ListItem::new(Line::from(vec![
-                        Span::styled(
-                            label,
-                            Style::default().fg(match row.kind {
-                                Kind::Folder => ACCENT,
-                                Kind::File => {
-                                    if reviewed {
-                                        GREEN
-                                    } else {
-                                        TEXT
-                                    }
-                                }
-                                Kind::Symbol => MUTED,
-                            }),
-                        ),
-                        Span::styled(
-                            suffix,
-                            Style::default().fg(state
-                                .map(|(_, color)| color)
-                                .unwrap_or(if reviewed { GREEN } else { MUTED })),
-                        ),
-                    ]))
-                })
-                .collect::<Vec<_>>();
-        if items.is_empty() {
-            frame.render_widget(
-                Paragraph::new(if self.explorer.filter.is_empty() {
-                    " No changed files or recorded edits\n r refreshes"
-                } else {
-                    " No matching files\n f edits · Esc clears"
-                })
-                .style(Style::default().fg(MUTED)),
-                sections[1],
-            );
-        } else {
-            frame.render_stateful_widget(
-                List::new(items)
-                    .highlight_symbol("› ")
-                    .highlight_style(Style::default().bg(SELECT).bold()),
-                sections[1],
-                &mut self.explorer.state,
-            );
-        }
-        let detail = " ←→ expand · Space toggle";
-        frame.render_widget(
-            Paragraph::new(detail)
-                .wrap(Wrap { trim: false })
-                .style(Style::default().fg(MUTED))
-                .block(
-                    Block::default()
-                        .borders(Borders::TOP)
-                        .border_style(Style::default().fg(BORDER)),
-                ),
-            sections[2],
-        );
-    }
-    fn draw_reader(&mut self, frame: &mut Frame, area: Rect, pane: Focus) {
-        if pane == Focus::Code {
-            self.areas.code = area;
-        } else {
-            self.areas.reader = area;
-        }
-        let block = self
-            .panel(self.document.kind.label(), pane)
-            .padding(Padding::horizontal(1));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        let title_height = if inner.height < 6 { 1 } else { 2 };
-        let tabs_height = u16::from(
-            inner.height >= 6
-                && pane == Focus::Reader
-                && self.document.artifact.is_some()
-                && (self.document.kind != View::Recorded
-                    || self
-                        .current_key()
-                        .is_some_and(|k| self.answer_for(&k).is_some())),
-        );
-        let notice_height = self
-            .document
-            .notice
-            .as_ref()
-            .map(|(text, _)| {
-                Paragraph::new(text.as_str())
-                    .wrap(Wrap { trim: false })
-                    .line_count(inner.width)
-                    .clamp(1, 3) as u16
-            })
-            .unwrap_or(0)
-            .min(inner.height.saturating_sub(title_height + tabs_height + 1));
-        let rows = Layout::vertical([
-            Constraint::Length(tabs_height),
-            Constraint::Length(title_height),
-            Constraint::Length(notice_height),
-            Constraint::Min(1),
-        ])
-        .split(inner);
-        let mut x = rows[0].x;
-        let mut tabs = vec![("o", View::Recorded)];
-        if pane == Focus::Reader
-            && self
-                .current_key()
-                .is_some_and(|k| self.answer_for(&k).is_some())
-        {
-            tabs.push(("v", View::Explanation));
-        }
-        for (key, view) in tabs {
-            let label = format!(" {key} {} ", view.label());
-            let width = Line::from(label.as_str()).width() as u16;
-            if rows[0].height == 0 || x + width > rows[0].right() {
-                break;
-            }
-            let area = Rect::new(x, rows[0].y, width, 1);
-            frame.render_widget(
-                Paragraph::new(label).style(if self.document.kind == view {
-                    Style::default().fg(ACCENT).bg(SELECT).bold()
-                } else {
-                    Style::default().fg(MUTED)
-                }),
-                area,
-            );
-            self.areas.tabs.push((area, view, pane));
-            x += width + 1;
-        }
-        frame.render_widget(
-            Paragraph::new(format!(
-                "{}{}",
-                if title_height > 1 { "\n" } else { "" },
-                self.document.title
-            ))
-            .style(Style::default().fg(TEXT).bold()),
-            rows[1],
-        );
-        if let Some((text, color)) = &self.document.notice {
-            frame.render_widget(
-                Paragraph::new(text.as_str())
-                    .wrap(Wrap { trim: false })
-                    .style(Style::default().fg(*color)),
-                rows[2],
-            );
-        }
-        let mut lines = self.document.lines.clone();
-        let mut source_positions = vec![];
-        for (position, (line, index)) in self.document.sources.iter().enumerate() {
-            let offset = if *line == 0 {
-                0
-            } else {
-                Paragraph::new(lines[..*line].to_vec())
-                    .wrap(Wrap { trim: false })
-                    .line_count(rows[3].width)
-            };
-            let height = Paragraph::new(lines[*line].clone())
-                .wrap(Wrap { trim: false })
-                .line_count(rows[3].width)
-                .max(1);
-            if self.document.source_selection == Some(position) {
-                lines[*line] = lines[*line]
-                    .clone()
-                    .style(Style::default().fg(ACCENT).bg(SELECT).bold());
-                let scroll = usize::from(self.document.scroll);
-                if offset < scroll {
-                    self.document.scroll = offset.min(u16::MAX as usize) as u16;
-                } else if offset + height > scroll + usize::from(rows[3].height) {
-                    self.document.scroll = (offset + height)
-                        .saturating_sub(usize::from(rows[3].height))
-                        .min(u16::MAX as usize) as u16;
-                }
-            }
-            source_positions.push((offset, height, *index));
-        }
-        let mut paragraph = Paragraph::new(lines);
-        if !self.document.code() {
-            paragraph = paragraph.wrap(Wrap { trim: false });
-        }
-        let count = paragraph.line_count(rows[3].width);
-        let scroll_max = count
-            .saturating_sub(rows[3].height as usize)
-            .min(u16::MAX as usize) as u16;
-        self.document.scroll = self.document.scroll.min(scroll_max);
-        for (offset, height, index) in source_positions {
-            let scroll = usize::from(self.document.scroll);
-            let top = offset.max(scroll);
-            let bottom = (offset + height).min(scroll + usize::from(rows[3].height));
-            if bottom > top {
-                self.areas.sources.push((
-                    Rect::new(
-                        rows[3].x,
-                        rows[3].y + (top - scroll) as u16,
-                        rows[3].width,
-                        (bottom - top) as u16,
-                    ),
-                    index,
-                ));
-            }
-        }
-        let longest = self
-            .document
-            .lines
-            .iter()
-            .map(Line::width)
-            .max()
-            .unwrap_or(0);
-        self.document.horizontal = self.document.horizontal.min(
-            longest
-                .saturating_sub(rows[3].width as usize)
-                .min(u16::MAX as usize) as u16,
-        );
-        let page_size = rows[3].height.saturating_sub(2).max(1);
-        if pane == Focus::Code {
-            self.code_scroll_max = scroll_max;
-            self.code_page_size = page_size;
-        } else {
-            self.scroll_max = scroll_max;
-            self.page_size = page_size;
-        }
-        frame.render_widget(
-            paragraph.scroll((self.document.scroll, self.document.horizontal)),
-            rows[3],
-        );
-        if count > rows[3].height as usize && rows[3].height > 0 {
-            let mut state = ScrollbarState::new(count)
-                .position(self.document.scroll as usize)
-                .viewport_content_length(rows[3].height as usize);
-            frame.render_stateful_widget(
-                Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                    .begin_symbol(None)
-                    .end_symbol(None)
-                    .thumb_style(Style::default().fg(ACCENT))
-                    .track_style(Style::default().fg(BORDER)),
-                Rect::new(area.right() - 1, rows[3].y, 1, rows[3].height),
-                &mut state,
-            );
-        }
-        if area.width > 22 && area.height > 3 {
-            let position = format!(
-                " {}–{} / {} ",
-                usize::from(self.document.scroll) + 1,
-                (usize::from(self.document.scroll) + usize::from(rows[3].height)).min(count),
-                count
-            );
-            let width = position.len() as u16;
-            frame.render_widget(
-                Paragraph::new(position).style(Style::default().fg(MUTED).bg(BG)),
-                Rect::new(
-                    area.right().saturating_sub(width + 2),
-                    area.bottom() - 1,
-                    width,
-                    1,
-                ),
-            );
-        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
     fn draw_input(&mut self, frame: &mut Frame, area: Rect) {
         self.areas.input = area;
-        if let Some(mode) = self.editing {
-            let label = match mode {
-                Input::Command => format!("Command · {} · history {}", self.agent, self.source),
-                Input::Question => format!("Ask {} · {}", self.agent, self.question_scope()),
-                Input::Filter => "Filter file paths · live results".into(),
-            };
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(ACCENT))
-                .title(format!(" {label} "));
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
-            let visible = input_tail(&self.input, inner.width.saturating_sub(1) as usize);
-            let width = Line::from(visible.as_str()).width() as u16;
-            frame.render_widget(
-                Paragraph::new(visible).style(Style::default().fg(TEXT)),
-                inner,
-            );
-            if inner.width > 0 && inner.height > 0 {
-                frame.set_cursor_position((inner.x + width.min(inner.width - 1), inner.y));
-            }
-        } else if self
-            .document
-            .artifact
-            .as_ref()
-            .is_some_and(|a| document::is_recorded(a))
-        {
-            self.areas.input = Rect::default();
-            let key = self.current_key().unwrap_or_default();
-            let running = self.job.as_ref().is_some_and(|j| j.key == key);
-            let queued = self.queue.iter().any(|q| options_key(q) == key);
-            let ready = self.answer_for(&key).is_some();
-            let (label, hint) = if running {
-                (" Enriching…", " Keep browsing; this file will say ready")
-            } else if queued {
-                (" Queued", " Keep browsing; this file will say ready")
-            } else if ready {
-                (" v View enrichment", " Saved for this change")
-            } else {
-                (
-                    " e Enrich explanation",
-                    " Connect the code and notes with AI",
-                )
-            };
-            if !running && !queued {
-                self.areas.enrich = Rect::new(area.x, area.y, area.width, 1);
-            }
-            frame.render_widget(
-                Paragraph::new(vec![
-                    Line::styled(label, Style::default().fg(ACCENT).bg(SELECT).bold()),
-                    Line::styled(hint, Style::default().fg(MUTED)),
-                ]),
-                area,
-            );
-        } else if let Some(artifact) = &self.document.artifact {
-            let scope = document::artifact_target(artifact)
-                .map(|t| t.label())
-                .unwrap_or_else(|| "all changes".into());
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(" i Follow-up ", Style::default().fg(ACCENT).bold()),
-                    Span::styled(format!("· {scope}"), Style::default().fg(MUTED)),
-                ])),
-                area,
-            );
-        }
+        let Some(mode) = self.editing else { return };
+        let label = match mode {
+            Input::Command => " / ".to_owned(),
+            Input::Question => format!(" Ask {} · {} › ", self.agent, self.question_scope()),
+            Input::Filter => " Filter › ".to_owned(),
+        };
+        let label_width = Line::from(label.as_str()).width() as u16;
+        let room = area.width.saturating_sub(label_width + 1) as usize;
+        let visible = input_tail(&self.input, room);
+        let width = Line::from(visible.as_str()).width() as u16;
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(label, Style::default().fg(ACCENT).bold()),
+                Span::styled(visible, Style::default().fg(TEXT)),
+            ])),
+            area,
+        );
+        frame.set_cursor_position((
+            (area.x + label_width + width).min(area.right().saturating_sub(1)),
+            area.y,
+        ));
     }
 }
 fn fit(text: &str, width: usize) -> String {

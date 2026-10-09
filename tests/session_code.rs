@@ -51,7 +51,7 @@ fn committed_code_is_discovered_from_wrapped_edits_and_keeps_its_conversation() 
     let root = dir.path().canonicalize().unwrap();
     let patch = "*** Begin Patch\n*** Update File: lib.rs\n@@\n-pub fn answer() -> i32 { 1 }\n+pub fn answer() -> i32 { 42 }\n*** End Patch";
     let wrapped = format!("text(await tools.apply_patch({}));", json!(patch));
-    let path = transcript(
+    transcript(
         &root,
         "coding",
         vec![
@@ -68,7 +68,6 @@ fn committed_code_is_discovered_from_wrapped_edits_and_keeps_its_conversation() 
         &root,
         &service::ReviewOptions {
             source: "codex".into(),
-            sessions: vec![path],
             ..Default::default()
         },
     )
@@ -85,7 +84,6 @@ fn committed_code_is_discovered_from_wrapped_edits_and_keeps_its_conversation() 
         &review,
         &[session.clone()],
         "lib.rs",
-        None,
         Some(&reference),
     );
     assert!(notes["matched"].as_bool().unwrap());

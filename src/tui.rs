@@ -14,14 +14,14 @@ use crossterm::{
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use document::{Document, View};
+use document::{Document, Link, View};
 use explorer::{Explorer, Kind, Target};
 use layout::{Divider, PaneSizes};
 use navigation::{ReadingState, artifact_key, options_key};
 use ratatui::{
     prelude::*,
     widgets::{
-        Block, BorderType, Borders, List, ListItem, Padding, Paragraph, Scrollbar,
+        Block, List, ListItem, Paragraph, Scrollbar,
         ScrollbarOrientation, ScrollbarState, Wrap,
     },
 };
@@ -122,17 +122,13 @@ impl QuestionContext {
 #[derive(Default)]
 struct Areas {
     body: Rect,
-    content: Rect,
     file_divider: Rect,
-    content_divider: Rect,
-    commits: Rect,
     files: Rect,
     reader: Rect,
     code: Rect,
     input: Rect,
     tabs: Vec<(Rect, View, Focus)>,
-    sources: Vec<(Rect, usize)>,
-    enrich: Rect,
+    sources: Vec<(Rect, Link)>,
 }
 struct Workspace {
     root: PathBuf,
@@ -152,6 +148,10 @@ struct Workspace {
     editing: Option<Input>,
     draft: Option<QuestionContext>,
     sidebar: bool,
+    /// Whether the reader shows Notes (true) or Changes while browsing files.
+    notes_view: bool,
+    /// Changes whose code is unfolded in the Why view.
+    unfolded: std::collections::HashSet<String>,
     pane_sizes: PaneSizes,
     dragging: Option<Divider>,
     status: String,
@@ -219,6 +219,8 @@ impl Workspace {
             editing: None,
             draft: None,
             sidebar: true,
+            notes_view: true,
+            unfolded: Default::default(),
             pane_sizes: PaneSizes::default(),
             dragging: None,
             status: String::new(),
@@ -464,7 +466,7 @@ impl Workspace {
                     .collect::<Vec<_>>()
                     .join(" ");
                 if !gaps.is_empty() {
-                    options.question.push_str(&format!("\nQuestions raised by the captured excerpts (not proof of missing private reasoning): {gaps}"));
+                    options.question.push_str(&format!("\nNotes about the captured excerpts: {gaps}"));
                 }
             }
         }
@@ -694,7 +696,7 @@ impl Workspace {
                 ensure!(rest == "reset", "Use /layout reset to restore pane sizes");
                 self.pane_sizes = PaneSizes::default();
                 self.save_layout()?;
-                self.message("Default pane sizes restored");
+                self.message("Default file tree width restored");
             }
             "/reason" => {
                 self.start(self.options(None, false, (!rest.is_empty()).then(|| rest.into())))
@@ -779,6 +781,46 @@ impl Workspace {
             .ok_or_else(|| anyhow::anyhow!("No reference [{}] in this explanation", index + 1))?;
         self.open(doc);
         Ok(())
+    }
+    fn follow(&mut self, link: Link) -> Result<()> {
+        match link {
+            Link::Source(index) => self.open_evidence(index),
+            Link::Turn(edit) => {
+                let (_, session) = crate::history::saved_edit(&self.root, &crate::history::edit_ref(&edit))?;
+                self.open(document::turn(&session, &edit));
+                Ok(())
+            }
+            Link::Fold(id) => {
+                if !self.unfolded.remove(&id) {
+                    self.unfolded.insert(id);
+                }
+                self.rebuild_why();
+                Ok(())
+            }
+        }
+    }
+    /// Rebuild the Why view in place, keeping the reading position.
+    fn rebuild_why(&mut self) {
+        let Some(code) = self.code.clone() else { return };
+        if self.document.kind != View::Recorded {
+            return;
+        }
+        let (scroll, selection) = (self.document.scroll, self.document.source_selection);
+        self.document = self.local_notes(&code);
+        self.document.scroll = scroll;
+        self.document.source_selection =
+            selection.filter(|&i| i < self.document.sources.len());
+    }
+    /// The hunk link nearest the top of the visible Changes.
+    fn code_link(&self) -> Option<Link> {
+        let code = self.code.as_ref().filter(|_| self.focus == Focus::Code)?;
+        let top = usize::from(code.scroll);
+        let bottom = top + usize::from(self.code_page_size) + 2;
+        code.sources
+            .iter()
+            .find(|(line, _)| (top..bottom).contains(line))
+            .or_else(|| code.sources.iter().rev().find(|(line, _)| *line < top))
+            .map(|(_, link)| link.clone())
     }
     fn open_commits(&mut self) -> Result<()> {
         let entries = crate::commits::recent(&self.root)?;
@@ -975,11 +1017,18 @@ impl Workspace {
                 }
             }
             KeyCode::Char('f') => self.edit(Input::Filter),
-            KeyCode::Tab | KeyCode::BackTab => {
+            // Tab toggles Changes and Notes; Shift+Tab returns to the file tree.
+            KeyCode::BackTab => {
+                self.sidebar = true;
+                self.focus = Focus::Files;
+            }
+            KeyCode::Tab => {
+                let paired = self.code.is_some();
                 self.focus = match self.focus {
-                    Focus::Files if self.code.is_some() => Focus::Code,
+                    Focus::Files if paired && !self.notes_view => Focus::Code,
                     Focus::Files => Focus::Reader,
                     Focus::Code => Focus::Reader,
+                    Focus::Reader if paired => Focus::Code,
                     Focus::Reader => {
                         self.sidebar = true;
                         Focus::Files
@@ -1093,8 +1142,17 @@ impl Workspace {
                         self.open_evidence(self.document.source_selection.unwrap_or(0))?;
                     }
                 } else if self.focus == Focus::Reader && self.document.source_selection.is_some() {
-                    let index = self.document.sources[self.document.source_selection.unwrap()].1;
-                    self.open_evidence(index)?;
+                    let link = self.document.sources[self.document.source_selection.unwrap()].1.clone();
+                    self.follow(link)?;
+                } else if self.focus == Focus::Reader
+                    && self.document.kind == View::Recorded
+                    && !self.document.sources.is_empty()
+                {
+                    self.select_source(0);
+                } else if self.focus == Focus::Code
+                    && let Some(link) = self.code_link()
+                {
+                    self.follow(link)?;
                 } else if self.focus == Focus::Files
                     && self
                         .explorer
@@ -1144,29 +1202,27 @@ impl Workspace {
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.areas.file_divider.contains(point) {
                     self.dragging = Some(Divider::Files);
-                } else if self.areas.content_divider.contains(point) {
-                    self.dragging = Some(Divider::Content);
-                } else if self.areas.commits.contains(point) {
-                    self.open_commits()?;
-                } else if self.areas.enrich.contains(point) {
-                    self.focus = Focus::Reader;
-                    self.why_change(false);
-                } else if let Some((_, index)) = self
+                } else if let Some((_, link)) = self
                     .areas
                     .sources
                     .iter()
                     .find(|(area, _)| area.contains(point))
                 {
-                    self.open_evidence(*index)?;
+                    self.follow(link.clone())?;
                 } else if let Some((_, view, focus)) = self
                     .areas
                     .tabs
                     .iter()
                     .find(|(area, _, _)| area.contains(point))
                 {
-                    let view = *view;
-                    self.focus = *focus;
-                    self.change_view(view)?;
+                    let (view, focus) = (*view, *focus);
+                    if view == View::Diff && self.code.is_some() {
+                        // The Changes tab only switches what the reader shows.
+                        self.focus = Focus::Code;
+                    } else {
+                        self.focus = focus;
+                        self.change_view(view)?;
+                    }
                 } else if self.areas.files.contains(point) {
                     let index =
                         self.explorer.state.offset() + usize::from(event.row - self.areas.files.y);
@@ -1233,7 +1289,7 @@ impl Drop for TerminalGuard {
 pub fn run(root: &Path) -> Result<()> {
     ensure!(
         io::stdin().is_terminal() && io::stdout().is_terminal(),
-        "The workspace requires an interactive terminal; use wy review --json for scripts"
+        "wy is an interactive app; run it in a terminal"
     );
     let mut app = Workspace::new(root)?;
     terminal::enable_raw_mode()?;

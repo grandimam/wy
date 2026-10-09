@@ -1,8 +1,8 @@
-use serde_json::Value;
+//! wy has no subcommands: the binary only opens the interactive workspace.
 use std::{
     fs,
     path::Path,
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
 };
 fn git(root: &Path, args: &[&str]) {
     let out = Command::new("git")
@@ -20,14 +20,7 @@ fn git(root: &Path, args: &[&str]) {
 fn repo() -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
     git(root.path(), &["init", "-q"]);
-    git(
-        root.path(),
-        &["config", "user.email", "test@example.invalid"],
-    );
-    git(root.path(), &["config", "user.name", "Test"]);
     fs::write(root.path().join("lib.rs"), "pub fn answer() -> i32 { 1 }\n").unwrap();
-    git(root.path(), &["add", "lib.rs"]);
-    git(root.path(), &["commit", "-qm", "baseline"]);
     root
 }
 fn call(root: &Path, args: &[&str]) -> Output {
@@ -35,80 +28,40 @@ fn call(root: &Path, args: &[&str]) -> Output {
         .arg("--repo")
         .arg(root)
         .args(args)
+        .stdin(Stdio::null())
         .output()
         .unwrap()
 }
-fn json(root: &Path, args: &[&str]) -> Value {
-    let out = call(root, args);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    serde_json::from_slice(&out.stdout).unwrap()
+#[test]
+fn help_and_version_describe_the_interactive_app() {
+    let root = repo();
+    let help = call(root.path(), &["--help"]);
+    assert!(help.status.success());
+    let text = String::from_utf8_lossy(&help.stdout);
+    assert!(text.contains("interactive"));
+    assert!(!text.contains("Commands:"));
+    assert!(call(root.path(), &["--version"]).status.success());
 }
 #[test]
-fn offline_review_baseline_reflection_and_staleness() {
+fn removed_subcommands_and_json_output_are_rejected() {
     let root = repo();
-    let baseline = json(root.path(), &["snapshot", "--json"]);
-    fs::write(root.path().join("lib.rs"), "pub fn answer() -> i32 { 2 }\n").unwrap();
-    let review = json(
-        root.path(),
-        &[
-            "review",
-            "--source",
-            "none",
-            "--baseline",
-            baseline["id"].as_str().unwrap(),
-            "--json",
-        ],
-    );
-    assert_eq!(review["changes"][0]["file"], "lib.rs");
-    let focused = json(
-        root.path(),
-        &["focus", "lib.rs:1", "Why this return value?", "--json"],
-    );
-    assert_eq!(focused["provenance"], "unexplained");
-    let req = json(root.path(), &["reflection-request", "--json"]);
-    assert_eq!(req["decisions"].as_array().unwrap().len(), 1);
-    let evidence = json(root.path(), &["evidence", "1", "1", "--json"]);
-    assert_eq!(evidence["current"]["status"], "unchanged");
-    let response = json(
-        root.path(),
-        &["ask", "1", "What alternatives exist?", "--json"],
-    );
-    assert!(response["answer"].as_str().unwrap().contains("Options"));
-    fs::write(root.path().join("lib.rs"), "pub fn answer() -> i32 { 3 }\n").unwrap();
-    let cached = json(root.path(), &["decisions", "--json"]);
-    assert_eq!(cached["decisions"][0]["stale"], true);
-    assert!(!call(root.path(), &["ask", "1", "Why?"]).status.success());
+    for args in [
+        vec!["review"],
+        vec!["reason"],
+        vec!["why", "lib.rs:1"],
+        vec!["decisions"],
+        vec!["--json"],
+    ] {
+        let out = call(root.path(), &args);
+        assert!(!out.status.success(), "{args:?} should be rejected");
+    }
 }
 #[test]
-fn cli_rejects_conflicts_noninteractive_workspace_and_bad_citations() {
+fn requires_a_terminal_and_a_git_repository() {
     let root = repo();
-    assert!(
-        !call(
-            root.path(),
-            &["review", "--base", "HEAD", "--baseline", "x"]
-        )
-        .status
-        .success()
-    );
     let out = call(root.path(), &[]);
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("interactive terminal"));
-    assert!(
-        !call(root.path(), &["reasoning-evidence", "0"])
-            .status
-            .success()
-    );
-    assert!(call(root.path(), &["--help"]).status.success());
-    for command in ["reason", "why"] {
-        let out = call(root.path(), &[command, "--help"]);
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
+    assert!(String::from_utf8_lossy(&out.stderr).contains("run it in a terminal"));
+    let outside = tempfile::tempdir().unwrap();
+    assert!(!call(outside.path(), &[]).status.success());
 }

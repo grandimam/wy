@@ -4,6 +4,7 @@ mod edits;
 mod recent;
 pub mod provenance;
 pub mod origins;
+pub mod attribution;
 pub use recent::{recent_code, saved_edit, edit_ref};
 use anyhow::{Result,ensure,bail};
 use serde_json::{json,Value};
@@ -47,15 +48,6 @@ pub fn discover(root:&Path,source:&str,codex_home:Option<&Path>,claude_home:Opti
         }
     }
     entries.sort_by(|a,b|s(&b["timestamp"]).cmp(s(&a["timestamp"])));Ok(entries)
-}
-pub fn resolve(root:&Path,selectors:&[String],source:&str)->Result<Vec<PathBuf>>{
-    let mut entries=None;let mut paths=vec![];
-    for selector in selectors{
-        if Path::new(selector).is_file(){paths.push(PathBuf::from(selector));continue;}
-        if entries.is_none(){entries=Some(discover(root,source,None,None)?);}
-        let matches:Vec<_>=entries.as_ref().unwrap().iter().filter(|e|selector==s(&e["id"])||*selector==format!("{}:{}",s(&e["agent"]),s(&e["id"]))).collect();
-        ensure!(matches.len()==1,"Session not found in this repository or ambiguous; use agent:id or an explicit path");paths.push(PathBuf::from(s(&matches[0]["path"])));
-    }Ok(paths)
 }
 fn visible(value:&Value)->String{
     if let Some(t)=value.as_str(){return t.into();}

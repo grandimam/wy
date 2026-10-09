@@ -57,12 +57,11 @@ pub fn note_evidence(root: &Path, reference: &Value) -> Result<Value> {
     Ok(evidence)
 }
 
-/// Gaps describe missing signals in the displayed excerpts, not the agent's private reasoning.
+/// Gaps are factual notices about the capture, not claims about the agent's private reasoning.
 pub fn notes(
     review: &Value,
     sessions: &[Value],
     file: &str,
-    symbol: Option<&str>,
     edit: Option<&Value>,
 ) -> Value {
     let basename = file.rsplit('/').next().unwrap_or(file);
@@ -178,7 +177,7 @@ pub fn notes(
         .collect::<Vec<_>>()
         .join("\n")
         .to_lowercase();
-    let has = |terms: &[&str]| terms.iter().any(|t| assistant.contains(t));
+    // Only factual notices about the capture; no heuristic "did the agent mention X" prompts.
     let mut gaps = vec![];
     if assistant.is_empty() {
         if evidence.iter().any(|e| !super::provenance::original(e)) {
@@ -187,37 +186,6 @@ pub fn notes(
         gaps.push(
             "An agent explanation of this change was not found in the captured conversation.",
         );
-    } else {
-        if !has(&[
-            "because",
-            "so that",
-            "in order to",
-            "to avoid",
-            "chosen",
-            "chose",
-            "reason",
-            "so we",
-            "so you",
-        ]) {
-            gaps.push("What made this approach a good fit for the request?");
-        }
-        if !has(&[
-            "alternative",
-            "instead",
-            "rather than",
-            "tradeoff",
-            "trade-off",
-            "downside",
-            "at the cost",
-            "versus",
-        ]) {
-            gaps.push("What alternatives and tradeoffs were considered?");
-        }
-        if symbol.is_some_and(|name| {
-            !assistant.contains(&name.rsplit('.').next().unwrap_or(name).to_lowercase())
-        }) {
-            gaps.push("How do these file-level notes explain the selected function?");
-        }
     }
     json!({"evidence":evidence,"note_refs":refs,"gaps":gaps,"matched":!assistant.is_empty()})
 }
@@ -255,7 +223,6 @@ mod tests {
             &review(),
             &[session],
             "src/cache.rs",
-            Some("Cache.refresh"),
             None,
         );
         let text = result.to_string();
@@ -271,7 +238,8 @@ mod tests {
                 {"session_key":"immutable","event_id":"4"},
             ])
         );
-        assert_eq!(arr(&result["gaps"]).len(), 2);
+        // A matched agent explanation produces no heuristic follow-up prompts.
+        assert!(arr(&result["gaps"]).is_empty());
     }
     #[test]
     fn file_mentions_are_path_aware_and_user_requests_are_not_agent_reasons() {
@@ -294,7 +262,6 @@ mod tests {
             ])],
             "src/cache.rs",
             None,
-            None,
         );
         assert_eq!(arr(&result["evidence"]).len(), 1);
         assert_eq!(result["evidence"][0]["role"], "user");
@@ -315,7 +282,6 @@ mod tests {
                 "src/cache.rs because latency",
             )])],
             "src/cache.rs",
-            None,
             Some(&json!({"session_key":"other-session"})),
         );
         assert!(arr(&result["evidence"]).is_empty());
