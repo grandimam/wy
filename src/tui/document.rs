@@ -912,37 +912,35 @@ pub(super) fn commit_context(context: &Value) -> Document {
 }
 
 pub(super) fn help() -> Document {
-    let mut doc = Document::new(View::Help, "Changes, agent notes and optional enrichment");
+    let mut doc = Document::new(View::Help, "Reasons, changes and optional enrichment");
     for (title, body) in [
         (
-            "Start with a change",
-            "Select a file or function to see its changes and available agent notes immediately.
-Changes shows the current Git diff, or a recorded edit when no current diff exists.
-Notes quote captured conversation and flag questions left open in those excerpts.
-e  Enrich explanation — ask the agent to connect the code and notes.",
+            "Read a file",
+            "Select a file to read its changes in order, with the agent's reason above each one.
+A numbered badge starts each reason: the first sentence the agent wrote just before
+the edit, the rest of that message, and the request from you that led to it.
+Changes with no matching recorded edit say \"no recorded reason\". Nothing is invented.
+\"same reason as above\" marks later changes made by the same message.
+w  collapse every reason to its headline, or expand them again
+Enter  then ↑/↓ and Enter  open the conversation turn that made a change",
         ),
         (
-            "Follow the answer",
-            "Click a source, or s then ↑/↓ and Enter to open it.
-1–9  open a numbered source directly
-i  ask a follow-up about the answer
-d  focus Changes · o  original notes · v  saved enrichment
-R  request updated enrichment · p  last saved answer
-Keep browsing while enrichment runs. Files show working, queued or ready.
-Return to a file to resume reading. Completed answers survive restarting wy.
-Esc  back · x  cancel running and queued enrichments",
+            "Ask for more",
+            "e  Enrich — ask the agent to explain the file's changes with cited sources
+i  ask a follow-up about the answer · R  request an updated answer
+p  last saved answer · 1–9  open a numbered source · s  select sources
+Keep browsing while it runs. Files show working, queued or ready.
+Esc  back · x  cancel running and queued requests",
         ),
         (
             "Navigate",
-            "↑/↓ or j/k  select files or scroll the focused pane
-←/→ or h/l  expand the tree or pan a diff
-Space  expand changed symbols · Enter  focus code
-Tab  switch files, code and explanation · f  filter file paths
+            "Tab  switch between the file tree and the reader · Shift+Tab  back to the tree
+↑/↓ or j/k  select files or scroll · ←/→ or h/l  expand the tree or pan
+Space  expand changed symbols · f  filter file paths
 PageUp/PageDown  scroll · Home/End  start/end
-r  refresh changes · b  toggle files · m  mark reviewed
+r  refresh changes · b  toggle the file tree · m  mark reviewed
 g  browse commits · /commit HASH  read saved conversations
-Drag pane dividers or [ / ] to move the focused pane's divider
-/layout reset  restore default pane sizes
+Drag the divider or [ / ] to resize the file tree · /layout reset
 q / Ctrl+Q / Ctrl+C  quit",
         ),
         (
@@ -960,7 +958,7 @@ q / Ctrl+Q / Ctrl+C  quit",
         ),
         (
             "About the evidence",
-            "Agent notes and sources are local: no model call. Enrich uses your selected agent and may use your account's allowance. Recorded statements show what the agent said; inferred reasons are a new assessment.",
+            "Reasons, changes and sources are local: no model call. A reason is what the agent wrote, matched to the edit it recorded; it is not hidden reasoning and does not prove who typed the final text. Enrich uses your selected agent and may use your account's allowance.",
         ),
     ] {
         doc.heading(title);

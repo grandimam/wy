@@ -25,48 +25,78 @@ See [release setup](releasing.md) for publishing and checking the first release.
 
 Run `wy` in a repository, or `wy --repo /path/to/repository`, in an interactive terminal. Startup performs an offline review of current changes and matching project history.
 
-The file tree combines working-tree changes with recent recorded edits, including files already committed. There is one **Changes** view: it prefers the current Git diff, falling back to the latest captured edit when a file has no current diff. A source label makes the distinction explicit. Recorded edits can differ from current files and are not reconstructed complete files. Coverage includes the latest edit per file from up to three coding sessions in the last seven days, capped at 50 files.
+The screen has two areas: the file tree on the left and one reader on the right. wy draws no boxes or backgrounds and uses your terminal's own colours, so it follows your theme and works on light backgrounds.
 
-Select a file or changed function to see **Agent notes** immediately: excerpts of the original conversation, with sources you can open. No model call is needed. Notes are linked by file references and nearby edits within a user turn. When no agent explanation was captured, the notes say so. On terminals at least 110 columns wide, notes sit to the right of the changes. On smaller terminals, Tab switches panes.
+### The file tree
 
-Press **e** or click **Enrich explanation** to connect the code and notes with a new, cited assessment. Keep navigating while it runs. Files show **working**, **queued**, or **ready**; return to a file to read its enrichment. Reading positions are retained while browsing, and completed answers are restored when wy restarts. **o Agent notes** returns to the original excerpts; **v Enriched** opens the saved assessment without a new request.
+The tree combines working-tree changes with recent recorded edits, including files already committed. Each file shows its line counts, or **· recorded** when it has no current diff. Coverage includes the latest edit per file from up to three coding sessions in the last seven days, capped at 50 files. Press `f` to filter paths, Space to expand a file's changed symbols, and `m` to mark a file reviewed for this session.
+
+### The reader
+
+Select a file to read its changes in file order, each with the agent's reason above it:
+
+```
+ 1  I'll keep responses in memory.  gpt-5.4
+┃ Repeated reads can then reuse a response without another network call.
+┃ You asked: "Avoid fetching the same response repeatedly."
+
+@@ line 10 · fn get()  +2 −1  turn ›
+ fn get() {
+-    fetch()
++    cache.get(key)
++        .unwrap_or_else(fetch)
+ }
+
+@@ line 42 · fn refresh()  +1 −0  · no recorded reason
++    log::debug!("hit");
+```
+
+- **A reason** starts with a numbered badge and the first sentence the agent wrote just before the edit, with the model that wrote it. Below are the rest of that message and the request from you that started the turn. Press `w` to collapse every reason to its headline, and again to expand.
+- **Reasons come from exact matching.** wy compares the changed lines of each hunk with the lines in the edits the agent recorded (Codex patches; Claude Write, Edit and MultiEdit). Lines made only of punctuation are ignored. One message that led to several hunks appears once; later hunks show **same reason as above** with the badge, and selecting that line jumps back to it.
+- **No recorded reason** marks a hunk that matches no recorded edit, such as changes made through shell commands, formatters, or by hand. **edited after** marks a hunk where only some lines match the agent's edit. wy does not invent reasons for either.
+- **turn ›** marks a hunk whose turn can be opened. Press Enter, move with ↑/↓, and press Enter again (or click the header) to read the whole turn: your request, the agent's messages and the edit itself. Esc returns.
+- Files with no current Git diff show their recorded edit instead, with a note that it may differ from the file now.
+- When no hunk matches any edit but the conversation mentions the file, a **Related conversation** block appears first, labelled as matched by file mentions rather than by an edit.
+
+A reason is the agent's visible message, not hidden reasoning. A match shows the transcript recorded that edit; it does not prove who typed the final text.
+
+### Enrichment
+
+Press **e** to connect the code and reasons with a new, cited assessment from your Codex or Claude CLI. Keep navigating while it runs. Files show **working**, **queued**, or **ready**; return to a file to read its answer. Completed answers are restored when wy restarts. Once an answer exists, an **Enriched** tab appears at the top right of the reader; `v` opens it and `o` returns to the reasons. `p` reopens the last saved answer. `R` requests an updated one.
 
 | Key | Action |
 | --- | --- |
-| Up / Down or `j` / `k` | Preview the selected file or function; scroll the focused pane |
-| `e` (also `w`) | Enrich the selected change; reuse a completed answer when available |
-| `d` | Focus Changes |
-| `o` / `v` | Original agent notes / saved enrichment |
-| `s`, then Up/Down and Enter | Select and open a source; Escape returns to reading |
-| `1`–`9` | Open a numbered code or conversation source |
-| `i` | Ask a question about the displayed notes or answer |
-| `R` | Request updated enrichment |
-| Tab | Switch between files, code and explanation |
-| Left / Right or `h` / `l` | Collapse / expand the tree; pan code |
+| Up / Down or `j` / `k` | Select a file; scroll the reader |
+| Tab / Shift+Tab | Move between the file tree and the reader / back to the tree |
+| Enter | In the tree: read the file. In the reader: select changes; Enter again opens the turn |
+| `w` | Collapse reasons to headlines, or expand them |
+| `e` | Enrich the selected file; reuse a completed answer when available |
+| `o` / `v` | Reasons and changes / saved enrichment |
+| `s`, then Up/Down and Enter | Select and open a source of an answer; Escape returns to reading |
+| `1`–`9` | Open a numbered source of an answer |
+| `i` | Ask a follow-up about the displayed answer |
+| `R` / `p` | Request an updated answer / reopen the last saved answer |
+| Left / Right or `h` / `l` | Collapse / expand the tree; pan long lines |
 | Space | Toggle a folder or a file's changed-symbol outline |
-| Enter | Focus the file's changes, open a selected source, or toggle a folder |
 | `f` | Filter file paths |
 | `g` | Browse the 50 most recent commits; Up/Down selects and Enter opens saved conversations |
-| `[` / `]` | Move the file divider left/right when files are focused; otherwise move the code/notes divider, when visible |
+| `[` / `]` | Resize the file tree |
 | `r` | Refresh changes and captured history offline |
+| `m` / `b` | Mark the file reviewed / toggle the file tree |
 | Escape | Return to the previous view or clear a file filter |
 | `x` | Cancel running and queued enrichments |
-| `?` / F1 | Help, settings and additional commands |
+| `?` / F1 | Help, settings and commands |
 | `q` / Ctrl+Q / Ctrl+C | Quit and cancel unfinished requests |
 
-Click files, sources or view tabs to navigate. The mouse wheel scrolls the pane under the pointer. PageUp/PageDown and Home/End navigate longer content. Below 90 columns, panes use the full width. Input supports paste and Ctrl+U to clear. A result arriving in the background will not switch you to another file, close a source, or interrupt a question draft.
+Click files, change headers, sources or the Enriched tab to navigate. The mouse wheel scrolls the area under the pointer. PageUp/PageDown and Home/End navigate longer content. Below 88 columns, the tree and the reader take turns using the full width. Input supports paste and Ctrl+U to clear. A result arriving in the background will not switch you to another file, close a source, or interrupt a question draft.
 
-Drag either vertical divider to resize the file sidebar or the code/notes panes. Minimum widths keep both sides readable. Pane sizes are saved locally for this repository and restored when wy restarts; smaller terminals temporarily clamp them. Use `/layout reset` to restore the default sizes.
+Drag the vertical divider or use `[` / `]` to resize the file tree. The width is saved locally for this repository and restored when wy restarts; `/layout reset` restores the default.
 
-Press **g** or click **g Commits** in the header to browse recent commits. Select a commit and press Enter, or click its row, to read its captured conversations. `/commit <hash>` opens any commit directly, including abbreviated hashes and Git revisions. Automatic matching compares saved review bases and source hashes; see [Find conversations by commit](#find-conversations-by-commit). If no capture matches, `/link <hash> [review-id]` explicitly attaches a saved review (the latest by default). Escape returns to the previous view. Commit browsing stays offline and does not replace the current working-tree review.
+Press **g** to browse recent commits. Select a commit and press Enter, or click its row, to read its captured conversations. `/commit <hash>` opens any commit directly, including abbreviated hashes and Git revisions. Automatic matching compares saved review bases and source hashes; see [Find conversations by commit](#find-conversations-by-commit). If no capture matches, `/link <hash> [review-id]` explicitly attaches a saved review (the latest by default). Escape returns to the previous view. Commit browsing stays offline and does not replace the current working-tree review.
 
-**Enrich makes new model calls**: one selects relevant context and another writes a cited explanation. Captured notes are included as evidence; inferred reasons are a new assessment. Requests may consume your signed-in account's usage. Explicit requests for other files queue in the background (up to eight waiting requests). Follow-ups retain the original file, function or captured edit, including while reading a source about another file. Code browsing, notes, filtering and source navigation stay offline.
-
-`p` reopens the last saved explanation. Source freshness is checked when an answer is opened or revisited; `R` explicitly updates it.
+**Enrich makes new model calls**: one selects relevant context and another writes a cited explanation. Captured reasons are included as evidence; inferred reasons are a new assessment. Requests may consume your signed-in account's usage. Explicit requests for other files queue in the background (up to eight waiting requests). Follow-ups retain the original file, function or captured edit, including while reading a source about another file. Browsing, filtering and source navigation stay offline.
 
 Use `/agent codex|claude` to choose the answering agent and `/source both|codex|claude|none` for the conversation history. Additional commands are `/why FILE:SYMBOL QUESTION`, `/ask QUESTION`, `/reason QUESTION` (all changes), `/evidence NUMBER`, `/commits`, `/commit HASH`, `/link HASH [REVIEW-ID]`, `/layout reset` and `/cancel`.
-
-The optional `m` shortcut marks a file reviewed for this session. Refreshing clears marks for changed content. Marks track your progress, not correctness or test results. `b` toggles the file sidebar.
 
 ## Everything happens in the app
 
@@ -94,7 +124,7 @@ These links and excerpts stay in the local `.wy/wy.sqlite3` database. They are d
 
 ## Summaries and original turns
 
-The importer classifies captured messages as original turns, compacted summaries, unknown provenance, or tool records. Compacted summaries display **Secondary evidence · Compacted summary** in agent notes, sources, and commit conversations. A compaction marker without readable summary text still displays the missing context explicitly.
+The importer classifies captured messages as original turns, compacted summaries, unknown provenance, or tool records. Compacted summaries display **Secondary evidence · Compacted summary** in the reader, sources, and commit conversations. A compaction marker without readable summary text still displays the missing context explicitly.
 
 In a summary's source view or commit conversation, click **Open original turn**, or press **s**, select the source, and press Enter. Escape returns to the summary. The source opens the redacted saved message, pinned by snapshot, event identity and content hash, even if the raw transcript has been deleted. Retained original context has a distinct link label: it provides context, without claiming that every summary assertion is supported by that message.
 
