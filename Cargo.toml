@@ -3,7 +3,7 @@ name = "wy-code"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Understand the engineering decisions behind AI-generated code"
+description = "Review AI-generated code with Git diffs, conversation history, and optional agent explanations"
 license = "MIT"
 default-run = "wy"
 
@@ -22,7 +22,7 @@ clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.28"
 jsonschema = { version = "0.29", default-features = false }
 libc = "0.2"
-ratatui = "0.29"
+ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled"] }

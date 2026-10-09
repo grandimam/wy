@@ -2,32 +2,30 @@
 
 # wy
 
-### An experimental IDE for understanding AI-generated code.
+### A terminal tool for reviewing AI-generated code.
 
-**AI wrote the code. Know why before you own it.**
+**Browse changes. Ask about design choices. Check the evidence.**
 
-Explore the implementation, question the design, and follow every explanation back to its evidence.
+Review Git diffs alongside saved Codex or Claude Code conversations, with optional agent explanations.
 
 [![Experimental](https://img.shields.io/badge/Status-Experimental-E7B66D?style=flat-square&labelColor=182335)](#experimental-status)
-[![Codex + Claude Code](https://img.shields.io/badge/Works_with-Codex_%2B_Claude_Code-78DCCE?style=flat-square&labelColor=182335)](#from-agent-output-to-code-you-understand)
+[![Codex + Claude Code](https://img.shields.io/badge/Works_with-Codex_%2B_Claude_Code-78DCCE?style=flat-square&labelColor=182335)](#what-you-can-investigate)
 [![Offline by default](https://img.shields.io/badge/Offline-by_default-78DCCE?style=flat-square&labelColor=182335)](#local-by-default-ai-when-you-ask)
 [![MIT License](https://img.shields.io/badge/License-MIT-A9A1FF?style=flat-square&labelColor=182335)](LICENSE)
 
-[Get started](#get-started) · [Explore the IDE](#an-ide-built-around-understanding) · [Command guide](docs/usage.md)
+[Get started](#get-started) · [Terminal review](#review-changes-in-the-terminal) · [Command guide](docs/usage.md)
 
 </div>
 
+A diff shows what changed. wy adds related conversation history and tools to investigate the implementation, possible reasons for a choice, and questions to check during review.
 
+Use it to browse changed files and symbols, inspect diffs, and ask your installed Codex or Claude CLI for a cited explanation. Explanations distinguish recorded justifications from inferred reasons and gaps in the available evidence.
 
-A diff tells you **what changed**. wy helps you investigate **why that approach was chosen**, **what assumptions remain**, and **what you should check before shipping**.
+wy does not edit your source files. Offline review and evidence browsing work without a model account; generating an agent explanation requires an explicit request.
 
-**wy is a terminal-based IDE for understanding AI-generated code.** It brings your Git changes, source files, design questions, and project-matched Codex or Claude Code conversations into one place. Explore a change from the overall behavior down to a single class or function, then inspect the evidence behind the answer.
+## What you can investigate
 
-The IDE is read-only: you use it to understand and evaluate the implementation. Offline review works without an account; deeper explanations use your installed Codex or Claude CLI when you ask.
-
-## From agent output to code you understand
-
-| You want to know… | wy gives you… |
+| Review question | What wy provides |
 | --- | --- |
 | **What problem does this change solve?** | An opt-in agent explanation of the problem, before/after behavior, tradeoffs and checks. |
 | **Why this implementation?** | Detected choices with recorded rationale, evidence-backed hypotheses or an explicit “unexplained” status. |
@@ -35,24 +33,17 @@ The IDE is read-only: you use it to understand and evaluate the implementation. 
 | **What still needs checking?** | Assumptions, alternatives, unresolved questions and stale evidence. |
 | **Does the evidence still match the code?** | Saved excerpts beside current source, with changed or ambiguous locations flagged. |
 
-## An IDE built around understanding
+## Review changes in the terminal
 
-**Explore a file → understand the implementation → question the design → inspect the evidence.**
+**Select a diff → Why this change? → Read the supporting conversation.**
 
-| Part of the IDE | What you can do |
-| --- | --- |
-| **Changed-file explorer** | Browse changes by folder, expand a file into classes and functions, and choose exactly what to investigate. Refresh the file list offline. |
-| **Explanation workspace** | Read how the implementation works, why the choices fit, what alternatives exist, and what to check. Keep the code and its reasoning in the same workspace. |
-| **Design investigation** | Select a class, function or line and ask **Why this design?** No automatically detected decision is required. |
-| **Evidence navigation** | Click a numbered reference to inspect the captured code, diff or conversation. Return with **← Explanation** or **Escape**. |
-| **Follow-up questions** | Ask “Would a simpler function work?” or “What happens if this fails?” while keeping the selected target in scope. |
-| **Code and conversation views** | Compare saved citations with current source, navigate file outlines, and inspect the conversation surrounding a recorded statement. |
+The workspace starts with changed files on the left and their diff on the right. Expand a file to navigate its changed functions. Press **w** or click **Why this change?** to connect the request, the agent's stated justification, and the resulting code.
 
-**Settings** holds your Codex/Claude choice, history sources, detected choices and review details. **Files** toggles the explorer on a narrow terminal; **Help** opens a short guide. Saved explanations and evidence can be browsed without another model call.
+The answer leads with a recorded reason when the captured conversation contains one. Otherwise, it says what is missing and labels code-based explanations as inferences. Numbered references open the captured statements or code. Press **i** for a follow-up, or **d** to return to the diff; reopening the answer does not make another request.
 
+Use `/agent codex` or `/agent claude` to choose an agent, and `/source both|codex|claude|none` to choose history. **?** opens help and additional commands.
 
 ## Get started
-
 
 ```bash
 git clone https://github.com/grandimam/wy.git
@@ -65,12 +56,12 @@ Then open a repository with changes you want to understand:
 ```bash
 cd /path/to/your/repo
 wy review                 # Review the diff and matching project history, offline
-wy                        # Open the IDE
+wy                        # Open the terminal review interface
 ```
 
-Click **Explain changes** to understand the recent work, or choose a file, class or function in the explorer to investigate one part. Select Codex or Claude in **Settings**. Generating explanations requires the chosen CLI to be installed and signed in, and may consume your account's usage.
+Choose a changed file or function, then press **w** for **Why this change?**. Use `/agent codex` or `/agent claude`. Generating explanations requires the chosen CLI to be installed and signed in, and may consume your account's usage.
 
-For the offline review, open **Settings → Detected choices** to inspect the detected decisions, rationale and citations.
+For offline detected decisions, rationale and citations, use `wy decisions` and `wy explain` in your shell.
 
 **No agent history?** Review still works using repository evidence. **No model account?** Offline review and evidence browsing still work.
 
@@ -106,15 +97,14 @@ wy reason --agent claude --file worker.rs
 wy reason --agent codex --question 'What changed, and what should I test?'
 ```
 
-To understand a particular design choice after the AI has coded:
+To investigate a particular design choice:
 
 ```bash
 wy why src/example.rs:MyClass
 wy why src/example.rs:MyClass.run --question 'Would a simpler function work?'
 ```
 
-In `wy`, expand a changed file, select a class or function, and choose **Why this
-design?**. The answer distinguishes recorded justifications, inferred benefits,
+In `wy`, select a changed file or function and press **w** to investigate its design. The answer distinguishes recorded justifications, inferred benefits,
 and missing reasons, with citations you can follow back to code and conversation.
 No automatically detected decision is required. Follow-ups keep the selected target.
 
@@ -154,7 +144,7 @@ See the [model setup and reflection workflow](docs/usage.md#optional-model-analy
 | `wy gaps` | Find unanswered questions, unexplained choices and stale findings. |
 | `wy decisions --json` | Get structured output for scripts. |
 
-Inside the IDE, **Ctrl+B** toggles files, **Ctrl+J** opens the command bar, and **F1** opens help. **Tab** moves focus, **Alt+Left / Alt+Right** navigate history, and **Ctrl+Q** exits.
+In the terminal interface, **Tab** switches between files and the reader, **Space** expands a file's symbols, **f** filters paths, and **m** marks a file reviewed. **Enter** opens the highlighted diff, **w** opens **Why this change?**, **d** returns to the diff, **i** asks a follow-up, and **?** opens help. Mouse navigation and compact terminals are supported.
 
 In-app `/ask` calls the selected agent CLI. The shell command `wy ask TARGET 'QUESTION'` works offline unless you add `--model`.
 
@@ -162,7 +152,7 @@ In-app `/ask` calls the selected agent CLI. The shell command `wy ask TARGET 'QU
 
 **wy is experimental software (0.2.0).** The interface, commands and saved artifact formats are evolving. Use its explanations as a starting point for investigation, and verify important claims against the cited code and conversation.
 
-Offline detection is deliberately selective and capped at twelve decisions per review. It covers patterns such as concurrency, caching, dependency versions, operational limits, broad exception handling and retries; it does not discover every architectural decision. Rust, JavaScript, TypeScript and JSON use tree-sitter syntax navigation; other text files use line anchors. Retrieval is lexical, and citations need human judgment.
+Offline detection is deliberately selective and capped at twelve decisions per review. It covers patterns for caching, dependency versions, operational limits, database schemas and retries; it does not discover every architectural decision. Rust, JavaScript, TypeScript and JSON use tree-sitter syntax navigation; other text files use line anchors. Retrieval is lexical, and citations need human judgment.
 
 ## Development
 

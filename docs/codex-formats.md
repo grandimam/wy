@@ -8,6 +8,6 @@ A best-effort local rollout adapter recognizes `session_meta`, `response_item` a
 
 Private `reasoning` records, encrypted content, assistant analysis-channel messages, system/developer prompts, images and unknown event types are skipped. The local rollout format is internal and version-sensitive; its support is explicitly best-effort rather than a stability promise. Malformed JSON lines produce warnings. New unknown event types are ignored rather than interpreted as assistant statements.
 
-Official [Codex app-server documentation](https://learn.chatgpt.com/docs/app-server) describes another observable integration interface. A live app-server subscriber is not implemented in this MVP. The `SessionCollector` protocol and stable Pydantic `Session`/`Event` schema allow additional adapters without changing the decision engine.
+Official [Codex app-server documentation](https://learn.chatgpt.com/docs/app-server) describes another observable integration interface. A live app-server subscriber is not implemented in this MVP. The history adapter boundary and stable JSON `Session`/`Event` schemas allow additional adapters without changing the decision engine.
 
 Supported fixtures: `tests/fixtures/codex-exec.jsonl` and `tests/fixtures/codex-rollout.jsonl`. Tests cover private-record exclusion, duplicate messages, malformed input, secret redaction, tool categorization and metadata-only discovery.

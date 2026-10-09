@@ -44,6 +44,6 @@ pub fn render(value:&Value)->String{
     if value["question"].is_string()&&value["location"].is_object(){return decision(value,false);}
     if value["decisions"].is_array(){let mut out=format!("{} · {} changed files · {} decisions\n",s(&value["root"]),arr(&value["changes"]).len(),arr(&value["decisions"]).len());for w in arr(&value["warnings"]){out.push_str(&format!("Note: {}\n",s(w)));}for(i,d)in arr(&value["decisions"]).iter().enumerate(){out.push_str(&format!("\n{}. {}\n",i+1,decision(d,false)));}return out;}
     if value["answer"].is_string(){return format!("{}\n\n{}\nEvidence: {}",s(&value["answer"]),s(&value["uncertainty"]),arr(&value["evidence_ids"]).iter().map(s).collect::<Vec<_>>().join(", "));}
-    if value.is_array(){if arr(value).is_empty(){return "No results.".into();}return arr(value).iter().map(|e|format!("{}:{}  {}  {}",s(&e["agent"]),s(&e["id"]),s(&e["cwd"]),s(&e["path"]))).collect::<Vec<_>>().join("\n");}
+    if value.is_array() && arr(value).iter().all(|e| e["agent"].is_string() && e["path"].is_string()){if arr(value).is_empty(){return "No results.".into();}return arr(value).iter().map(|e|format!("{}:{}  {}  {}",s(&e["agent"]),s(&e["id"]),s(&e["cwd"]),s(&e["path"]))).collect::<Vec<_>>().join("\n");}
     serde_json::to_string_pretty(value).unwrap_or_default()
 }

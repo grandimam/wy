@@ -3,28 +3,10 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
-  python:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python: ['3.11', '3.13']
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: ${{ matrix.python }}
-      - run: uv sync --locked
-      - run: uv run pytest -q
-      - run: uv run ruff check src tests benchmarks examples
-      - run: uv run python benchmarks/run.py
-  extension:
+  rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: vscode/package-lock.json
-      - run: npm ci --prefix vscode
-      - run: npm test --prefix vscode
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check --locked
+      - run: cargo test --locked

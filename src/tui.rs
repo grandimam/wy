@@ -1,176 +1,905 @@
-//! Read-only terminal workspace. Model requests run only after explicit input.
+//! Read-only review workspace. Agent requests run only after explicit input.
+mod document;
+mod explorer;
+mod render;
+use crate::{agent::Cancel, arr, n, presentation, reasoning, s, security, service};
 use anyhow::{Result, ensure};
-use crossterm::{event::{self, Event, KeyCode, KeyModifiers, KeyEventKind}, execute, terminal::{self, EnterAlternateScreen, LeaveAlternateScreen}};
-use ratatui::{prelude::*, widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap}};
+use crossterm::{
+    event::{
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    },
+    execute,
+    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use document::{Document, View};
+use explorer::{Explorer, Kind, Target};
+use ratatui::{
+    prelude::*,
+    widgets::{
+        Block, BorderType, Borders, List, ListItem, Padding, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap,
+    },
+};
 use serde_json::Value;
-use std::{io::{self, IsTerminal}, path::{Path, PathBuf}, sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc}, thread, time::Duration};
-use crate::{arr, s, n, agent::Cancel, presentation, reasoning, repository, security, service};
+use std::{
+    io::{self, IsTerminal},
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
-#[derive(Clone)]
-struct Target { label: String, file: String, symbol: Option<String> }
-enum Update { Progress(String), Done(Result<Value>) }
-struct Job { receiver: mpsc::Receiver<Update>, cancel: Cancel, handle: thread::JoinHandle<()> }
+mod theme {
+    use ratatui::style::Color;
+    pub const BG: Color = Color::Rgb(16, 22, 32);
+    pub const PANEL: Color = Color::Rgb(22, 31, 44);
+    pub const SELECT: Color = Color::Rgb(35, 57, 70);
+    pub const BORDER: Color = Color::Rgb(58, 73, 92);
+    pub const TEXT: Color = Color::Rgb(222, 230, 240);
+    pub const MUTED: Color = Color::Rgb(145, 161, 183);
+    pub const ACCENT: Color = Color::Rgb(113, 218, 199);
+    pub const VIOLET: Color = Color::Rgb(179, 167, 245);
+    pub const GREEN: Color = Color::Rgb(149, 214, 163);
+    pub const RED: Color = Color::Rgb(243, 151, 159);
+    pub const AMBER: Color = Color::Rgb(237, 193, 129);
+    pub const ADD_BG: Color = Color::Rgb(21, 43, 36);
+    pub const REMOVE_BG: Color = Color::Rgb(48, 29, 38);
+}
+use theme::*;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Focus {
+    Files,
+    Reader,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Input {
+    Command,
+    Question,
+    Filter,
+}
+enum Update {
+    Progress(String),
+    Done(Result<Value>),
+}
+struct Job {
+    receiver: mpsc::Receiver<Update>,
+    cancel: Cancel,
+    handle: thread::JoinHandle<()>,
+    started: Instant,
+    scope: String,
+}
+/// A draft keeps this context even if a background answer arrives while typing.
+#[derive(Clone, Default)]
+struct QuestionContext {
+    file: Option<String>,
+    target: Option<String>,
+    previous: Option<Arc<Value>>,
+}
+impl QuestionContext {
+    fn label(&self) -> &str {
+        self.target
+            .as_deref()
+            .or(self.file.as_deref())
+            .unwrap_or("all changes")
+    }
+    fn options(&self, question: &str, agent: &str, source: &str) -> reasoning::Options {
+        let question = if let Some(artifact) = &self.previous {
+            format!(
+                "Previous question: {}\nPrevious assessment:\n{}\n\nFollow-up: {question}",
+                s(&artifact["packet"]["question"]),
+                presentation::reasoning_text(artifact)
+            )
+        } else {
+            question.into()
+        };
+        reasoning::Options {
+            file: self.file.clone(),
+            target: self.target.clone(),
+            question,
+            agent: agent.into(),
+            source: source.into(),
+        }
+    }
+}
+#[derive(Default)]
+struct Areas {
+    files: Rect,
+    reader: Rect,
+    input: Rect,
+    tabs: Vec<(Rect, View)>,
+}
 struct Workspace {
-    root: PathBuf, review: Value, targets: Vec<Target>, selected: usize,
-    body: String, scroll: u16, agent: String, source: String,
-    input: String, editing: bool, sidebar: bool, status: String,
-    artifact: Option<Value>, back: Vec<String>, job: Option<Job>,
+    root: PathBuf,
+    review: Value,
+    explorer: Explorer,
+    document: Document,
+    back: Vec<(Document, Focus)>,
+    answers: Vec<Arc<Value>>,
+    focus: Focus,
+    agent: String,
+    source: String,
+    input: String,
+    editing: Option<Input>,
+    draft: Option<QuestionContext>,
+    sidebar: bool,
+    status: String,
+    error: bool,
+    job: Option<Job>,
+    areas: Areas,
+    scroll_max: u16,
+    page_size: u16,
 }
 impl Workspace {
     fn new(root: &Path) -> Result<Self> {
-        let review = service::review(root, &service::ReviewOptions { source: "both".into(), ..Default::default() })?;
-        let mut app = Self { root: root.into(), review, targets: vec![], selected: 0,
-            body: "Explore a changed file or function, then press e to explain it or w to investigate its design.\n\nPress a to explain all changes. Agent calls use your existing account.\n\nPress d for offline detected choices, v for source, Enter for diff, ? for help.".into(),
-            scroll: 0, agent: "codex".into(), source: "both".into(), input: String::new(), editing: false,
-            sidebar: true, status: "Offline review ready".into(), artifact: None, back: vec![], job: None };
-        app.rebuild(); Ok(app)
+        let review = service::review(
+            root,
+            &service::ReviewOptions {
+                source: "both".into(),
+                ..Default::default()
+            },
+        )?;
+        Ok(Self::from_review(root, review))
     }
-    fn rebuild(&mut self) {
-        self.targets.clear();
-        for change in arr(&self.review["changes"]) {
-            let file = s(&change["file"]).to_owned();
-            self.targets.push(Target { label: file.clone(), file: file.clone(), symbol: None });
-            for symbol in arr(&change["symbols"]) {
-                self.targets.push(Target { label: format!("  {} :{}", s(&symbol["symbol"]), n(&symbol["start_line"])), file: file.clone(), symbol: Some(s(&symbol["symbol"]).into()) });
+    fn from_review(root: &Path, review: Value) -> Self {
+        let mut explorer = Explorer::default();
+        explorer.rebuild(&review);
+        if let Some(index) = explorer.rows.iter().position(|r| r.kind == Kind::File) {
+            explorer.state.select(Some(index));
+        }
+        let document = explorer
+            .target()
+            .map(|target| document::diff(&review, target))
+            .unwrap_or_else(|| document::empty(&review));
+        Self {
+            root: root.into(),
+            review,
+            explorer,
+            document,
+            back: vec![],
+            answers: vec![],
+            focus: Focus::Files,
+            agent: "codex".into(),
+            source: "both".into(),
+            input: String::new(),
+            editing: None,
+            draft: None,
+            sidebar: true,
+            status: String::new(),
+            error: false,
+            job: None,
+            areas: Areas::default(),
+            scroll_max: 0,
+            page_size: 12,
+        }
+    }
+    fn message(&mut self, message: impl Into<String>) {
+        self.status = message.into();
+        self.error = false;
+    }
+    fn fail(&mut self, error: impl std::fmt::Display) {
+        self.status = security::redact(&error.to_string());
+        self.error = true;
+    }
+    fn open(&mut self, mut document: Document) {
+        self.check_freshness(&mut document);
+        if document.kind == View::Explanation {
+            if let Some(artifact) = &document.artifact {
+                let target = document::artifact_target(artifact).map(|t| t.selector());
+                self.answers
+                    .retain(|a| document::artifact_target(a).map(|t| t.selector()) != target);
+                self.answers.push(artifact.clone());
+                if self.answers.len() > 20 {
+                    self.answers.remove(0);
+                }
             }
         }
-        self.selected = self.selected.min(self.targets.len().saturating_sub(1));
+        let old = std::mem::replace(&mut self.document, document);
+        self.back.push((old, self.focus));
+        if self.back.len() > 40 {
+            self.back.remove(0);
+        }
+        self.focus = Focus::Reader;
     }
-    fn show(&mut self, text: String) { self.back.push(self.body.clone()); self.body = text; self.scroll = 0; }
-    fn start(&mut self, all: bool, design: bool, question: Option<String>) {
-        if self.job.is_some() { self.status = "A request is running; Esc cancels it".into(); return; }
-        let selected = if all { None } else { self.targets.get(self.selected).cloned() };
-        if !all && selected.is_none() { self.status = "Select a file first".into(); return; }
-        let options = reasoning::Options {
-            agent: self.agent.clone(), source: self.source.clone(),
-            question: question.unwrap_or_else(|| if design { "Why this design?".into() } else { reasoning::prompt("explain").into() }),
-            target: if design { selected.as_ref().map(|t| format!("{}:{}",t.file,t.symbol.as_deref().unwrap_or("1"))) } else { None },
-            file: selected.map(|t| t.file),
+    fn check_freshness(&self, document: &mut Document) {
+        let Some(artifact) = &document.artifact else {
+            return;
         };
-        let root = self.root.clone(); let cancel = Arc::new(AtomicBool::new(false)); let worker_cancel = cancel.clone();
+        let Some(review_id) = artifact["review_id"].as_str() else {
+            return;
+        };
+        let current = (|| -> Result<bool> {
+            let saved = crate::storage::Store::open(&self.root)?.get("review", review_id)?;
+            let sources = crate::repository::sources(&self.root)?;
+            Ok(saved["file_hashes"] == serde_json::json!(sources.hashes)
+                && saved["head"] == serde_json::json!(crate::repository::head(&self.root)))
+        })();
+        document.notice = Some(match current {
+            Ok(true) => ("Source matches the captured review".into(), GREEN),
+            Ok(false) => (
+                "SOURCE CHANGED · this answer describes an earlier version. R updates the answer."
+                    .into(),
+                AMBER,
+            ),
+            Err(_) => (
+                "Saved review unavailable · source freshness could not be checked".into(),
+                AMBER,
+            ),
+        });
+    }
+    fn saved_explanation(&mut self) -> Result<()> {
+        let artifact = crate::storage::Store::open(&self.root)?
+            .get("reasoning", "latest")
+            .map_err(|_| anyhow::anyhow!("No saved answer yet · select a change and press w"))?;
+        self.open(document::explanation(Arc::new(artifact)));
+        self.message("Saved explanation opened · source freshness checked · 1–9 opens evidence");
+        Ok(())
+    }
+    fn target(&self) -> Option<Target> {
+        if self.focus == Focus::Files {
+            self.explorer.target()
+        } else {
+            self.document
+                .target
+                .clone()
+                .or_else(|| self.explorer.target())
+        }
+    }
+    fn required_target(&mut self) -> Option<Target> {
+        let target = self.target();
+        if target.is_none() {
+            self.message("Select a changed file or function first");
+        }
+        target
+    }
+    fn preview_selection(&mut self) {
+        let target = self.explorer.target();
+        if self.document.kind == View::Diff && self.document.target == target {
+            return;
+        }
+        self.document = target
+            .map(|target| document::diff(&self.review, target))
+            .unwrap_or_else(|| document::empty(&self.review));
+    }
+    fn why_change(&mut self, refresh: bool) {
+        let existing = (self.focus == Focus::Reader)
+            .then(|| self.document.artifact.clone())
+            .flatten();
+        if !refresh {
+            if let Some(artifact) = existing.clone() {
+                if self.document.kind != View::Explanation {
+                    self.open(document::explanation(artifact));
+                }
+                return;
+            }
+        }
+        let Some(options) = self.why_options(refresh) else {
+            self.message("Select a changed file or function first");
+            return;
+        };
+        if !refresh {
+            if let Some(answer) = self
+                .answers
+                .iter()
+                .rev()
+                .find(|a| document::artifact_target(a).map(|t| t.selector()) == options.target)
+                .cloned()
+            {
+                self.open(document::explanation(answer));
+                self.message("Saved answer · R updates it");
+                return;
+            }
+        }
+        self.start(options);
+    }
+    fn why_options(&self, refresh: bool) -> Option<reasoning::Options> {
+        let target = if refresh && self.focus == Focus::Reader {
+            if let Some(artifact) = &self.document.artifact {
+                document::artifact_target(artifact)
+            } else {
+                Some(self.target()?)
+            }
+        } else {
+            Some(self.target()?)
+        };
+        Some(self.options(
+            target,
+            true,
+            Some(reasoning::prompt("change_reason").into()),
+        ))
+    }
+    fn options(
+        &self,
+        target: Option<Target>,
+        design: bool,
+        question: Option<String>,
+    ) -> reasoning::Options {
+        reasoning::Options {
+            agent: self.agent.clone(),
+            source: self.source.clone(),
+            question: question.unwrap_or_else(|| {
+                reasoning::prompt(if design { "why" } else { "explain" }).into()
+            }),
+            target: target
+                .as_ref()
+                .filter(|t| design || t.symbol.is_some())
+                .map(Target::selector),
+            file: target.map(|t| t.file),
+        }
+    }
+    fn start(&mut self, options: reasoning::Options) {
+        if self.job.is_some() {
+            self.message("A request is running · Esc cancels it");
+            return;
+        }
+        let scope = options
+            .target
+            .clone()
+            .or_else(|| options.file.clone())
+            .unwrap_or_else(|| "all changes".into());
+        let root = self.root.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
         let (sender, receiver) = mpsc::channel();
         let handle = thread::spawn(move || {
-            let result = reasoning::run(&root, &options, &worker_cancel, |p| { let _ = sender.send(Update::Progress(p.into())); });
+            let result = reasoning::run(&root, &options, &worker_cancel, |p| {
+                let _ = sender.send(Update::Progress(p.into()));
+            });
             let _ = sender.send(Update::Done(result));
         });
-        self.job = Some(Job { receiver, cancel, handle }); self.status = "Preparing explanation… Esc cancels".into();
+        self.job = Some(Job {
+            receiver,
+            cancel,
+            handle,
+            started: Instant::now(),
+            scope,
+        });
+        self.message("Preparing explanation… Esc cancels");
     }
     fn poll(&mut self) {
         let mut done = false;
-        while let Some(update) = self.job.as_ref().and_then(|j| j.receiver.try_recv().ok()) {
+        loop {
+            let Some(job) = self.job.as_ref() else {
+                break;
+            };
+            let update = match job.receiver.try_recv() {
+                Ok(update) => update,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    if !done {
+                        self.fail("Explanation worker stopped unexpectedly; try again");
+                    }
+                    done = true;
+                    break;
+                }
+            };
             match update {
-                Update::Progress(p) => self.status = p,
-                Update::Done(result) => { done = true; match result {
-                    Ok(artifact) => { self.show(presentation::reasoning_text(&artifact)); self.artifact = Some(artifact); self.status = "Explanation saved · 1–9 opens evidence".into(); },
-                    Err(e) => self.status = security::redact(&format!("{e:#}")),
-                }}
+                Update::Progress(progress) => self.message(progress),
+                Update::Done(result) => {
+                    done = true;
+                    match result {
+                        Ok(artifact) => {
+                            self.open(document::explanation(Arc::new(artifact)));
+                            self.message(
+                                "Explanation saved · 1–9 opens evidence · i asks a follow-up",
+                            );
+                        }
+                        Err(error) => self.fail(format!("{error:#}")),
+                    }
+                }
             }
         }
-        if done { if let Some(job) = self.job.take() { let _ = job.handle.join(); } }
+        if done {
+            if let Some(job) = self.job.take() {
+                let _ = job.handle.join();
+            }
+        }
     }
-    fn cancel(&mut self) { if let Some(j) = &self.job { j.cancel.store(true, Ordering::Relaxed); self.status = "Cancelling…".into(); } }
+    fn cancel(&mut self) {
+        if let Some(job) = &self.job {
+            job.cancel.store(true, Ordering::Relaxed);
+            self.message("Cancelling request…");
+        }
+    }
+    fn question_context(&self) -> QuestionContext {
+        if let Some(draft) = &self.draft {
+            return draft.clone();
+        }
+        if self.focus == Focus::Reader {
+            if let Some(artifact) = &self.document.artifact {
+                return QuestionContext {
+                    file: document::artifact_target(artifact).map(|t| t.file),
+                    target: artifact["packet"]["focus_target"]["target"]
+                        .as_str()
+                        .map(str::to_owned),
+                    previous: Some(artifact.clone()),
+                };
+            }
+            if self.document.target.is_none() {
+                return QuestionContext::default();
+            }
+        }
+        let target = self.target();
+        QuestionContext {
+            file: target.as_ref().map(|t| t.file.clone()),
+            target: target
+                .as_ref()
+                .filter(|t| t.symbol.is_some())
+                .map(Target::selector),
+            previous: None,
+        }
+    }
+    fn question_options(&self, question: &str) -> reasoning::Options {
+        self.question_context()
+            .options(question, &self.agent, &self.source)
+    }
+    fn question_scope(&self) -> String {
+        self.question_context().label().into()
+    }
     fn command(&mut self) -> Result<()> {
-        let input = self.input.trim().to_owned(); self.input.clear(); self.editing = false;
-        if input.is_empty() { return Ok(()); }
+        let input = self.input.trim().to_owned();
+        let question_options = self.question_options(&input);
+        let mode = self.editing.take();
+        let context = self.question_context();
+        self.draft = None;
+        self.input.clear();
+        if mode == Some(Input::Filter) {
+            self.message("Filter applied · f edits it · Esc clears it in files");
+            return Ok(());
+        }
+        if input.is_empty() {
+            return Ok(());
+        }
+        if mode == Some(Input::Question) && !input.starts_with('/') {
+            self.start(question_options);
+            return Ok(());
+        }
         let (name, rest) = input.split_once(' ').unwrap_or((&input, ""));
+        let rest = rest.trim();
         match name {
-            "/reason" => self.start(true, false, (!rest.is_empty()).then(|| rest.into())),
-            "/why" => {
-                let (target, question) = rest.split_once(' ').unwrap_or((rest, "Why this design?"));
-                let resolved = reasoning::resolve_target(&self.root, target)?;
-                self.targets.push(Target { label: target.into(), file: s(&resolved["file"]).into(), symbol: Some(target.rsplit_once(':').map(|(_,s)|s).unwrap_or("1").into()) });
-                self.selected = self.targets.len()-1; self.start(false, true, Some(question.into()));
+            "/reason" => {
+                self.start(self.options(None, false, (!rest.is_empty()).then(|| rest.into())))
             }
-            "/agent" => { ensure!(["codex","claude"].contains(&rest), "Use /agent codex or /agent claude"); self.agent = rest.into(); }
-            "/source" => { crate::history::valid_source(rest)?; self.source = rest.into(); }
+            "/why" => {
+                let (target, question) = rest
+                    .split_once(' ')
+                    .unwrap_or((rest, reasoning::prompt("why")));
+                ensure!(!target.is_empty(), "Use /why FILE:SYMBOL QUESTION");
+                let resolved = reasoning::resolve_target(&self.root, target)?;
+                let selected = Target {
+                    file: s(&resolved["file"]).into(),
+                    symbol: Some(s(&resolved["symbol"]).into()),
+                    line: n(&resolved["start_line"]),
+                };
+                let mut options = self.options(Some(selected), true, Some(question.into()));
+                options.target = Some(target.into());
+                self.start(options);
+            }
+            "/agent" => {
+                ensure!(
+                    ["codex", "claude"].contains(&rest),
+                    "Use /agent codex or /agent claude"
+                );
+                self.agent = rest.into();
+                self.message(format!("Next explanation uses {rest}"));
+            }
+            "/source" => {
+                crate::history::valid_source(rest)?;
+                self.source = rest.into();
+                self.message(format!(
+                    "Next request uses {rest} history · r refreshes offline coverage"
+                ));
+            }
             "/cancel" => self.cancel(),
-            "/ask" => self.follow_up(rest),
-            _ if input.starts_with('/') => self.status = "Commands: /reason QUESTION, /why FILE:SYMBOL QUESTION, /ask QUESTION, /agent codex|claude, /source both|codex|claude|none, /cancel".into(),
-            _ => self.follow_up(&input),
-        } Ok(())
+            "/ask" => {
+                ensure!(!rest.is_empty(), "Use /ask QUESTION");
+                self.start(context.options(rest, &self.agent, &self.source));
+            }
+            "/evidence" => {
+                let index: usize = rest
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("Use /evidence NUMBER"))?;
+                ensure!(index > 0, "Evidence numbers start at 1");
+                self.open_evidence(index - 1)?;
+            }
+            _ if input.starts_with('/') => self.message("Unknown command · ? opens help"),
+            _ => self.start(question_options),
+        }
+        Ok(())
     }
-    fn follow_up(&mut self, question: &str) {
-        let mut question = question.to_owned();
-        if let Some(a) = &self.artifact {
-            question = format!("Previous question: {}\nPrevious assessment:\n{}\n\nFollow-up: {question}",s(&a["packet"]["question"]), presentation::reasoning_text(a));
-            // Retain the previous target rather than the current sidebar selection.
-            let target = a["packet"]["focus_target"]["target"].as_str().map(str::to_owned);
-            let file = a["packet"]["file"].as_str().map(str::to_owned);
-            if let Some(file) = target.as_ref().map(|t|t.split(':').next().unwrap_or(t).to_owned()).or(file) {
-                self.targets.push(Target { label: file.clone(), file, symbol: target.as_ref().and_then(|t|t.rsplit_once(':').map(|(_,s)|s.into())) });
-                self.selected = self.targets.len()-1; self.start(false, target.is_some(), Some(question)); return;
+    fn open_evidence(&mut self, index: usize) -> Result<()> {
+        let artifact = self.document.artifact.clone().ok_or_else(|| {
+            anyhow::anyhow!("Open an explanation first to inspect its references")
+        })?;
+        let doc = document::evidence(artifact, index)
+            .ok_or_else(|| anyhow::anyhow!("No reference [{}] in this explanation", index + 1))?;
+        self.open(doc);
+        Ok(())
+    }
+    fn edit(&mut self, mode: Input) {
+        self.draft = if mode == Input::Filter {
+            None
+        } else {
+            Some(self.question_context())
+        };
+        self.editing = Some(mode);
+        self.input = match mode {
+            Input::Command => "/".into(),
+            Input::Question => String::new(),
+            Input::Filter => self.explorer.filter.clone(),
+        };
+        if mode == Input::Filter {
+            self.focus = Focus::Files;
+            self.sidebar = true;
+        }
+    }
+    fn filter_input(&mut self) {
+        if self.editing == Some(Input::Filter) {
+            self.explorer.filter = self.input.clone();
+            self.explorer.rebuild(&self.review);
+            self.preview_selection();
+        }
+    }
+    fn change_view(&mut self, view: View) -> Result<()> {
+        match view {
+            View::Diff => {
+                if let Some(target) = self.required_target() {
+                    self.open(document::diff(&self.review, target));
+                }
+            }
+            View::Explanation => self.why_change(false),
+            _ => {}
+        }
+        Ok(())
+    }
+    fn mark(&mut self) {
+        if let Some(target) = self.required_target() {
+            if !arr(&self.review["changes"])
+                .iter()
+                .any(|c| c["file"] == target.file)
+            {
+                self.message("Only changed files can be marked reviewed");
+                return;
+            }
+            if self.explorer.reviewed.remove(&target.file) {
+                self.message(format!("{} · needs review", target.file));
+            } else {
+                self.explorer.reviewed.insert(target.file.clone());
+                self.message(format!(
+                    "{} · marked reviewed for this session",
+                    target.file
+                ));
             }
         }
-        self.start(true, false, Some(question));
+    }
+    fn refresh(&mut self) -> Result<()> {
+        let review = service::review(
+            &self.root,
+            &service::ReviewOptions {
+                source: self.source.clone(),
+                ..Default::default()
+            },
+        )?;
+        self.explorer.refresh(&self.review, &review);
+        self.review = review;
+        // Reading history belongs to the previous snapshot.
+        self.back.clear();
+        self.answers.clear();
+        self.document = document::empty(&self.review);
+        self.preview_selection();
+        self.message("Offline review refreshed · review marks reset for changed files");
+        Ok(())
+    }
+    fn scroll(&mut self, delta: isize) {
+        self.document.scroll = self
+            .document
+            .scroll
+            .saturating_add_signed(delta.clamp(i16::MIN as isize, i16::MAX as isize) as i16)
+            .min(self.scroll_max);
     }
     fn key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
-        if modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('q') | KeyCode::Char('c')) { self.cancel(); return Ok(true); }
-        if self.editing {
-            match code { KeyCode::Esc => { self.editing=false; self.input.clear(); }, KeyCode::Enter => self.command()?, KeyCode::Backspace => {self.input.pop();}, KeyCode::Char(c) => self.input.push(c), _=>{} } return Ok(false);
+        if modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(code, KeyCode::Char('q') | KeyCode::Char('c'))
+        {
+            self.cancel();
+            return Ok(true);
         }
-        match code {
-            KeyCode::Char('q') => { self.cancel(); return Ok(true); },
-            KeyCode::Char('/') => { self.editing=true; self.input="/".into(); },
-            KeyCode::Char('i') => self.editing=true,
-            KeyCode::Up | KeyCode::Char('k') => self.selected=self.selected.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => self.selected=(self.selected+1).min(self.targets.len().saturating_sub(1)),
-            KeyCode::PageDown => self.scroll=self.scroll.saturating_add(12),
-            KeyCode::PageUp => self.scroll=self.scroll.saturating_sub(12),
-            KeyCode::Char('b') => self.sidebar=!self.sidebar,
-            KeyCode::Char('a') => self.start(true,false,None),
-            KeyCode::Char('e') => self.start(false,false,None),
-            KeyCode::Char('w') => self.start(false,true,None),
-            KeyCode::Char('d') => { self.review=service::load(&self.root)?; self.show(presentation::render(&self.review)); },
-            KeyCode::Char('r') if self.job.is_none() => {
-                self.review=service::review(&self.root,&service::ReviewOptions {source:self.source.clone(),..Default::default()})?;
-                self.rebuild(); self.status="Offline review refreshed".into();
+        if self.editing.is_some() {
+            match code {
+                KeyCode::Esc => {
+                    if self.editing == Some(Input::Filter) {
+                        self.explorer.filter.clear();
+                        self.explorer.rebuild(&self.review);
+                    }
+                    self.editing = None;
+                    self.draft = None;
+                    self.input.clear();
+                }
+                KeyCode::Enter => self.command()?,
+                KeyCode::Backspace => {
+                    self.input.pop();
+                    self.filter_input();
+                }
+                KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.input.clear();
+                    self.filter_input();
+                }
+                KeyCode::Char(c)
+                    if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.input.push(c);
+                    self.filter_input();
+                }
+                _ => {}
             }
-            KeyCode::Char('v') => if let Some(t)=self.targets.get(self.selected) {
-                let raw=security::read_source(&self.root,&t.file).ok_or_else(||anyhow::anyhow!("Source unavailable"))?;
-                self.show(format!("{}\n\n{}", t.file, security::redact(&raw).lines().enumerate().map(|(i,l)|format!("{:4}  {l}",i+1)).collect::<Vec<_>>().join("\n")));
-            },
-            KeyCode::Enter => if let Some(t)=self.targets.get(self.selected) {
-                let text=arr(&self.review["changes"]).iter().find(|c|c["file"]==t.file).map(|c|s(&c["diff"]).to_owned()).unwrap_or_else(||"No captured diff".into()); self.show(text);
-            },
-            KeyCode::Char(c @ '1'..='9') => if let Some(a)=&self.artifact {
-                if let Some(e)=presentation::citations(a).get(c.to_digit(10).unwrap() as usize-1) { self.show(serde_json::to_string_pretty(e)?); }
-            },
-            KeyCode::Esc => { if self.job.is_some() {self.cancel();} else if let Some(body)=self.back.pop(){self.body=body;self.scroll=0;} },
-            KeyCode::Char('?') | KeyCode::F(1) => self.show("wy · Help\n\nj/k or arrows: select file or function\nEnter: diff · v: source · d: offline choices\na: explain all changes · e: explain selected file · w: why this design\n1–9: inspect explanation evidence · Esc: back / cancel\nPageUp/PageDown: scroll · b: toggle files\ni: ask follow-up · /: command input\nr: refresh review offline · q / Ctrl+Q: quit\n\n/agent codex|claude\n/source both|codex|claude|none\n/reason QUESTION\n/why FILE:SYMBOL QUESTION\n/ask QUESTION\n/cancel\n\nAgent requests are opt-in and may consume account usage. Source browsing and review stay offline.".into()),
-            _=>{}
-        } Ok(false)
-    }
-    fn draw(&self, frame: &mut Frame) {
-        let rows=Layout::vertical([Constraint::Length(1),Constraint::Min(3),Constraint::Length(3),Constraint::Length(2)]).split(frame.area());
-        frame.render_widget(Paragraph::new(format!(" wy  ·  {}  ·  agent: {}  ·  history: {}", self.root.display(),self.agent,self.source)).style(Style::default().fg(Color::Cyan)),rows[0]);
-        let cols=Layout::horizontal([Constraint::Length(if self.sidebar {32}else{0}),Constraint::Min(20)]).split(rows[1]);
-        if self.sidebar {
-            let items=self.targets.iter().map(|t| ListItem::new(t.label.as_str())).collect::<Vec<_>>();
-            let mut state=ListState::default().with_selected((!items.is_empty()).then_some(self.selected));
-            frame.render_stateful_widget(List::new(items).block(Block::default().title("Changed files / symbols").borders(Borders::ALL)).highlight_style(Style::default().bg(Color::DarkGray).fg(Color::Cyan)),cols[0],&mut state);
+            return Ok(false);
         }
-        frame.render_widget(Paragraph::new(self.body.as_str()).wrap(Wrap{trim:false}).scroll((self.scroll,0)).block(Block::default().title("Explanation / evidence").borders(Borders::ALL)),cols[1]);
-        frame.render_widget(Paragraph::new(if self.editing {self.input.as_str()}else{"i: ask a follow-up · /: commands"}).block(Block::default().title(if self.editing{"Enter sends · Esc cancels input"}else{"Question"}).borders(Borders::ALL)),rows[2]);
-        frame.render_widget(Paragraph::new(format!("{}\n?: help · a: explain all · e: explain file · w: why · Esc: back/cancel · q: quit",self.status)),rows[3]);
+        let selection_before = self.explorer.selected().map(|r| r.key.clone());
+        match code {
+            KeyCode::Char('q') => {
+                self.cancel();
+                return Ok(true);
+            }
+            KeyCode::Char('/') => self.edit(Input::Command),
+            KeyCode::Char('i') => {
+                if self.document.artifact.is_some() {
+                    self.focus = Focus::Reader;
+                    self.edit(Input::Question);
+                } else {
+                    self.message("Open Why this change? to ask a follow-up");
+                }
+            }
+            KeyCode::Char('f') => self.edit(Input::Filter),
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.focus = if self.focus == Focus::Files {
+                    Focus::Reader
+                } else {
+                    self.sidebar = true;
+                    Focus::Files
+                };
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.focus == Focus::Files {
+                    self.explorer.step(-1);
+                } else {
+                    self.scroll(-1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.focus == Focus::Files {
+                    self.explorer.step(1);
+                } else {
+                    self.scroll(1);
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                if self.focus == Focus::Files {
+                    self.explorer.expand(&self.review);
+                } else if self.document.code() {
+                    self.document.horizontal = self.document.horizontal.saturating_add(4);
+                }
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                if self.focus == Focus::Files {
+                    self.explorer.collapse(&self.review);
+                } else {
+                    self.document.horizontal = self.document.horizontal.saturating_sub(4);
+                }
+            }
+            KeyCode::Char(' ') if self.focus == Focus::Files => self.explorer.toggle(&self.review),
+            KeyCode::PageDown => self.scroll(self.page_size as isize),
+            KeyCode::PageUp => self.scroll(-(self.page_size as isize)),
+            KeyCode::Home => {
+                if self.focus == Focus::Files {
+                    self.explorer.step(isize::MIN);
+                } else {
+                    self.document.scroll = 0;
+                }
+            }
+            KeyCode::End => {
+                if self.focus == Focus::Files {
+                    self.explorer.step(isize::MAX);
+                } else {
+                    self.document.scroll = self.scroll_max;
+                }
+            }
+            KeyCode::Char('b') => {
+                self.sidebar = !self.sidebar;
+                self.focus = if self.sidebar {
+                    Focus::Files
+                } else {
+                    Focus::Reader
+                };
+            }
+            KeyCode::Char('w') => self.why_change(false),
+            KeyCode::Char('R') => self.why_change(true),
+            KeyCode::Char('p') => self.saved_explanation()?,
+            KeyCode::Char('d') => self.change_view(View::Diff)?,
+            KeyCode::Char('m') => self.mark(),
+            KeyCode::Char('r') => {
+                if self.job.is_none() {
+                    self.refresh()?;
+                } else {
+                    self.message("Wait for the request or press Esc to cancel before refreshing");
+                }
+            }
+            KeyCode::Enter => {
+                if self.focus == Focus::Files
+                    && self
+                        .explorer
+                        .selected()
+                        .is_some_and(|r| r.kind == Kind::Folder)
+                {
+                    self.explorer.toggle(&self.review);
+                } else {
+                    self.change_view(View::Diff)?;
+                }
+            }
+            KeyCode::Char(c @ '1'..='9') => {
+                self.open_evidence(c.to_digit(10).unwrap() as usize - 1)?
+            }
+            KeyCode::Esc => {
+                if self.job.is_some() {
+                    self.cancel();
+                } else if self.focus == Focus::Files && !self.explorer.filter.is_empty() {
+                    self.explorer.filter.clear();
+                    self.explorer.rebuild(&self.review);
+                } else if let Some((mut doc, focus)) = self.back.pop() {
+                    self.check_freshness(&mut doc);
+                    self.document = doc;
+                    self.focus = if !self.sidebar { Focus::Reader } else { focus };
+                }
+            }
+            KeyCode::Char('?') | KeyCode::F(1) => self.open(document::help()),
+            _ => {}
+        }
+        if self.focus == Focus::Files
+            && self.explorer.selected().map(|r| r.key.clone()) != selection_before
+        {
+            self.preview_selection();
+        }
+        Ok(false)
+    }
+    fn mouse(&mut self, event: MouseEvent) -> Result<()> {
+        let point = Position::new(event.column, event.row);
+        if self.editing.is_some() {
+            return Ok(());
+        }
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some((_, view)) = self
+                    .areas
+                    .tabs
+                    .iter()
+                    .find(|(area, _)| area.contains(point))
+                {
+                    let view = *view;
+                    self.focus = Focus::Reader;
+                    self.change_view(view)?;
+                } else if self.areas.files.contains(point) {
+                    let index =
+                        self.explorer.state.offset() + usize::from(event.row - self.areas.files.y);
+                    if index < self.explorer.rows.len() {
+                        self.explorer.state.select(Some(index));
+                        self.focus = Focus::Files;
+                        self.key(KeyCode::Enter, KeyModifiers::NONE)?;
+                    }
+                } else if self.areas.reader.contains(point) {
+                    self.focus = Focus::Reader;
+                } else if self.areas.input.contains(point) {
+                    self.focus = Focus::Reader;
+                    self.edit(Input::Question);
+                }
+            }
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                let delta = if event.kind == MouseEventKind::ScrollDown {
+                    3
+                } else {
+                    -3
+                };
+                if self.areas.files.contains(point) {
+                    self.focus = Focus::Files;
+                    self.explorer.step(delta);
+                    self.preview_selection();
+                } else if self.areas.reader.contains(point) {
+                    self.focus = Focus::Reader;
+                    self.scroll(delta);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 }
 struct TerminalGuard;
-impl Drop for TerminalGuard { fn drop(&mut self) { let _=terminal::disable_raw_mode(); let _=execute!(io::stdout(),LeaveAlternateScreen); } }
-pub fn run(root:&Path)->Result<()> {
-    ensure!(io::stdin().is_terminal()&&io::stdout().is_terminal(),"The workspace requires an interactive terminal; use wy review --json for scripts");
-    let mut app=Workspace::new(root)?;
-    terminal::enable_raw_mode()?; let _guard=TerminalGuard;
-    execute!(io::stdout(),EnterAlternateScreen)?;
-    let mut terminal=Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    let result=(||->Result<()> { loop {
-        app.poll(); terminal.draw(|f|app.draw(f))?;
-        if event::poll(Duration::from_millis(80))? {
-            if let Event::Key(key)=event::read()? { if key.kind==KeyEventKind::Press {
-                match app.key(key.code,key.modifiers) {Ok(true)=>break,Ok(false)=>{},Err(e)=>app.status=security::redact(&format!("{e:#}"))}
-            }}
-        }
-    } Ok(()) })();
-    app.cancel();
-    if let Some(job)=app.job.take() { let _=job.handle.join(); }
-    terminal.show_cursor()?; result
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+        let _ = execute!(
+            io::stdout(),
+            DisableBracketedPaste,
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        );
+    }
 }
+pub fn run(root: &Path) -> Result<()> {
+    ensure!(
+        io::stdin().is_terminal() && io::stdout().is_terminal(),
+        "The workspace requires an interactive terminal; use wy review --json for scripts"
+    );
+    let mut app = Workspace::new(root)?;
+    terminal::enable_raw_mode()?;
+    let _guard = TerminalGuard;
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let result = (|| -> Result<()> {
+        let mut dirty = true;
+        loop {
+            let was_running = app.job.is_some();
+            app.poll();
+            if dirty || was_running {
+                terminal.draw(|frame| app.draw(frame))?;
+                dirty = false;
+            }
+            if event::poll(Duration::from_millis(if app.job.is_some() {
+                100
+            } else {
+                250
+            }))? {
+                let event = event::read()?;
+                if matches!(
+                    event,
+                    Event::Mouse(MouseEvent {
+                        kind: MouseEventKind::Moved,
+                        ..
+                    }) | Event::Key(event::KeyEvent {
+                        kind: KeyEventKind::Release,
+                        ..
+                    })
+                ) {
+                    continue;
+                }
+                dirty = true;
+                let result = match event {
+                    Event::Key(key) if key.kind != KeyEventKind::Release => {
+                        app.key(key.code, key.modifiers)
+                    }
+                    Event::Mouse(mouse) => app.mouse(mouse).map(|_| false),
+                    Event::Paste(text) if app.editing.is_some() => {
+                        app.input
+                            .extend(text.chars().map(|c| if c.is_control() { ' ' } else { c }));
+                        app.filter_input();
+                        Ok(false)
+                    }
+                    _ => Ok(false),
+                };
+                match result {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(error) => app.fail(format!("{error:#}")),
+                }
+            }
+        }
+        Ok(())
+    })();
+    app.cancel();
+    if let Some(job) = app.job.take() {
+        let _ = job.handle.join();
+    }
+    terminal.show_cursor()?;
+    result
+}
+
+#[cfg(test)]
+mod tests;
