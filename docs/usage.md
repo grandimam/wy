@@ -1,40 +1,62 @@
 # Using wy
 
-Install with `cargo install --path . --locked`. From a checkout, use `cargo run --` in place of `wy`. Rust 1.88+ and Git are required.
+Install directly from GitHub with `cargo install --git https://github.com/grandimam/wy --locked wy-code`. This builds from source and requires Rust 1.88+, Git and a C toolchain. From a checkout, use `cargo install --path . --locked` to install or `cargo run --` in place of `wy` to run it.
+
+## Prebuilt installer
+
+The release workflow is configured to provide binaries for Apple Silicon and Intel macOS, and ARM64 and x64 Linux with glibc. **The first binary release must be published before this command is available:**
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/grandimam/wy/releases/latest/download/wy-code-installer.sh | sh
+```
+
+The installer selects your platform, checks the archive's checksum and installs `wy` into `~/.local/bin`. It updates supported shell profiles to put that directory on your PATH; open a new terminal afterward. Repeating the command installs the latest release. Git is still required to review repositories; Rust is only needed for source builds. Windows binaries are not currently configured.
+
+To choose another directory without updating shell profiles, download the installer and run it with `WY_CODE_UNMANAGED_INSTALL`:
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/grandimam/wy/releases/latest/download/wy-code-installer.sh -o /tmp/wy-installer.sh
+WY_CODE_UNMANAGED_INSTALL="$HOME/bin" sh /tmp/wy-installer.sh
+```
+
+See [release setup](releasing.md) for publishing and checking the first release.
 
 ## Terminal workspace
 
 Run `wy --repo /path/to/repository` in an interactive terminal. Startup performs an offline review of current changes and matching project history.
 
-The file tree combines working-tree changes with code recorded in recent agent sessions, including files already committed. Files marked **session** have a captured edit: press **c** or click **Session code** to read it. Files with no current diff open directly on their session code. The view includes the latest recorded edit per file from up to three coding sessions in the last seven days, capped at 50 files. Unknown timestamps are labeled as such. Patches are excerpts, not reconstructed complete files; the captured code can differ from the current version.
+The file tree combines working-tree changes with recent recorded edits, including files already committed. There is one **Changes** view: it prefers the current Git diff, falling back to the latest captured edit when a file has no current diff. A source label makes the distinction explicit. Recorded edits can differ from current files and are not reconstructed complete files. Coverage includes the latest edit per file from up to three coding sessions in the last seven days, capped at 50 files.
 
-Select a file or changed function, then press **w** or click **Why this change?**. On terminals at least 110 columns wide, the code stays in the center and the explanation opens to its right. The explanation uses plain prose, with original agent quotes when available and explicitly labeled inferences when justification is missing. Sources are clickable; **s**, Up/Down and Enter navigate every source with the keyboard. Follow-up input stays beneath the explanation in its pane.
+Select a file or changed function to see **Agent notes** immediately: excerpts of the original conversation, with sources you can open. No model call is needed. Notes are linked by file references and nearby edits within a user turn. Gap hints identify missing signals in those excerpts, such as an explicit reason or alternatives; they are not a complete assessment of the agent's reasoning. On terminals at least 110 columns wide, notes sit to the right of the changes. On smaller terminals, Tab switches panes.
+
+Press **e** or click **Enrich explanation** to connect the code and notes with a new, cited assessment. Keep navigating while it runs. Files show **working**, **queued**, or **ready**; return to a file to read its enrichment. Reading positions are retained while browsing, and completed answers are restored when wy restarts. **o Agent notes** returns to the original excerpts; **v Enriched** opens the saved assessment without a new request.
 
 | Key | Action |
 | --- | --- |
-| Up / Down or `j` / `k` | Preview the selected file or symbol's diff; scroll when the reader has focus |
-| `w` | **Why this change?** for the selected file or function; reopen its answer if already loaded |
-| `d` | Return to the diff |
-| `c` | Read the file's latest code captured in an agent session |
+| Up / Down or `j` / `k` | Preview the selected file or function; scroll the focused pane |
+| `e` (also `w`) | Enrich the selected change; reuse a completed answer when available |
+| `d` | Focus Changes |
+| `o` / `v` | Original agent notes / saved enrichment |
 | `s`, then Up/Down and Enter | Select and open a source; Escape returns to reading |
-| `1`–`9` | Open the answer's cited code or conversation |
-| `i` | Ask a follow-up about the displayed answer |
-| `R` | Request an updated answer |
+| `1`–`9` | Open a numbered code or conversation source |
+| `i` | Ask a question about the displayed notes or answer |
+| `R` | Request updated enrichment |
 | Tab | Switch between files, code and explanation |
-| Left / Right or `h` / `l` | Collapse / expand the tree; pan a diff in the reader |
+| Left / Right or `h` / `l` | Collapse / expand the tree; pan code |
 | Space | Toggle a folder or a file's changed-symbol outline |
-| Enter | Focus the file's diff, or toggle a folder |
-| `f` | Filter changed file paths |
-| `r` | Refresh changes offline |
-| Escape | Return to the previous view or cancel a running request |
+| Enter | Focus the file's changes, open a selected source, or toggle a folder |
+| `f` | Filter file paths |
+| `r` | Refresh changes and captured history offline |
+| Escape | Return to the previous view or clear a file filter |
+| `x` | Cancel running and queued enrichments |
 | `?` / F1 | Help, settings and additional commands |
-| `q` / Ctrl+Q / Ctrl+C | Quit |
+| `q` / Ctrl+Q / Ctrl+C | Quit and cancel unfinished requests |
 
-Click files or view tabs to navigate, and use the mouse wheel to scroll the pane under the pointer. PageUp/PageDown and Home/End navigate longer content. Narrow terminals keep code and explanation accessible through Tab; below 90 columns all panes use the full width. Escape restores the previous reading position, or clears an active file filter. Input supports paste and Ctrl+U to clear.
+Click files, sources or view tabs to navigate. The mouse wheel scrolls the pane under the pointer. PageUp/PageDown and Home/End navigate longer content. Below 90 columns, panes use the full width. Input supports paste and Ctrl+U to clear. A result arriving in the background will not switch you to another file, close a source, or interrupt a question draft.
 
-Switching between a diff and its loaded answer does not make another agent request. `R` explicitly updates an answer. `p` reopens the last saved explanation, including one generated by `wy reason` or `wy why` in the shell. Source freshness is checked when an answer is opened or revisited.
+**Enrich makes new model calls**: one selects relevant context and another writes a cited explanation. Captured notes are included as evidence; inferred reasons are a new assessment. Requests may consume your signed-in account's usage. Explicit requests for other files queue in the background (up to eight waiting requests). Follow-ups retain the original file, function or captured edit, including while reading a source about another file. Code browsing, notes, filtering and source navigation stay offline.
 
-**Why this change? makes new model calls**: one selects relevant context and another writes a cited explanation. Recorded session messages are evidence for this new assessment. Requests run in the background and may consume your signed-in account's usage. Follow-ups retain the answer's original file, function or captured session edit, including when reading evidence about another file. The question's scope stays fixed while you type, even if another answer arrives. Code browsing, session-code extraction, filtering and evidence navigation stay offline.
+`p` reopens the last saved explanation, including one generated by `wy reason` or `wy why` in the shell. Source freshness is checked when an answer is opened or revisited; `R` explicitly updates it.
 
 Use `/agent codex|claude` to choose the answering agent and `/source both|codex|claude|none` for the conversation history. Additional commands are `/why FILE:SYMBOL QUESTION`, `/ask QUESTION`, `/reason QUESTION` (all changes), `/evidence NUMBER` and `/cancel`. Offline detected choices remain available through the shell's `wy decisions` and `wy explain` commands.
 
@@ -56,6 +78,21 @@ wy ask 1 'What assumptions should I verify?'
 Without a baseline, review compares HEAD with the current working tree, including staged and non-ignored untracked files. A baseline separates later changes from pre-existing edits; it cannot establish authorship. Use only one of `--baseline`, `--base REV` and `--diff PATCH`. Imported patches are checked against source and never applied.
 
 Commands accept `--repo PATH` and `--json`. The workspace requires a terminal; use a subcommand for scripts. Saved source hashes are checked before cached decisions are read or investigated.
+
+## Shell command reference
+
+| Command | Purpose |
+| --- | --- |
+| `wy review` | Review current changes and matching history offline. |
+| `wy why worker.rs:batch` | Investigate a function through your agent CLI. |
+| `wy reasoning-evidence 1 --id <explanation-id>` | Inspect the saved source behind an explanation. |
+| `wy decisions` | List detected decisions and review origin. |
+| `wy explain 1` | Inspect a decision's rationale and citations. |
+| `wy evidence 1 2` | Open the second citation for the first decision. |
+| `wy gaps` | Find unanswered questions, unexplained choices and stale findings. |
+| `wy decisions --json` | Get structured output for scripts. |
+
+In-app `/ask` calls the selected agent CLI. The shell command `wy ask TARGET 'QUESTION'` works offline unless you add `--model`.
 
 ## Project history
 

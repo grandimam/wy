@@ -1,0 +1,28 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.33.0"
+ci = ["github"]
+installers = ["shell"]
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-unknown-linux-gnu",
+]
+install-path = "~/.local/bin"
+install-success-msg = "Open a new terminal, enter your repository, and run wy."
+unix-archive = ".tar.gz"
+checksum = "sha256"
+pr-run-mode = "plan"
+# The GitHub Run workflow button defaults to a build-only dry run.
+dispatch-releases = true
+github-build-setup = "../release-build-setup.yml"
+
+[dist.github-custom-runners]
+global = "ubuntu-22.04"
+aarch64-apple-darwin = "macos-14"
+x86_64-apple-darwin = "macos-15-intel"
+aarch64-unknown-linux-gnu = "ubuntu-22.04-arm"
+x86_64-unknown-linux-gnu = "ubuntu-22.04"

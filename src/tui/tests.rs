@@ -142,8 +142,8 @@ fn reading_focus_scroll_and_back_restore_the_actual_document() {
     select(&mut app, "src/cache.rs");
     screen(&mut app, 100, 24);
     press(&mut app, KeyCode::Enter);
-    assert_eq!(app.focus, Focus::Reader);
-    assert_eq!(app.document.kind, View::Diff);
+    assert_eq!(app.focus, Focus::Code);
+    assert_eq!(app.code.as_ref().unwrap().kind, View::Diff);
     let selected = app.explorer.state.selected();
     screen(&mut app, 100, 24);
     press(&mut app, KeyCode::Down);
@@ -169,7 +169,7 @@ fn reading_focus_scroll_and_back_restore_the_actual_document() {
 #[test]
 fn selection_previews_the_diff_without_requests_or_history_noise() {
     let mut app = workspace();
-    assert_eq!(app.document.kind, View::Diff);
+    assert_eq!(app.document.kind, View::Recorded);
     assert_eq!(app.document.target, app.explorer.target());
     press(&mut app, KeyCode::Down);
     assert_eq!(app.document.target.as_ref().unwrap().file, "src/cache.rs");
@@ -179,11 +179,11 @@ fn selection_previews_the_diff_without_requests_or_history_noise() {
     assert!(app.document.target.as_ref().unwrap().symbol.is_some());
     assert!(app.job.is_none());
     assert!(app.back.is_empty());
-    for key in ['a', 'e', 'o'] {
+    for key in ['a', 'o', 'v'] {
         press(&mut app, KeyCode::Char(key));
     }
     assert!(app.job.is_none());
-    assert_eq!(app.document.kind, View::Diff);
+    assert_eq!(app.document.kind, View::Recorded);
 }
 #[test]
 fn why_requests_use_the_selected_change_and_refresh_the_original_scope() {
@@ -191,7 +191,11 @@ fn why_requests_use_the_selected_change_and_refresh_the_original_scope() {
     select(&mut app, "src/cache.rs");
     let options = app.why_options(false).unwrap();
     assert_eq!(options.target.as_deref(), Some("src/cache.rs"));
-    assert_eq!(options.question, reasoning::prompt("change_reason"));
+    assert!(
+        options
+            .question
+            .starts_with(reasoning::prompt("enrich_change"))
+    );
     app.open(document::explanation(artifact(None)));
     let options = app.why_options(true).unwrap();
     assert!(options.file.is_none());
@@ -221,8 +225,8 @@ fn diff_and_why_toggle_reuses_the_answer_for_the_exact_change() {
     press(&mut app, KeyCode::Char('1'));
     press(&mut app, KeyCode::Char('w'));
     assert_eq!(app.document.kind, View::Explanation);
-    press(&mut app, KeyCode::Char('d'));
-    assert_eq!(app.document.kind, View::Diff);
+    press(&mut app, KeyCode::Char('o'));
+    assert_eq!(app.document.kind, View::Recorded);
     let (_, _) = screen(&mut app, 120, 32);
     let why = app
         .areas
@@ -421,7 +425,7 @@ fn explanation_evidence_remains_associated_with_its_own_history_entry() {
     assert!(content.contains("fn get()"));
     assert!(!content.contains("second explanation"));
     assert!(app.open_evidence(99).is_err());
-    app.change_view(View::Diff).unwrap();
+    app.open(document::help());
     assert!(app.open_evidence(0).is_err());
 }
 #[test]
@@ -433,8 +437,8 @@ fn compact_layout_keeps_both_panes_accessible_and_input_cursor_visible() {
         assert!(files.contains("Files"));
         press(&mut app, KeyCode::Tab);
         let (reader, _) = screen(&mut app, width, height);
-        assert!(reader.contains("Diff"));
-        assert!(app.areas.reader.width >= if width < 88 { width - 4 } else { 40 });
+        assert!(reader.contains("Changes"));
+        assert!(app.areas.code.width >= if width < 88 { width - 4 } else { 40 });
         press(&mut app, KeyCode::Char('/'));
         app.input = "/ask 这个函数为什么这样实现？ this is a long question about failures".into();
         let (_, mut terminal) = screen(&mut app, width, height);
@@ -463,7 +467,7 @@ fn mouse_selects_files_and_scrolls_the_pane_under_the_pointer() {
     })
     .unwrap();
     assert_eq!(app.document.target.as_ref().unwrap().file, "src/cache.rs");
-    assert_eq!(app.document.kind, View::Diff);
+    assert_eq!(app.document.kind, View::Recorded);
     app.open(document::help());
     screen(&mut app, 120, 24);
     app.mouse(MouseEvent {
@@ -498,6 +502,9 @@ fn cancellation_and_disconnected_workers_return_control() {
         cancel,
         started: Instant::now(),
         scope: "all changes".into(),
+        key: "all changes|".into(),
+        file: None,
+        progress: "Working".into(),
         handle: thread::spawn(move || {
             while !observed.load(Ordering::Relaxed) {
                 thread::yield_now();
@@ -508,6 +515,8 @@ fn cancellation_and_disconnected_workers_return_control() {
         }),
     });
     press(&mut app, KeyCode::Esc);
+    assert!(!app.job.as_ref().unwrap().cancel.load(Ordering::Relaxed));
+    press(&mut app, KeyCode::Char('x'));
     for _ in 0..100 {
         app.poll();
         if app.job.is_none() {
@@ -516,7 +525,7 @@ fn cancellation_and_disconnected_workers_return_control() {
         thread::sleep(Duration::from_millis(2));
     }
     assert!(app.job.is_none());
-    assert_eq!(app.status, "Cancelled");
+    assert_eq!(app.status, "all changes: Cancelled");
     let (sender, receiver) = mpsc::channel();
     drop(sender);
     app.job = Some(Job {
@@ -524,6 +533,9 @@ fn cancellation_and_disconnected_workers_return_control() {
         cancel: Arc::new(AtomicBool::new(false)),
         started: Instant::now(),
         scope: "all".into(),
+        key: "all changes|".into(),
+        file: None,
+        progress: "Working".into(),
         handle: thread::spawn(|| {}),
     });
     app.poll();
@@ -534,8 +546,8 @@ fn cancellation_and_disconnected_workers_return_control() {
 fn renders_review_diff_explanation_and_empty_states() {
     let mut app = workspace();
     let (text, terminal) = screen(&mut app, 140, 44);
-    assert!(text.contains("Why this change?"));
-    assert!(text.contains("Diff"));
+    assert!(text.contains("Enrich explanation"));
+    assert!(text.contains("Changes"));
     assert!(!text.contains("Understand the work"));
     assert!(!text.contains("Overview"));
     assert!(!text.contains("Choices"));
@@ -573,6 +585,16 @@ fn renders_review_diff_explanation_and_empty_states() {
     assert!(screen(&mut empty, 100, 30).0.contains("No changed files"));
     assert!(empty.target().is_none());
     assert!(empty.job.is_none());
+    if std::env::var_os("WY_TUI_PREVIEW_LIVE").is_some() {
+        let root = std::env::current_dir().unwrap();
+        let mut app = Workspace::new(&root).unwrap();
+        select(&mut app, "src/tui.rs");
+        app.preview_selection();
+        app.show_notes();
+        preview("live-agent-notes", &screen(&mut app, 160, 44).1);
+        preview("live-agent-notes-110", &screen(&mut app, 110, 32).1);
+        preview("live-agent-notes-80", &screen(&mut app, 80, 24).1);
+    }
     if let Ok(path) = std::env::var("WY_TUI_PREVIEW_ARTIFACT") {
         let artifact: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         let root = std::env::current_dir().unwrap();
@@ -592,7 +614,8 @@ fn session_code_appears_without_a_git_diff_and_keeps_a_distinct_answer() {
     review["changes"] = json!([]);
     review["recent_code"] = json!([record]);
     let mut app = Workspace::from_review(Path::new("/example/payments"), review);
-    assert_eq!(app.document.kind, View::SessionCode);
+    assert_eq!(app.document.kind, View::Recorded);
+    assert_eq!(app.code.as_ref().unwrap().kind, View::SessionCode);
     let options = app.why_options(false).unwrap();
     assert_eq!(options.file.as_deref(), Some("src/recent.rs"));
     assert!(options.target.is_none());
@@ -601,7 +624,7 @@ fn session_code_appears_without_a_git_diff_and_keeps_a_distinct_answer() {
         "recorded-edit"
     );
     let (text, terminal) = screen(&mut app, 140, 38);
-    assert!(text.contains("· session"));
+    assert!(text.contains("· recorded"));
     assert!(text.contains("fn generated()"));
     assert!(text.contains("execution not confirmed"));
     preview("session-code", &terminal);
@@ -633,7 +656,10 @@ fn session_code_appears_without_a_git_diff_and_keeps_a_distinct_answer() {
         app.document.artifact.as_ref().unwrap()["id"],
         "current-answer"
     );
+    // The legacy c shortcut also shows the unified current changes.
     press(&mut app, KeyCode::Char('c'));
+    assert_eq!(app.code.as_ref().unwrap().kind, View::Diff);
+    app.change_view(View::SessionCode).unwrap();
     press(&mut app, KeyCode::Char('w'));
     assert_eq!(
         app.document.artifact.as_ref().unwrap()["packet"]["focus_session_edit"]["id"],
@@ -709,6 +735,195 @@ fn source_navigation_reaches_references_beyond_nine_and_code_scrolls_independent
     assert!(app.areas.sources.iter().any(|(_, index)| *index == 11));
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.document.title, "[12] src/evidence_11.rs");
+}
+
+fn with_notes() -> Workspace {
+    let mut app = workspace();
+    app.review["sessions"] = json!([{"id":"coding","agent":"codex","storage_key":"saved-session"}]);
+    app.review["recent_code"] =
+        json!([{"file":"src/cache.rs","event_id":"edit","session_key":"saved-session"}]);
+    app.sessions = vec![
+        json!({"id":"coding","agent":"codex","path":"session.jsonl","events":[
+            {"id":"request","kind":"user","text":"Avoid fetching the same response repeatedly.","timestamp":"2026-10-09T08:00:00Z"},
+            {"id":"reason","kind":"assistant","text":"I’ll keep responses in memory because repeated reads can reuse a response without another network call.","timestamp":"2026-10-09T08:01:00Z"},
+            {"id":"edit","kind":"change","files":["src/cache.rs"],"text":"patch","timestamp":"2026-10-09T08:02:00Z"}
+        ]}),
+    ];
+    select(&mut app, "src/cache.rs");
+    app.preview_selection();
+    app.show_notes();
+    app.focus = Focus::Files;
+    app
+}
+fn mock_job(app: &mut Workspace, file: &str) -> mpsc::Sender<Update> {
+    let (sender, receiver) = mpsc::channel();
+    app.job = Some(Job {
+        receiver,
+        cancel: Arc::new(AtomicBool::new(false)),
+        handle: thread::spawn(|| {}),
+        started: Instant::now(),
+        scope: file.into(),
+        key: format!("{file}|"),
+        file: Some(file.into()),
+        progress: "Reading notes".into(),
+    });
+    sender
+}
+#[test]
+fn automatic_notes_are_offline_cited_and_offer_enrichment_for_gaps() {
+    let mut app = with_notes();
+    let (text, terminal) = screen(&mut app, 140, 38);
+    assert!(text.contains("because"));
+    assert!(
+        app.document
+            .lines
+            .iter()
+            .any(|l| l.to_string().contains("because repeated reads"))
+    );
+    assert!(text.contains("alternatives and tradeoffs"));
+    assert!(text.contains("Enrich explanation"));
+    assert!(!text.contains("Session code"));
+    assert!(!text.contains("Why this change?"));
+    assert!(app.areas.reader.x > app.areas.code.right());
+    assert!(app.job.is_none());
+    let options = app.why_options(false).unwrap();
+    assert_eq!(options.note_refs.len(), 2);
+    assert!(options.question.contains("alternatives and tradeoffs"));
+    assert!(app.areas.enrich.width > 0);
+    preview("automatic-notes", &terminal);
+    press(&mut app, KeyCode::Char('2'));
+    assert_eq!(app.document.kind, View::Evidence);
+    assert!(
+        app.document
+            .lines
+            .iter()
+            .any(|l| l.to_string().contains("because repeated reads"))
+    );
+    assert_eq!(app.why_options(false).unwrap().note_refs, options.note_refs);
+    assert_eq!(
+        app.question_options("What is missing?").note_refs,
+        options.note_refs
+    );
+    assert!(
+        app.question_options("What is missing?")
+            .question
+            .find("Previous assessment")
+            .is_none()
+    );
+    assert!(app.job.is_none());
+}
+#[test]
+fn background_completion_stays_with_its_file_and_preserves_reading_positions() {
+    let mut app = with_notes();
+    app.code.as_mut().unwrap().scroll = 3;
+    let sender = mock_job(&mut app, "src/cache.rs");
+    select(&mut app, "README.md");
+    app.preview_selection();
+    app.document.scroll = 2;
+    assert_eq!(app.file_state("src/cache.rs").unwrap().0, "working");
+    sender
+        .send(Update::Done(Ok((*artifact(Some("src/cache.rs"))).clone())))
+        .unwrap();
+    app.poll();
+    assert!(app.job.is_none());
+    assert_eq!(app.document.target.as_ref().unwrap().file, "README.md");
+    assert_eq!(app.document.scroll, 2);
+    assert_eq!(app.focus, Focus::Files);
+    assert_eq!(app.file_state("src/cache.rs").unwrap().0, "ready");
+    select(&mut app, "src/cache.rs");
+    app.preview_selection();
+    assert_eq!(app.document.kind, View::Explanation);
+    assert_eq!(app.code.as_ref().unwrap().scroll, 3);
+    app.document.scroll = 4;
+    select(&mut app, "README.md");
+    app.preview_selection();
+    assert_eq!(app.document.scroll, 2);
+    select(&mut app, "src/cache.rs");
+    app.preview_selection();
+    assert_eq!(app.document.scroll, 4);
+    assert!(app.job.is_none());
+    preview("background-ready", &screen(&mut app, 140, 38).1);
+}
+#[test]
+fn completion_does_not_interrupt_drafts_or_sources_and_ready_button_reuses_answer() {
+    let mut app = with_notes();
+    press(&mut app, KeyCode::Char('i'));
+    app.input = "How is expiry handled?".into();
+    app.finish_answer("src/cache.rs|", artifact(Some("src/cache.rs")));
+    assert_eq!(app.document.kind, View::Recorded);
+    assert_eq!(app.input, "How is expiry handled?");
+    assert_eq!(app.question_scope(), "src/cache.rs");
+    press(&mut app, KeyCode::Esc);
+    select(&mut app, "README.md");
+    app.preview_selection();
+    select(&mut app, "src/cache.rs");
+    app.preview_selection();
+    assert_eq!(app.document.kind, View::Explanation);
+    press(&mut app, KeyCode::Char('o'));
+    press(&mut app, KeyCode::Char('2'));
+    app.finish_answer("src/cache.rs|", artifact(Some("src/cache.rs")));
+    assert_eq!(app.document.kind, View::Evidence);
+    press(&mut app, KeyCode::Char('o'));
+    let (text, _) = screen(&mut app, 140, 38);
+    assert!(text.contains("View enrichment"));
+    let button = app.areas.enrich;
+    app.mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: button.x + 1,
+        row: button.y,
+        modifiers: KeyModifiers::NONE,
+    })
+    .unwrap();
+    assert_eq!(app.document.kind, View::Explanation);
+    assert!(app.job.is_none());
+}
+#[test]
+fn requests_queue_once_per_scope_and_cancel_clears_the_queue() {
+    let mut app = with_notes();
+    let sender = mock_job(&mut app, "src/cache.rs");
+    app.start(app.why_options(false).unwrap());
+    assert!(app.queue.is_empty());
+    select(&mut app, "README.md");
+    app.preview_selection();
+    let options = app.why_options(false).unwrap();
+    app.start(options.clone());
+    app.start(options);
+    assert_eq!(app.queue.len(), 1);
+    assert_eq!(app.file_state("README.md").unwrap().0, "queued");
+    let (text, terminal) = screen(&mut app, 140, 38);
+    assert!(text.contains("Queued"));
+    assert!(text.contains("1 queued"));
+    preview("background-queued", &terminal);
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.job.as_ref().unwrap().cancel.load(Ordering::Relaxed));
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.queue.is_empty());
+    assert!(app.job.as_ref().unwrap().cancel.load(Ordering::Relaxed));
+    sender
+        .send(Update::Done(Err(anyhow::anyhow!("Cancelled"))))
+        .unwrap();
+    app.poll();
+    assert!(app.job.is_none());
+    assert_eq!(app.document.target.as_ref().unwrap().file, "README.md");
+    assert!(app.status.starts_with("src/cache.rs:"));
+}
+#[test]
+fn restarting_restores_completed_enrichments_without_a_request() {
+    let dir = tempfile::tempdir().unwrap();
+    crate::repository::git(dir.path(), &["init", "-q"], true).unwrap();
+    std::fs::write(dir.path().join("lib.rs"), "fn example() {}\n").unwrap();
+    let store = crate::storage::Store::open(dir.path()).unwrap();
+    let mut answer = (*artifact(Some("lib.rs"))).clone();
+    store.put("reasoning", "earlier", &answer).unwrap();
+    answer["id"] = json!("newest");
+    store.put("reasoning", "newest", &answer).unwrap();
+    store.put("reasoning", "latest", &answer).unwrap();
+    assert_eq!(store.recent("reasoning", 40).unwrap().len(), 2);
+    let app = Workspace::new(dir.path()).unwrap();
+    assert_eq!(app.document.kind, View::Explanation);
+    assert_eq!(app.document.artifact.unwrap()["id"], "newest");
+    assert!(app.job.is_none());
+    assert_eq!(app.answers.len(), 1);
 }
 
 fn preview(name: &str, terminal: &Terminal<TestBackend>) {

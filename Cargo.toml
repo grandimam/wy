@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.88"
 description = "Review AI-generated code with Git diffs, conversation history, and optional agent explanations"
 license = "MIT"
+repository = "https://github.com/grandimam/wy"
 default-run = "wy"
 
 [[bin]]
@@ -42,3 +43,6 @@ walkdir = "2"
 [profile.release]
 lto = "thin"
 strip = true
+
+[profile.dist]
+inherits = "release"

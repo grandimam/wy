@@ -81,6 +81,37 @@ fn committed_code_is_discovered_from_wrapped_edits_and_keeps_its_conversation() 
     assert!(wy::s(&recent[0]["text"]).contains("+pub fn answer()"));
     let reference = history::edit_ref(&recent[0]);
     let (edit, session) = history::saved_edit(&root, &reference).unwrap();
+    let notes = history::notes(
+        &review,
+        &[session.clone()],
+        "lib.rs",
+        None,
+        Some(&reference),
+    );
+    assert!(notes["matched"].as_bool().unwrap());
+    assert!(notes["evidence"].to_string().contains("agreed API value"));
+    for (reference, evidence) in wy::arr(&notes["note_refs"])
+        .iter()
+        .zip(wy::arr(&notes["evidence"]))
+    {
+        assert_eq!(&history::note_evidence(&root, reference).unwrap(), evidence);
+    }
+    let mut wrong = notes["note_refs"][0].clone();
+    wrong["event_id"] = json!("missing-event");
+    assert!(history::note_evidence(&root, &wrong).is_err());
+    // Invalid note references fail before any model request can start.
+    let options = wy::reasoning::Options {
+        note_refs: vec![wrong],
+        ..Default::default()
+    };
+    let error = wy::reasoning::run(
+        &root,
+        &options,
+        &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        |_| {},
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("Recorded note is unavailable"));
     let packet = wy::reasoning::packet_with_edit(
         &review,
         "Why?",

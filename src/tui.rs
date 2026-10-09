@@ -1,6 +1,7 @@
 //! Read-only review workspace. Agent requests run only after explicit input.
 mod document;
 mod explorer;
+mod navigation;
 mod render;
 use crate::{agent::Cancel, arr, n, presentation, reasoning, s, security, service};
 use anyhow::{Result, ensure};
@@ -14,6 +15,7 @@ use crossterm::{
 };
 use document::{Document, View};
 use explorer::{Explorer, Kind, Target};
+use navigation::{ReadingState, artifact_key, options_key};
 use ratatui::{
     prelude::*,
     widgets::{
@@ -23,6 +25,7 @@ use ratatui::{
 };
 use serde_json::Value;
 use std::{
+    collections::VecDeque,
     io::{self, IsTerminal},
     path::{Path, PathBuf},
     sync::{
@@ -73,6 +76,9 @@ struct Job {
     handle: thread::JoinHandle<()>,
     started: Instant,
     scope: String,
+    key: String,
+    file: Option<String>,
+    progress: String,
 }
 /// A draft keeps this context even if a background answer arrives while typing.
 #[derive(Clone, Default)]
@@ -81,6 +87,7 @@ struct QuestionContext {
     target: Option<String>,
     previous: Option<Arc<Value>>,
     session_edit: Option<Value>,
+    note_refs: Vec<Value>,
 }
 impl QuestionContext {
     fn label(&self) -> &str {
@@ -106,6 +113,7 @@ impl QuestionContext {
             agent: agent.into(),
             source: source.into(),
             session_edit: self.session_edit.clone(),
+            note_refs: self.note_refs.clone(),
         }
     }
 }
@@ -117,6 +125,7 @@ struct Areas {
     input: Rect,
     tabs: Vec<(Rect, View, Focus)>,
     sources: Vec<(Rect, usize)>,
+    enrich: Rect,
 }
 struct Workspace {
     root: PathBuf,
@@ -126,6 +135,9 @@ struct Workspace {
     back: Vec<(Document, Focus, Option<Document>)>,
     code: Option<Document>,
     answers: Vec<Arc<Value>>,
+    sessions: Vec<Value>,
+    views: Vec<ReadingState>,
+    queue: VecDeque<reasoning::Options>,
     focus: Focus,
     agent: String,
     source: String,
@@ -151,7 +163,23 @@ impl Workspace {
                 ..Default::default()
             },
         )?;
-        Ok(Self::from_review(root, review))
+        let sessions = crate::history::saved(&review)?;
+        let mut app = Self::from_review(root, review);
+        app.sessions = sessions;
+        for answer in crate::storage::Store::open(root)?
+            .recent("reasoning", 40)?
+            .into_iter()
+            .rev()
+        {
+            if answer["packet"].is_object() && answer["explanation"].is_object() {
+                app.cache_answer(Arc::new(answer));
+            }
+        }
+        app.views.clear();
+        app.document = document::empty(&app.review);
+        app.code = None;
+        app.preview_selection();
+        Ok(app)
     }
     fn from_review(root: &Path, review: Value) -> Self {
         let mut explorer = Explorer::default();
@@ -163,7 +191,7 @@ impl Workspace {
             .target()
             .map(|target| document::preview(&review, target))
             .unwrap_or_else(|| document::empty(&review));
-        Self {
+        let mut app = Self {
             root: root.into(),
             review,
             explorer,
@@ -171,6 +199,9 @@ impl Workspace {
             back: vec![],
             code: None,
             answers: vec![],
+            sessions: vec![],
+            views: vec![],
+            queue: VecDeque::new(),
             focus: Focus::Files,
             agent: "codex".into(),
             source: "both".into(),
@@ -186,7 +217,9 @@ impl Workspace {
             page_size: 12,
             code_scroll_max: 0,
             code_page_size: 12,
-        }
+        };
+        app.preview_selection();
+        app
     }
     fn message(&mut self, message: impl Into<String>) {
         self.status = message.into();
@@ -197,19 +230,11 @@ impl Workspace {
         self.error = true;
     }
     fn open(&mut self, mut document: Document) {
+        self.remember_view();
         self.check_freshness(&mut document);
         if document.kind == View::Explanation {
             if let Some(artifact) = &document.artifact {
-                let target = document::artifact_target(artifact).map(|t| t.selector());
-                self.answers.retain(|a| {
-                    document::artifact_target(a).map(|t| t.selector()) != target
-                        || a["packet"]["focus_session_edit"]["id"]
-                            != artifact["packet"]["focus_session_edit"]["id"]
-                });
-                self.answers.push(artifact.clone());
-                if self.answers.len() > 20 {
-                    self.answers.remove(0);
-                }
+                self.cache_answer(artifact.clone());
             }
         }
         let code = self.code_for_answer(&document);
@@ -220,6 +245,7 @@ impl Workspace {
             self.back.remove(0);
         }
         self.focus = Focus::Reader;
+        self.remember_view();
     }
     fn code_for_answer(&self, document: &Document) -> Option<Document> {
         let artifact = document.artifact.as_ref()?;
@@ -257,6 +283,9 @@ impl Workspace {
         let Some(artifact) = &document.artifact else {
             return;
         };
+        if document::is_recorded(artifact) {
+            return;
+        }
         let Some(review_id) = artifact["review_id"].as_str() else {
             return;
         };
@@ -282,7 +311,7 @@ impl Workspace {
     fn saved_explanation(&mut self) -> Result<()> {
         let artifact = crate::storage::Store::open(&self.root)?
             .get("reasoning", "latest")
-            .map_err(|_| anyhow::anyhow!("No saved answer yet · select a change and press w"))?;
+            .map_err(|_| anyhow::anyhow!("No saved answer yet · select a change and press e"))?;
         self.open(document::explanation(Arc::new(artifact)));
         self.message("Saved explanation opened · source freshness checked · 1–9 opens evidence");
         Ok(())
@@ -308,19 +337,22 @@ impl Workspace {
     }
     fn preview_selection(&mut self) {
         let target = self.explorer.target();
-        if matches!(self.document.kind, View::Diff | View::SessionCode)
-            && self.document.target == target
-        {
-            return;
+        if let Some(target) = target {
+            self.show_code(document::preview(&self.review, target), false);
+        } else {
+            self.remember_view();
+            self.document = document::empty(&self.review);
+            self.code = None;
         }
-        self.document = target
-            .map(|target| document::preview(&self.review, target))
-            .unwrap_or_else(|| document::empty(&self.review));
-        self.code = None;
     }
     fn why_change(&mut self, refresh: bool) {
         let existing = (self.focus == Focus::Reader)
-            .then(|| self.document.artifact.clone())
+            .then(|| {
+                self.document
+                    .artifact
+                    .clone()
+                    .filter(|a| !document::is_recorded(a))
+            })
             .flatten();
         if !refresh {
             if let Some(artifact) = existing.clone() {
@@ -358,8 +390,8 @@ impl Workspace {
         }
         self.start(options);
     }
-    fn why_options(&self, refresh: bool) -> Option<reasoning::Options> {
-        let target = if refresh && self.focus == Focus::Reader {
+    fn why_options(&self, _refresh: bool) -> Option<reasoning::Options> {
+        let target = if self.focus == Focus::Reader {
             if let Some(artifact) = &self.document.artifact {
                 document::artifact_target(artifact)
             } else {
@@ -372,14 +404,12 @@ impl Workspace {
             self.code.as_ref().and_then(|d| d.session_edit.clone())
         } else if self.focus == Focus::Reader {
             self.document.session_edit.clone().or_else(|| {
-                if refresh {
+                {
                     self.document.artifact.as_ref().and_then(|a| {
                         a["packet"]["focus_session_edit"]
                             .as_object()
                             .map(|_| a["packet"]["focus_session_edit"].clone())
                     })
-                } else {
-                    None
                 }
             })
         } else {
@@ -396,12 +426,27 @@ impl Workspace {
         let mut options = self.options(
             target,
             true,
-            Some(reasoning::prompt("change_reason").into()),
+            Some(reasoning::prompt("enrich_change").into()),
         );
         if let Some(edit) = session_edit {
             options.target = None;
             options.file = edit["file"].as_str().map(str::to_owned);
             options.session_edit = Some(edit);
+        }
+        if let Some(artifact) = &self.document.artifact {
+            if document::artifact_target(artifact).map(|t| t.selector())
+                == options.target.clone().or(options.file.clone())
+            {
+                options.note_refs = arr(&artifact["packet"]["note_refs"]).to_vec();
+                let gaps = arr(&artifact["packet"]["gaps"])
+                    .iter()
+                    .map(s)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !gaps.is_empty() {
+                    options.question.push_str(&format!("\nQuestions raised by the captured excerpts (not proof of missing private reasoning): {gaps}"));
+                }
+            }
         }
         Some(options)
     }
@@ -423,18 +468,37 @@ impl Workspace {
                 .map(Target::selector),
             file: target.map(|t| t.file),
             session_edit: None,
+            note_refs: vec![],
         }
     }
     fn start(&mut self, options: reasoning::Options) {
-        if self.job.is_some() {
-            self.message("A request is running · Esc cancels it");
+        let key = options_key(&options);
+        if self.job.as_ref().is_some_and(|j| j.key == key)
+            || self.queue.iter().any(|q| options_key(q) == key)
+        {
+            self.message("This enrichment is already running or queued · keep browsing");
             return;
         }
+        if self.job.is_some() {
+            if self.queue.len() >= 8 {
+                self.message("Eight enrichments are queued · wait for one to finish");
+                return;
+            }
+            let file = options.file.clone().unwrap_or_else(|| "all changes".into());
+            self.queue.push_back(options);
+            self.message(format!("Queued {file} · you can keep browsing"));
+            return;
+        }
+        self.launch(options);
+    }
+    fn launch(&mut self, options: reasoning::Options) {
         let scope = options
             .target
             .clone()
-            .or_else(|| options.file.clone())
+            .or(options.file.clone())
             .unwrap_or_else(|| "all changes".into());
+        let key = options_key(&options);
+        let file = options.file.clone();
         let root = self.root.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = cancel.clone();
@@ -451,49 +515,75 @@ impl Workspace {
             handle,
             started: Instant::now(),
             scope,
+            key,
+            file,
+            progress: "Preparing enrichment…".into(),
         });
-        self.message("Preparing explanation… Esc cancels");
+        self.message("Enrichment runs in the background · keep browsing");
     }
     fn poll(&mut self) {
-        let mut done = false;
-        loop {
-            let Some(job) = self.job.as_ref() else {
-                break;
-            };
-            let update = match job.receiver.try_recv() {
-                Ok(update) => update,
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    if !done {
-                        self.fail("Explanation worker stopped unexpectedly; try again");
-                    }
-                    done = true;
+        let mut completed = None;
+        while let Some(job) = self.job.as_mut() {
+            match job.receiver.try_recv() {
+                Ok(Update::Progress(progress)) => job.progress = progress,
+                Ok(Update::Done(result)) => {
+                    completed = Some(result);
                     break;
                 }
-            };
-            match update {
-                Update::Progress(progress) => self.message(progress),
-                Update::Done(result) => {
-                    done = true;
-                    match result {
-                        Ok(artifact) => {
-                            self.open(document::explanation(Arc::new(artifact)));
-                            self.message(
-                                "Explanation saved · 1–9 opens evidence · i asks a follow-up",
-                            );
-                        }
-                        Err(error) => self.fail(format!("{error:#}")),
-                    }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    completed = Some(Err(anyhow::anyhow!(
+                        "Enrichment worker stopped unexpectedly; try again"
+                    )));
+                    break;
                 }
             }
         }
-        if done {
-            if let Some(job) = self.job.take() {
-                let _ = job.handle.join();
+        if let Some(result) = completed {
+            let job = self.job.take().unwrap();
+            let _ = job.handle.join();
+            match result {
+                Ok(artifact) => self.finish_answer(&job.key, Arc::new(artifact)),
+                Err(error) => self.fail(format!("{}: {error:#}", job.scope)),
+            }
+            if let Some(next) = self.queue.pop_front() {
+                self.launch(next);
             }
         }
     }
+    fn finish_answer(&mut self, request_key: &str, artifact: Arc<Value>) {
+        let key = artifact_key(&artifact);
+        self.cache_answer(artifact.clone());
+        let mut doc = document::explanation(artifact);
+        self.check_freshness(&mut doc);
+        if let Some(saved) = self
+            .views
+            .iter_mut()
+            .find(|v| v.key == key || v.key == request_key)
+        {
+            if saved.document.kind != View::Evidence {
+                saved.document = doc.clone();
+            }
+        }
+        // Never move the user to another file, close a source, or interrupt a draft.
+        if self.current_key().as_deref() == Some(request_key)
+            && self.editing.is_none()
+            && self.document.kind == View::Recorded
+            && self.document.scroll == 0
+        {
+            self.document = doc.clone();
+            self.remember_view();
+        }
+        self.message(format!(
+            "Enrichment ready · {} · v opens it",
+            doc.target
+                .as_ref()
+                .map(Target::selector)
+                .unwrap_or_else(|| "all changes".into())
+        ));
+    }
     fn cancel(&mut self) {
+        self.queue.clear();
         if let Some(job) = &self.job {
             job.cancel.store(true, Ordering::Relaxed);
             self.message("Cancelling request…");
@@ -510,7 +600,8 @@ impl Workspace {
                     target: artifact["packet"]["focus_target"]["target"]
                         .as_str()
                         .map(str::to_owned),
-                    previous: Some(artifact.clone()),
+                    previous: (!document::is_recorded(artifact)).then(|| artifact.clone()),
+                    note_refs: arr(&artifact["packet"]["note_refs"]).to_vec(),
                     session_edit: artifact["packet"]["focus_session_edit"]
                         .as_object()
                         .map(|_| artifact["packet"]["focus_session_edit"].clone()),
@@ -528,6 +619,7 @@ impl Workspace {
                 .filter(|t| t.symbol.is_some())
                 .map(Target::selector),
             previous: None,
+            note_refs: vec![],
             session_edit: self.document.session_edit.clone(),
         }
     }
@@ -646,19 +738,22 @@ impl Workspace {
         match view {
             View::Diff => {
                 if let Some(target) = self.required_target() {
-                    self.open(document::preview(&self.review, target));
+                    self.show_code(document::preview(&self.review, target), false);
+                    self.focus = Focus::Code;
                 }
             }
             View::SessionCode => {
                 if let Some(target) = self.required_target() {
                     if let Some(doc) = document::session_code(&self.review, target) {
-                        self.open(doc);
+                        self.show_code(doc, false);
+                        self.focus = Focus::Code;
                     } else {
                         self.message("No recent code excerpt was captured for this file");
                     }
                 }
             }
-            View::Explanation => self.why_change(false),
+            View::Recorded => self.show_notes(),
+            View::Explanation => self.show_enriched(),
             _ => {}
         }
         Ok(())
@@ -691,11 +786,12 @@ impl Workspace {
                 ..Default::default()
             },
         )?;
+        self.sessions = crate::history::saved(&review)?;
         self.explorer.refresh(&self.review, &review);
         self.review = review;
         // Reading history belongs to the previous snapshot.
         self.back.clear();
-        self.answers.clear();
+        self.views.clear();
         self.code = None;
         self.document = document::empty(&self.review);
         self.preview_selection();
@@ -784,7 +880,7 @@ impl Workspace {
                     self.focus = Focus::Reader;
                     self.edit(Input::Question);
                 } else {
-                    self.message("Open Why this change? to ask a follow-up");
+                    self.message("Select a file to ask a question");
                 }
             }
             KeyCode::Char('f') => self.edit(Input::Filter),
@@ -873,18 +969,21 @@ impl Workspace {
                     Focus::Reader
                 };
             }
-            KeyCode::Char('w') => self.why_change(false),
+            KeyCode::Char('w' | 'e') => self.why_change(false),
+            KeyCode::Char('o') => self.show_notes(),
+            KeyCode::Char('v') => self.show_enriched(),
+            KeyCode::Char('x') => self.cancel(),
             KeyCode::Char('s') if self.document.artifact.is_some() => self.select_source(0),
             KeyCode::Char('R') => self.why_change(true),
             KeyCode::Char('p') => self.saved_explanation()?,
             KeyCode::Char('d') => self.change_view(View::Diff)?,
-            KeyCode::Char('c') => self.change_view(View::SessionCode)?,
+            KeyCode::Char('c') => self.change_view(View::Diff)?,
             KeyCode::Char('m') => self.mark(),
             KeyCode::Char('r') => {
                 if self.job.is_none() {
                     self.refresh()?;
                 } else {
-                    self.message("Wait for the request or press Esc to cancel before refreshing");
+                    self.message("Wait for enrichment or press x to cancel before refreshing");
                 }
             }
             KeyCode::Enter => {
@@ -906,11 +1005,7 @@ impl Workspace {
                 self.open_evidence(c.to_digit(10).unwrap() as usize - 1)?
             }
             KeyCode::Esc => {
-                if self.job.is_some() {
-                    self.cancel();
-                } else if self.focus == Focus::Reader
-                    && self.document.source_selection.take().is_some()
-                {
+                if self.focus == Focus::Reader && self.document.source_selection.take().is_some() {
                     // Leave the source list and return to reading this explanation.
                 } else if self.focus == Focus::Files && !self.explorer.filter.is_empty() {
                     self.explorer.filter.clear();
@@ -939,7 +1034,10 @@ impl Workspace {
         }
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Some((_, index)) = self
+                if self.areas.enrich.contains(point) {
+                    self.focus = Focus::Reader;
+                    self.why_change(false);
+                } else if let Some((_, index)) = self
                     .areas
                     .sources
                     .iter()

@@ -1,3 +1,5 @@
+mod notes;
+pub use notes::{notes, note_evidence, event_evidence};
 mod edits;
 mod recent;
 pub use recent::{recent_code, saved_edit, edit_ref};

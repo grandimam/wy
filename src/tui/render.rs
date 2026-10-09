@@ -72,7 +72,7 @@ impl Workspace {
                 .split(columns[2]);
                 self.draw_code(frame, panes[0]);
                 self.draw_answer(frame, panes[2], inline_input);
-            } else if paired && self.focus == Focus::Code {
+            } else if paired && self.focus != Focus::Reader {
                 self.draw_code(frame, columns[2]);
             } else {
                 self.draw_answer(frame, columns[2], inline_input);
@@ -85,10 +85,15 @@ impl Workspace {
             let spinner =
                 ['◐', '◓', '◑', '◒'][(job.started.elapsed().as_millis() / 180 % 4) as usize];
             format!(
-                " {spinner} {}s · {} · {} · Esc cancels",
+                " {spinner} {}s · {} · {}{} · x cancels",
                 job.started.elapsed().as_secs(),
                 job.scope,
-                self.status
+                job.progress,
+                if self.queue.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {} queued", self.queue.len())
+                }
             )
         } else {
             format!(" {} {}", if self.error { "!" } else { "·" }, self.status)
@@ -106,17 +111,21 @@ impl Workspace {
         let keys = if self.editing.is_some() {
             " Enter submit   Esc cancel   Ctrl+U clear"
         } else if area.width < 70 {
-            " w Why this change?  Tab panes  ? help"
+            " e Enrich   Tab panes   ? help"
         } else if self.document.source_selection.is_some() && self.focus == Focus::Reader {
             " ↑↓ sources   Enter open   Esc read explanation   ? help"
         } else if self.document.artifact.is_some() && self.focus == Focus::Reader {
-            " s Sources   1–9 open   Tab code   R Update answer   Esc back   ? help"
+            if self.document.kind == View::Recorded {
+                " s Sources   e Enrich   Tab panes   ? help"
+            } else {
+                " s Sources   i Follow-up   o Agent notes   R Update   Esc back   ? help"
+            }
         } else if self.focus == Focus::Files {
-            " ↑↓ navigate   Enter read   w Why this change?   Tab panes   ? help"
+            " ↑↓ navigate   Enter code   e Enrich   Tab panes   ? help"
         } else if self.focus == Focus::Code {
-            " ↑↓ code   w Why this change?   Tab explanation   ? help"
+            " ↑↓ code   e Enrich   Tab agent notes   ? help"
         } else {
-            " ↑↓ scroll   w Why this change?   Tab files   Esc back   ? help"
+            " ↑↓ scroll   e Enrich   Tab files   Esc back   ? help"
         };
         frame.render_widget(
             Paragraph::new(keys).style(Style::default().fg(ACCENT).bg(PANEL)),
@@ -134,7 +143,18 @@ impl Workspace {
         if inline_input {
             let parts = Layout::vertical([
                 Constraint::Min(1),
-                Constraint::Length(if self.editing.is_some() { 3 } else { 1 }),
+                Constraint::Length(if self.editing.is_some() {
+                    3
+                } else if self
+                    .document
+                    .artifact
+                    .as_ref()
+                    .is_some_and(|a| document::is_recorded(a))
+                {
+                    2
+                } else {
+                    1
+                }),
             ])
             .split(area);
             self.draw_reader(frame, parts[0], Focus::Reader);
@@ -158,7 +178,7 @@ impl Workspace {
         ];
         if area.width > 85 {
             spans.push(Span::styled(
-                format!("    {} · on request", self.agent),
+                format!("    {} · enrichment on request", self.agent),
                 Style::default().fg(MUTED),
             ));
         }
@@ -206,80 +226,92 @@ impl Workspace {
             sections[0],
         );
         self.areas.files = sections[1];
-        let items = self
-            .explorer
-            .rows
-            .iter()
-            .map(|row| {
-                let icon = if row.expandable {
-                    if row.expanded { "▾" } else { "▸" }
-                } else if row.kind == Kind::Symbol {
-                    "·"
-                } else {
-                    " "
-                };
-                let indent = "  ".repeat(row.depth.min(6));
-                let reviewed = row.kind == Kind::File
-                    && row
+        let items =
+            self.explorer
+                .rows
+                .iter()
+                .map(|row| {
+                    let icon = if row.expandable {
+                        if row.expanded { "▾" } else { "▸" }
+                    } else if row.kind == Kind::Symbol {
+                        "·"
+                    } else {
+                        " "
+                    };
+                    let indent = "  ".repeat(row.depth.min(6));
+                    let reviewed = row.kind == Kind::File
+                        && row
+                            .target
+                            .as_ref()
+                            .is_some_and(|t| self.explorer.reviewed.contains(&t.file));
+                    let label = format!(
+                        "{}{} {}{}",
+                        indent,
+                        icon,
+                        row.label,
+                        if row.kind == Kind::Folder { "/" } else { "" }
+                    );
+                    let state = row
                         .target
                         .as_ref()
-                        .is_some_and(|t| self.explorer.reviewed.contains(&t.file));
-                let label = format!(
-                    "{}{} {}{}",
-                    indent,
-                    icon,
-                    row.label,
-                    if row.kind == Kind::Folder { "/" } else { "" }
-                );
-                let suffix = match row.kind {
-                    Kind::Folder => format!(" {}", row.count),
-                    Kind::File if reviewed => " ✓".into(),
-                    Kind::File => format!(
-                        "{}{}",
-                        if row.diff {
-                            format!(" +{} −{}", row.added, row.removed)
-                        } else {
-                            String::new()
-                        },
-                        if row.session { " · session" } else { "" }
-                    ),
-                    Kind::Symbol => {
-                        format!(" :{}", row.target.as_ref().map(|t| t.line).unwrap_or(0))
-                    }
-                };
-                let available = sections[1].width.saturating_sub(3) as usize;
-                let label = fit(
-                    &label,
-                    available
-                        .saturating_sub(Line::from(suffix.as_str()).width())
-                        .max(4),
-                );
-                ListItem::new(Line::from(vec![
-                    Span::styled(
-                        label,
-                        Style::default().fg(match row.kind {
-                            Kind::Folder => ACCENT,
-                            Kind::File => {
-                                if reviewed {
-                                    GREEN
-                                } else {
-                                    TEXT
-                                }
+                        .filter(|_| row.kind == Kind::File)
+                        .and_then(|t| self.file_state(&t.file));
+                    let suffix = match row.kind {
+                        Kind::File if state.is_some() => format!(" · {}", state.unwrap().0),
+                        Kind::Folder => format!(" {}", row.count),
+                        Kind::File if reviewed => " ✓".into(),
+                        Kind::File => format!(
+                            "{}{}",
+                            if row.diff {
+                                format!(" +{} −{}", row.added, row.removed)
+                            } else {
+                                String::new()
+                            },
+                            if row.session && !row.diff {
+                                " · recorded"
+                            } else {
+                                ""
                             }
-                            Kind::Symbol => MUTED,
-                        }),
-                    ),
-                    Span::styled(
-                        suffix,
-                        Style::default().fg(if reviewed { GREEN } else { MUTED }),
-                    ),
-                ]))
-            })
-            .collect::<Vec<_>>();
+                        ),
+                        Kind::Symbol => {
+                            format!(" :{}", row.target.as_ref().map(|t| t.line).unwrap_or(0))
+                        }
+                    };
+                    let available = sections[1].width.saturating_sub(3) as usize;
+                    let label = fit(
+                        &label,
+                        available
+                            .saturating_sub(Line::from(suffix.as_str()).width())
+                            .max(4),
+                    );
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            label,
+                            Style::default().fg(match row.kind {
+                                Kind::Folder => ACCENT,
+                                Kind::File => {
+                                    if reviewed {
+                                        GREEN
+                                    } else {
+                                        TEXT
+                                    }
+                                }
+                                Kind::Symbol => MUTED,
+                            }),
+                        ),
+                        Span::styled(
+                            suffix,
+                            Style::default().fg(state
+                                .map(|(_, color)| color)
+                                .unwrap_or(if reviewed { GREEN } else { MUTED })),
+                        ),
+                    ]))
+                })
+                .collect::<Vec<_>>();
         if items.is_empty() {
             frame.render_widget(
                 Paragraph::new(if self.explorer.filter.is_empty() {
-                    " No changed files or session code\n r refreshes"
+                    " No changed files or recorded edits\n r refreshes"
                 } else {
                     " No matching files\n f edits · Esc clears"
                 })
@@ -320,8 +352,15 @@ impl Workspace {
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let title_height = if inner.height < 6 { 1 } else { 2 };
-        let tabs_height =
-            u16::from(inner.height >= 6 && !(pane == Focus::Reader && self.areas.code.width > 0));
+        let tabs_height = u16::from(
+            inner.height >= 6
+                && pane == Focus::Reader
+                && self.document.artifact.is_some()
+                && (self.document.kind != View::Recorded
+                    || self
+                        .current_key()
+                        .is_some_and(|k| self.answer_for(&k).is_some())),
+        );
         let notice_height = self
             .document
             .notice
@@ -342,15 +381,14 @@ impl Workspace {
         ])
         .split(inner);
         let mut x = rows[0].x;
-        let file = self.document.target.as_ref().map(|t| t.file.as_str());
-        let mut tabs = vec![];
-        if file.is_none_or(|f| arr(&self.review["changes"]).iter().any(|c| c["file"] == f)) {
-            tabs.push(("d", View::Diff));
+        let mut tabs = vec![("o", View::Recorded)];
+        if pane == Focus::Reader
+            && self
+                .current_key()
+                .is_some_and(|k| self.answer_for(&k).is_some())
+        {
+            tabs.push(("v", View::Explanation));
         }
-        if file.is_some_and(|f| document::recent_edit(&self.review, f).is_some()) {
-            tabs.push(("c", View::SessionCode));
-        }
-        tabs.push(("w", View::Explanation));
         for (key, view) in tabs {
             let label = format!(" {key} {} ", view.label());
             let width = Line::from(label.as_str()).width() as u16;
@@ -521,6 +559,39 @@ impl Workspace {
             if inner.width > 0 && inner.height > 0 {
                 frame.set_cursor_position((inner.x + width.min(inner.width - 1), inner.y));
             }
+        } else if self
+            .document
+            .artifact
+            .as_ref()
+            .is_some_and(|a| document::is_recorded(a))
+        {
+            self.areas.input = Rect::default();
+            let key = self.current_key().unwrap_or_default();
+            let running = self.job.as_ref().is_some_and(|j| j.key == key);
+            let queued = self.queue.iter().any(|q| options_key(q) == key);
+            let ready = self.answer_for(&key).is_some();
+            let (label, hint) = if running {
+                (" Enriching…", " Keep browsing; this file will say ready")
+            } else if queued {
+                (" Queued", " Keep browsing; this file will say ready")
+            } else if ready {
+                (" v View enrichment", " Saved for this change")
+            } else {
+                (
+                    " e Enrich explanation",
+                    " Connect the code and notes with AI",
+                )
+            };
+            if !running && !queued {
+                self.areas.enrich = Rect::new(area.x, area.y, area.width, 1);
+            }
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::styled(label, Style::default().fg(ACCENT).bg(SELECT).bold()),
+                    Line::styled(hint, Style::default().fg(MUTED)),
+                ]),
+                area,
+            );
         } else if let Some(artifact) = &self.document.artifact {
             let scope = document::artifact_target(artifact)
                 .map(|t| t.label())

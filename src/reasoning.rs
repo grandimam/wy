@@ -56,9 +56,13 @@ pub fn packet(review:&Value,question:&str,file:Option<&str>,targets:&[Value],foc
     packet_with_edit(review,question,file,targets,focus,None)
 }
 pub fn packet_with_edit(review:&Value,question:&str,file:Option<&str>,targets:&[Value],focus:Option<&Value>,recorded:Option<(&Value,&Value)>)->Result<Value>{
+    packet_with_notes(review,question,file,targets,focus,recorded,&[])
+}
+fn packet_with_notes(review:&Value,question:&str,file:Option<&str>,targets:&[Value],focus:Option<&Value>,recorded:Option<(&Value,&Value)>,notes:&[Value])->Result<Value>{
     let root=Path::new(s(&review["root"]));let hashes=review["file_hashes"].as_object().ok_or_else(||anyhow::anyhow!("Invalid review hashes"))?;
     if let Some(file)=file{ensure!(hashes.contains_key(file)||arr(&review["changes"]).iter().any(|c|c["file"]==file)||recorded.is_some_and(|(e,_)|e["file"]==file),"Choose an eligible file in the current repository");}
     let mut packet=Packet{evidence:vec![],used:0,omitted:0};
+    for note in notes.iter().take(8) { packet.add(note.clone(),3500); }
     if let Some((edit,session))=recorded {
         packet.add(json!({"id":format!("recorded-code-{}",&s(&edit["id"])[..12]),"kind":"session","role":"change","agent":edit["agent"],"session_id":edit["session_id"],"event_id":edit["event_id"],"file":edit["session_path"],"start_line":edit["source_line"],"text":format!("Recorded {} to {}. Tool outcome: {}. This is a historical code excerpt, not current source.\n{}",s(&edit["operation"]),s(&edit["file"]),s(&edit["state"]),s(&edit["text"])),"truncated":edit["truncated"]}),41000);
         let events=arr(&session["events"]);
@@ -157,10 +161,15 @@ pub fn validate_explanation(result:&Value,data:&Value)->Result<()>{
     }Ok(())
 }
 #[derive(Clone)]
-pub struct Options {pub agent:String,pub question:String,pub file:Option<String>,pub target:Option<String>,pub source:String,pub session_edit:Option<Value>}
-impl Default for Options{fn default()->Self{Self{agent:"codex".into(),question:prompt("explain").into(),file:None,target:None,source:"both".into(),session_edit:None}}}
+pub struct Options {pub agent:String,pub question:String,pub file:Option<String>,pub target:Option<String>,pub source:String,pub session_edit:Option<Value>,pub note_refs:Vec<Value>}
+impl Default for Options{fn default()->Self{Self{agent:"codex".into(),question:prompt("explain").into(),file:None,target:None,source:"both".into(),session_edit:None,note_refs:vec![]}}}
 pub fn run(root:&Path,opts:&Options,cancel:&Cancel,progress:impl Fn(&str))->Result<Value>{
     ensure!(["codex","claude"].contains(&opts.agent.as_str()),"Choose codex or claude for reasoning");
+    let mut notes=vec![];let mut note_refs=vec![];
+    for reference in opts.note_refs.iter().filter(|_| opts.source!="none").take(8) {
+        let note=history::note_evidence(root,reference)?;
+        if opts.source=="both"||note["agent"]==opts.source {notes.push(note);note_refs.push(reference.clone());}
+    }
     let recorded=opts.session_edit.as_ref().map(|e|history::saved_edit(root,e)).transpose()?;
     if let Some((edit,_))=&recorded {ensure!(opts.source=="both"||edit["agent"]==opts.source,"Choose /source both or the recorded edit's agent to explain session code");}
     let focus=if recorded.is_some(){None}else{opts.target.as_ref().map(|t|resolve_target(root,t)).transpose()?};
@@ -168,7 +177,7 @@ pub fn run(root:&Path,opts:&Options,cancel:&Cancel,progress:impl Fn(&str))->Resu
     let question=if let Some((edit,_))=&recorded{format!("Explain the selected recorded session edit to {} ({}). Its code may differ from current source; distinguish them.\n{}",s(&edit["file"]),s(&edit["event_id"]),opts.question)}else if let Some(t)=&opts.target{format!("Target: {t}\n{}",opts.question)}else{opts.question.clone()};
     progress("Preparing current changes and project history…");let review=ensure_current(root,&opts.source)?;
     progress("Selecting relevant files and functions…");let targets=select_context(&review,&opts.agent,&question,file,cancel)?;
-    let mut data=packet_with_edit(&review,&question,file,&targets,focus.as_ref(),recorded.as_ref().map(|(e,s)|(e,s)))?;data["selected_context"]=json!(targets);
+    let mut data=packet_with_notes(&review,&question,file,&targets,focus.as_ref(),recorded.as_ref().map(|(e,s)|(e,s)),&notes)?;data["note_refs"]=json!(note_refs);data["selected_context"]=json!(targets);
     ensure!(!arr(&data["evidence"]).is_empty(),"No reviewable changes or selected file context; edit code first or select an existing file");
     progress(&format!("Explaining the changes ({} evidence items)…",arr(&data["evidence"]).len()));
     let result=agent::invoke(&opts.agent,&format!("{}\n\nEVIDENCE PACKET:\n{}",prompt("reasoning"),data),&crate::schema("Explanation"),cancel,Duration::from_secs(240))?;

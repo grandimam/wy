@@ -27,6 +27,13 @@ impl Store {
         let raw:Option<String>=self.connection.query_row("SELECT data FROM artifacts WHERE kind=? AND id=?",params![kind,id],|r|r.get(0)).optional()?;
         serde_json::from_str(&raw.with_context(||format!("No {kind} named {id}"))?).context("Invalid stored artifact")
     }
+    pub fn recent(&self, kind: &str, limit: usize) -> Result<Vec<Value>> {
+        let mut query = self.connection.prepare("SELECT data FROM artifacts WHERE kind=? AND id<>'latest' ORDER BY rowid DESC LIMIT ?")?;
+        let rows = query.query_map(params![kind, limit.min(100) as i64], |r| r.get::<_, String>(0))?;
+        let mut result = vec![];
+        for row in rows { result.push(serde_json::from_str(&row?)?); }
+        Ok(result)
+    }
     pub fn put(&self, kind: &str, id: &str, data: &Value) -> Result<()> {
         self.connection.execute("INSERT OR REPLACE INTO artifacts VALUES (?,?,?)",params![kind,id,serde_json::to_string(data)?])?;Ok(())
     }

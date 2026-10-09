@@ -264,6 +264,7 @@ fn explain(
             target,
             source: options.history.source,
             session_edit: None,
+            note_refs: vec![],
         },
         &Arc::new(AtomicBool::new(false)),
         |message| eprintln!("{message}"),

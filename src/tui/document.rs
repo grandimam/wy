@@ -9,6 +9,7 @@ pub(super) enum View {
     Empty,
     Diff,
     SessionCode,
+    Recorded,
     Explanation,
     Evidence,
     Help,
@@ -17,9 +18,9 @@ impl View {
     pub fn label(self) -> &'static str {
         match self {
             Self::Empty => "Changes",
-            Self::Diff => "Diff",
-            Self::SessionCode => "Session code",
-            Self::Explanation => "Why this change?",
+            Self::Diff | Self::SessionCode => "Changes",
+            Self::Recorded => "Agent notes",
+            Self::Explanation => "Enriched",
             Self::Evidence => "Evidence",
             Self::Help => "Help",
         }
@@ -94,7 +95,10 @@ pub(super) fn empty(review: &Value) -> Document {
         doc.text("No working-tree diff or recent session code. After your agent edits code, press r to refresh.", MUTED);
     } else {
         doc.heading("Select a changed file");
-        doc.text("Browse its diff, then choose Why this change?", MUTED);
+        doc.text(
+            "Its changes and recorded agent notes appear together.",
+            MUTED,
+        );
     }
     doc
 }
@@ -179,7 +183,7 @@ pub(super) fn recorded_code(edit: &Value) -> Document {
         doc.text("Recorded code truncated at the capture limit.", AMBER);
     }
     doc.notice = Some((
-        "Latest captured edit to this file · may differ from current code".into(),
+        "Recorded session edit · may differ from current files".into(),
         AMBER,
     ));
     doc.target = Some(Target {
@@ -247,6 +251,102 @@ pub(super) fn diff(review: &Value, target: Target) -> Document {
         );
     }
     doc.target = Some(target);
+    doc.notice = Some(("Current working-tree changes".into(), MUTED));
+    doc
+}
+pub(super) fn is_recorded(artifact: &Value) -> bool {
+    artifact["context"] == "recorded_session"
+}
+pub(super) fn citations(artifact: &Value) -> Vec<Value> {
+    if is_recorded(artifact) {
+        arr(&artifact["packet"]["evidence"]).to_vec()
+    } else {
+        presentation::citations(artifact)
+    }
+}
+pub(super) fn recorded(review: &Value, sessions: &[Value], code: &Document) -> Document {
+    let target = code.target.clone().expect("code has a target");
+    let notes = crate::history::notes(
+        review,
+        sessions,
+        &target.file,
+        target.symbol.as_deref(),
+        code.session_edit.as_ref(),
+    );
+    let focus = target.symbol.as_ref().map(|symbol| serde_json::json!({"target":target.selector(),"file":target.file,"symbol":symbol,"start_line":target.line}));
+    let artifact = Arc::new(
+        serde_json::json!({"context":"recorded_session","review_id":review["id"],
+        "packet":{"focus_file":target.file,"focus_target":focus,"focus_session_edit":code.session_edit,
+            "evidence":notes["evidence"],"note_refs":notes["note_refs"],"gaps":notes["gaps"]}}),
+    );
+    let mut doc = Document::new(View::Recorded, target.label());
+    doc.target = Some(target);
+    doc.session_edit = code.session_edit.clone();
+    doc.text("Saved conversation · no model call", MUTED);
+    doc.gap();
+    let evidence = arr(&notes["evidence"]);
+    let last_user = evidence.iter().rposition(|e| e["role"] == "user");
+    let assistants: Vec<_> = evidence
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e["role"] == "assistant")
+        .map(|(i, _)| i)
+        .collect();
+    let start = assistants.len().saturating_sub(3);
+    for (i, event) in evidence.iter().enumerate() {
+        if Some(i) != last_user && !assistants[start..].contains(&i) {
+            continue;
+        }
+        let full = s(&event["text"]);
+        let excerpt =
+            crate::security::short(full, if event["role"] == "user" { 500 } else { 1400 });
+        let who = if event["role"] == "user" {
+            "You asked".into()
+        } else {
+            format!("{} wrote", s(&event["agent"]))
+        };
+        doc.text(
+            format!(
+                "{who}: “{excerpt}{}” [{}]",
+                if excerpt.len() < full.len() {
+                    "…"
+                } else {
+                    ""
+                },
+                i + 1
+            ),
+            if event["role"] == "user" { MUTED } else { TEXT },
+        );
+        doc.gap();
+    }
+    if !evidence.is_empty() {
+        doc.text("These excerpts are linked conversation context; they may not cover every current edit.", MUTED);
+        doc.gap();
+    }
+    for gap in arr(&notes["gaps"]) {
+        doc.text(format!("? {}", s(gap)), AMBER);
+        doc.gap();
+    }
+    if evidence.is_empty() {
+        doc.text("Enrich can assess the code and identify assumptions, while keeping inferred reasons explicit.", MUTED);
+    }
+    if !evidence.is_empty() {
+        doc.heading("Sources · click or press s");
+        for (i, event) in evidence.iter().enumerate() {
+            doc.sources.push((doc.lines.len(), i));
+            doc.text(
+                format!(
+                    "[{}] {} · {} · {}",
+                    i + 1,
+                    s(&event["agent"]),
+                    s(&event["role"]),
+                    s(&event["timestamp"])
+                ),
+                ACCENT,
+            );
+        }
+    }
+    doc.artifact = Some(artifact);
     doc
 }
 pub(super) fn artifact_target(artifact: &Value) -> Option<Target> {
@@ -273,7 +373,7 @@ pub(super) fn explanation(artifact: Arc<Value>) -> Document {
         .unwrap_or_else(|| "All changes".into());
     let mut doc = Document::new(View::Explanation, title);
     doc.target = target;
-    let cited = presentation::citations(&artifact);
+    let cited = citations(&artifact);
     let result = &artifact["explanation"];
     if let Some(edit) = artifact["packet"]["focus_session_edit"].as_object() {
         doc.text(
@@ -415,7 +515,7 @@ fn claim(doc: &mut Document, claim: &Value, cited: &[Value]) {
     doc.gap();
 }
 pub(super) fn evidence(artifact: Arc<Value>, index: usize) -> Option<Document> {
-    let cited = presentation::citations(&artifact);
+    let cited = citations(&artifact);
     let e = cited.get(index)?;
     let mut doc = Document::new(View::Evidence, format!("[{}] {}", index + 1, s(&e["file"])));
     doc.heading(format!("CAPTURED {}", s(&e["kind"]).to_uppercase()));
@@ -475,29 +575,31 @@ pub(super) fn evidence(artifact: Arc<Value>, index: usize) -> Option<Document> {
     Some(doc)
 }
 pub(super) fn help() -> Document {
-    let mut doc = Document::new(View::Help, "Diff → Why this change? → Conversation");
+    let mut doc = Document::new(View::Help, "Changes, agent notes and optional enrichment");
     for (title, body) in [
         (
             "Start with a change",
-            "Select a file or function in the tree to see its diff. Files marked session also include recent recorded code.
-w  Why this change? — find what led to this implementation
-The answer distinguishes the agent's recorded statements from inferences.",
+            "Select a file or function to see its changes and available agent notes immediately.
+Changes shows the current Git diff, or a recorded edit when no current diff exists.
+Notes quote captured conversation and flag questions left open in those excerpts.
+e  Enrich explanation — ask the agent to connect the code and notes.",
         ),
         (
             "Follow the answer",
             "Click a source, or s then ↑/↓ and Enter to open it.
 1–9  open a numbered source directly
 i  ask a follow-up about the answer
-d  return to the diff · w  reopen the answer
-c  read the latest code recorded in the file's agent session
-R  request an updated answer · p  last saved answer
-Esc  back / cancel a running request",
+d  focus Changes · o  original notes · v  saved enrichment
+R  request updated enrichment · p  last saved answer
+Keep browsing while enrichment runs. Files show working, queued or ready.
+Return to a file to resume reading. Completed answers survive restarting wy.
+Esc  back · x  cancel running and queued enrichments",
         ),
         (
             "Navigate",
             "↑/↓ or j/k  select files or scroll the focused pane
 ←/→ or h/l  expand the tree or pan a diff
-Space  expand changed symbols · Enter  read the diff
+Space  expand changed symbols · Enter  focus code
 Tab  switch files, code and explanation · f  filter file paths
 PageUp/PageDown  scroll · Home/End  start/end
 r  refresh changes · b  toggle files · m  mark reviewed
@@ -515,7 +617,7 @@ q / Ctrl+Q / Ctrl+C  quit",
         ),
         (
             "About the evidence",
-            "Why this change? uses your selected agent to read captured code and observable conversations. It may use your account's allowance. A recorded statement is evidence of what the agent said; inferred reasons are a new assessment. Unrecorded reasoning cannot be recovered from the diff.",
+            "Agent notes and sources are local: no model call. Gap hints look for missing signals in the excerpts, not private reasoning. Enrich uses your selected agent and may use your account's allowance. Recorded statements show what the agent said; inferred reasons are a new assessment.",
         ),
     ] {
         doc.heading(title);
