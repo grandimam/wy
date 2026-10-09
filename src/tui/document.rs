@@ -12,6 +12,9 @@ pub(super) enum View {
     Recorded,
     Explanation,
     Evidence,
+    Commits,
+    Commit,
+    Original,
     Help,
 }
 impl View {
@@ -22,6 +25,9 @@ impl View {
             Self::Recorded => "Agent notes",
             Self::Explanation => "Enriched",
             Self::Evidence => "Evidence",
+            Self::Commits => "Commits",
+            Self::Commit => "Commit conversations",
+            Self::Original => "Original turn",
             Self::Help => "Help",
         }
     }
@@ -39,6 +45,8 @@ pub(super) struct Document {
     pub scroll: u16,
     pub horizontal: u16,
     pub notice: Option<(String, Color)>,
+    pub commits: Vec<String>,
+    pub originals: Vec<Value>,
 }
 impl Document {
     pub fn new(kind: View, title: impl Into<String>) -> Self {
@@ -54,10 +62,15 @@ impl Document {
             scroll: 0,
             horizontal: 0,
             notice: None,
+            commits: vec![],
+            originals: vec![],
         }
     }
     pub fn code(&self) -> bool {
         matches!(self.kind, View::Diff | View::SessionCode)
+    }
+    pub fn historical(&self) -> bool {
+        matches!(self.kind, View::Commits | View::Commit | View::Original)
     }
     pub fn text(&mut self, text: impl AsRef<str>, color: Color) {
         self.lines.extend(
@@ -294,17 +307,30 @@ pub(super) fn recorded(review: &Value, sessions: &[Value], code: &Document) -> D
         .collect();
     let start = assistants.len().saturating_sub(3);
     for (i, event) in evidence.iter().enumerate() {
-        if Some(i) != last_user && !assistants[start..].contains(&i) {
+        if Some(i) != last_user && !assistants[start..].contains(&i) && event["role"] != "summary" {
             continue;
         }
         let full = s(&event["text"]);
         let excerpt =
             crate::security::short(full, if event["role"] == "user" { 500 } else { 1400 });
-        let who = if event["role"] == "user" {
+        let who = if !crate::history::provenance::original(event) {
+            "Captured context reports".into()
+        } else if event["role"] == "user" {
             "You asked".into()
         } else {
             format!("{} wrote", s(&event["agent"]))
         };
+        doc.text(
+            crate::history::provenance::label(event),
+            if crate::history::provenance::original(event) {
+                MUTED
+            } else {
+                AMBER
+            },
+        );
+        if let Some(status) = crate::history::origins::status(event) {
+            doc.text(status, AMBER);
+        }
         doc.text(
             format!(
                 "{who}: “{excerpt}{}” [{}]",
@@ -366,12 +392,19 @@ pub(super) fn artifact_target(artifact: &Value) -> Option<Target> {
     })
 }
 pub(super) fn explanation(artifact: Arc<Value>) -> Document {
+    let mut checked = (*artifact).clone();
+    crate::history::provenance::sanitize_artifact(&mut checked);
+    let artifact = Arc::new(checked);
     let target = artifact_target(&artifact);
     let title = target
         .as_ref()
         .map(Target::label)
         .unwrap_or_else(|| "All changes".into());
     let mut doc = Document::new(View::Explanation, title);
+    if let Some(warning) = artifact["provenance_warning"].as_str() {
+        doc.text(warning, AMBER);
+        doc.gap();
+    }
     doc.target = target;
     let cited = citations(&artifact);
     let result = &artifact["explanation"];
@@ -519,6 +552,9 @@ pub(super) fn evidence(artifact: Arc<Value>, index: usize) -> Option<Document> {
     let e = cited.get(index)?;
     let mut doc = Document::new(View::Evidence, format!("[{}] {}", index + 1, s(&e["file"])));
     doc.heading(format!("CAPTURED {}", s(&e["kind"]).to_uppercase()));
+    if e["kind"] == "session" {
+        provenance(&mut doc, e, true);
+    }
     doc.text(
         format!(
             "{}:{} · {}",
@@ -574,6 +610,147 @@ pub(super) fn evidence(artifact: Arc<Value>, index: usize) -> Option<Document> {
     doc.artifact = Some(artifact);
     Some(doc)
 }
+fn provenance(doc: &mut Document, evidence: &Value, links: bool) {
+    doc.text(
+        crate::history::provenance::label(evidence),
+        if crate::history::provenance::original(evidence) {
+            MUTED
+        } else {
+            AMBER
+        },
+    );
+    if let Some(status) = crate::history::origins::status(evidence) {
+        doc.text(status, AMBER);
+    }
+    if links {
+        for reference in arr(&evidence["originals"]) {
+            let index = doc.originals.len();
+            doc.originals.push(reference.clone());
+            doc.sources.push((doc.lines.len(), index));
+            let relation = if reference["relation"] == "retained_context" {
+                "retained original context"
+            } else {
+                "original turn"
+            };
+            doc.text(
+                format!(
+                    "[{}] Open {relation} · {} · {}",
+                    index + 1,
+                    s(&reference["session_id"]),
+                    s(&reference["turn_id"])
+                ),
+                ACCENT,
+            );
+        }
+    }
+}
+pub(super) fn original(evidence: &Value) -> Document {
+    let mut doc = Document::new(View::Original, "Captured original message");
+    doc.notice = Some(("Original source · Esc returns to the summary".into(), MUTED));
+    provenance(&mut doc, evidence, false);
+    doc.text(
+        format!(
+            "{}:{} · {} · {}",
+            s(&evidence["agent"]),
+            s(&evidence["session_id"]),
+            s(&evidence["provenance"]["turn_id"]),
+            s(&evidence["provenance"]["message_id"])
+        ),
+        MUTED,
+    );
+    doc.text(
+        format!("{}:{}", s(&evidence["file"]), n(&evidence["start_line"])),
+        MUTED,
+    );
+    doc.gap();
+    doc.text(s(&evidence["text"]), TEXT);
+    if evidence["truncated"] == true {
+        doc.text(
+            "Original excerpt shortened by the capture limit; surrounding context may be missing.",
+            AMBER,
+        );
+    }
+    doc
+}
+pub(super) fn commits(entries: &[Value]) -> Document {
+    let mut doc = Document::new(View::Commits, "Recent commits");
+    doc.notice = Some((
+        "↑/↓ select · Enter opens saved conversations · /commit HASH · Esc back".into(),
+        MUTED,
+    ));
+    if entries.is_empty() {
+        doc.text(
+            "No commits yet. Review your changes before making the first commit.",
+            MUTED,
+        );
+    }
+    for (index, entry) in entries.iter().enumerate() {
+        doc.sources.push((doc.lines.len(), index));
+        doc.commits.push(s(&entry["commit"]).into());
+        doc.text(
+            format!("{}  {}", s(&entry["short"]), s(&entry["subject"])),
+            TEXT,
+        );
+    }
+    if !entries.is_empty() {
+        doc.source_selection = Some(0);
+    }
+    doc
+}
+
+pub(super) fn commit_context(context: &Value) -> Document {
+    let hash = s(&context["commit"]);
+    let mut doc = Document::new(
+        View::Commit,
+        format!("Commit {}", hash.chars().take(12).collect::<String>()),
+    );
+    doc.notice = Some((
+        "Saved conversations · local lookup · Esc back · g browse commits".into(),
+        MUTED,
+    ));
+    doc.text(hash, MUTED);
+    for link in arr(&context["links"]) {
+        let basis = if link["association"] == "snapshot-match" {
+            "Matched review base and source snapshot"
+        } else {
+            "Explicitly linked review"
+        };
+        doc.text(format!("{basis} · {}", s(&link["review_id"])), ACCENT);
+    }
+    for (index, session) in arr(&context["sessions"]).iter().enumerate() {
+        doc.heading(format!(
+            "Capture {} · {}:{}",
+            index + 1,
+            s(&session["agent"]),
+            s(&session["id"])
+        ));
+        doc.text(
+            format!(
+                "Saved with {}",
+                arr(&session["review_ids"])
+                    .iter()
+                    .map(s)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            MUTED,
+        );
+        for event in arr(&session["events"]) {
+            doc.heading(format!("{} · {}", s(&event["kind"]), s(&event["id"])));
+            provenance(&mut doc, event, true);
+            doc.text(
+                format!("{}:{}", s(&session["path"]), n(&event["source_line"])),
+                MUTED,
+            );
+            doc.text(s(&event["text"]), TEXT);
+        }
+        if arr(&session["events"]).is_empty() {
+            doc.text("No observable events in this saved capture.", MUTED);
+        }
+    }
+    doc
+}
+
 pub(super) fn help() -> Document {
     let mut doc = Document::new(View::Help, "Changes, agent notes and optional enrichment");
     for (title, body) in [
@@ -603,6 +780,9 @@ Space  expand changed symbols · Enter  focus code
 Tab  switch files, code and explanation · f  filter file paths
 PageUp/PageDown  scroll · Home/End  start/end
 r  refresh changes · b  toggle files · m  mark reviewed
+g  browse commits · /commit HASH  read saved conversations
+Drag pane dividers or [ / ] to move the focused pane's divider
+/layout reset  restore default pane sizes
 q / Ctrl+Q / Ctrl+C  quit",
         ),
         (
@@ -613,6 +793,9 @@ q / Ctrl+Q / Ctrl+C  quit",
 /ask QUESTION
 /reason QUESTION — question about all changes
 /evidence NUMBER
+/commits
+/commit HASH
+/link HASH [REVIEW-ID] — explicitly attach a saved review
 /cancel",
         ),
         (

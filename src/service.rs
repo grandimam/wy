@@ -49,6 +49,7 @@ pub fn review(path:&Path,opts:&ReviewOptions)->Result<Value>{
     }
     if sessions.is_empty(){warnings.push("No agent history supplied; explanations use repository evidence only.".into());}
     let mut decisions=engine::analyze(&changes,&sources.texts,&sources.hashes,&sessions,opts.baseline.is_some());
+    for decision in &mut decisions {for evidence in decision["evidence"].as_array_mut().unwrap(){if evidence["kind"]=="session"{history::origins::enrich(&root,evidence)?;}}}
     if decisions.len()==12{warnings.push("Annotation limit reached (12); lower-priority candidates may be omitted.".into());}
     let mut input=0;let mut output=0;
     if opts.model{let mut provider=Provider::from_env()?;for decision in &mut decisions{if let Err(_e)=provider.enrich(decision){warnings.push(format!("Invalid or unavailable model result for {}; kept conservative offline analysis.",s(&decision["id"])));}}input=provider.input;output=provider.output;}
@@ -66,7 +67,7 @@ pub fn load(path:&Path)->Result<Value>{
     let root=repository::root(path)?;let mut result=Store::open(&root)?.get("review","latest")?;crate::validate("Review",&result)?;
     ensure!(s(&result["root"])==root.to_string_lossy(),"Cached review belongs to another repository; run wy review again");history::saved(&result)?;
     if result["head"]!=json!(repository::head(&root)){result["warnings"].as_array_mut().unwrap().push(json!("This saved review predates the current Git HEAD. Run wy review or wy reason to inspect current changes."));}
-    for d in result["decisions"].as_array_mut().unwrap(){d["stale"]=json!(!fresh(d,&root));}Ok(result)
+    for d in result["decisions"].as_array_mut().unwrap(){d["stale"]=json!(!fresh(d,&root));history::provenance::sanitize_decision(d);}Ok(result)
 }
 pub fn select<'a>(review:&'a Value,target:&str)->Result<&'a Value>{
     let decisions=arr(&review["decisions"]);

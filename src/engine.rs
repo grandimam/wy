@@ -22,7 +22,7 @@ fn retrieve(file:&str,line:usize,token:&str,texts:&Texts,hashes:&Texts,sessions:
     let mut candidates=vec![];
     for session in sessions{
         let matches:Vec<_>=arr(&session["events"]).iter().filter(|e|s(&e["text"]).to_lowercase().contains(&token.to_lowercase())&&s(&e["text"]).contains(file.rsplit('/').next().unwrap_or(file))).take(3).map(|e|json!({
-            "id":format!("session-{}-{}-{}",s(&session["agent"]),&digest(&format!("{}{}",s(&session["id"]),s(&session["path"])))[..8],s(&e["id"])),"kind":"session","file":session["path"],"symbol":"<module>","start_line":e["source_line"],"end_line":e["source_line"],"excerpt":e["text"],"snapshot_hash":"","event_id":e["id"],"session_id":session["id"],"agent":session["agent"]})).collect();
+            "id":format!("session-{}-{}-{}",s(&session["agent"]),&digest(&format!("{}{}",s(&session["id"]),s(&session["path"])))[..8],s(&e["id"])),"kind":"session","file":session["path"],"symbol":"<module>","start_line":e["source_line"],"end_line":e["source_line"],"excerpt":e["text"],"snapshot_hash":"","event_id":e["id"],"session_id":session["id"],"agent":session["agent"],"role":e["kind"],"provenance":crate::history::provenance::metadata(e),"lineage":session["lineage"]})).collect();
         candidates.push(matches);
     }
     for i in 0..3 {for matches in &candidates{if let Some(item)=matches.get(i).filter(|_|evidence.len()<12){evidence.push(item.clone());}}}evidence
@@ -33,7 +33,7 @@ fn recorded(evidence:&[Value],sessions:&[Value],token:&str,file:&str)->Option<Va
     let negative=Regex::new(r"(?i)\b(?:not|never|didn't|don't|example|hypothetical)\b").unwrap();
     let sentences=Regex::new(r"[.!?]\s+|\n").unwrap();
     for item in evidence{
-        if item["kind"]!="session"||!sessions.iter().any(|session|session["path"]==item["file"]&&arr(&session["events"]).iter().any(|e|e["id"]==item["event_id"]&&e["kind"]=="assistant")){continue;}
+        if !crate::history::provenance::recorded_evidence(item)||!sessions.iter().any(|session|session["path"]==item["file"]&&arr(&session["events"]).iter().any(|e|e["id"]==item["event_id"]&&e["kind"]=="assistant"&&crate::history::provenance::original(e))){continue;}
         for sentence in sentences.split(s(&item["excerpt"])){
             if start.is_match(sentence.trim())&&cause.is_match(sentence)&&sentence.to_lowercase().contains(&token.to_lowercase())&&sentence.contains(file)&&!negative.is_match(sentence){let mut item=item.clone();item["excerpt"]=json!(sentence);return Some(item);}
         }

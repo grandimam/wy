@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, path::Path};
 
 fn visible(event: &Value) -> bool {
-    ["user", "assistant"].contains(&s(&event["kind"]))
+    ["user", "assistant", "summary"].contains(&s(&event["kind"]))
         && ![
             "<environment_context>",
             "<permissions",
@@ -29,10 +29,17 @@ fn file_pattern(file: &str, basename_unique: bool) -> regex::Regex {
         .expect("escaped file pattern")
 }
 pub fn event_evidence(session: &Value, event: &Value) -> Value {
-    json!({"id":format!("event-{}-{}-{}",s(&session["agent"]),&security::digest(&format!("{}{}",s(&session["id"]),s(&session["path"])))[..8],s(&event["id"])),
+    let identity = json!([
+        session["id"],
+        session["path"],
+        event["kind"],
+        event["text"],
+        super::provenance::metadata(event)
+    ]);
+    json!({"id":format!("event-{}-{}-{}",s(&session["agent"]),&security::digest(&identity.to_string())[..16],s(&event["id"])),
         "kind":"session","agent":session["agent"],"session_id":session["id"],"event_id":event["id"],
         "role":event["kind"],"file":session["path"],"start_line":event["source_line"],"text":event["text"],
-        "timestamp":event["timestamp"],"call_id":event["call_id"]})
+        "timestamp":event["timestamp"],"call_id":event["call_id"],"provenance":super::provenance::metadata(event),"lineage":session["lineage"],"truncated":event["truncated"]==true})
 }
 pub fn note_evidence(root: &Path, reference: &Value) -> Result<Value> {
     let session = Store::open(root)?.get("session", s(&reference["session_key"]))?;
@@ -45,7 +52,9 @@ pub fn note_evidence(root: &Path, reference: &Value) -> Result<Value> {
         .iter()
         .find(|e| e["id"] == reference["event_id"] && visible(e))
         .ok_or_else(|| anyhow::anyhow!("Recorded note is unavailable; refresh project history"))?;
-    Ok(event_evidence(&session, event))
+    let mut evidence = event_evidence(&session, event);
+    super::origins::enrich(root, &mut evidence)?;
+    Ok(evidence)
 }
 
 /// Gaps describe missing signals in the displayed excerpts, not the agent's private reasoning.
@@ -153,9 +162,18 @@ pub fn notes(
             refs.push(json!({"session_key":key,"event_id":events[i]["id"]}));
         }
     }
+    for item in &mut evidence {
+        // In-memory/synthetic reviews can still display provenance without storage.
+        if let Some(root) = review["root"].as_str() {
+            if let Err(error) = super::origins::enrich(Path::new(root), item) {
+                item["origin_status"] = json!("unavailable");
+                item["origin_reason"] = json!(security::redact(&error.to_string()));
+            }
+        }
+    }
     let assistant = evidence
         .iter()
-        .filter(|e| e["role"] == "assistant")
+        .filter(|e| e["role"] == "assistant" && super::provenance::original(e))
         .map(|e| s(&e["text"]))
         .collect::<Vec<_>>()
         .join("\n")
@@ -163,6 +181,9 @@ pub fn notes(
     let has = |terms: &[&str]| terms.iter().any(|t| assistant.contains(t));
     let mut gaps = vec![];
     if assistant.is_empty() {
+        if evidence.iter().any(|e| !super::provenance::original(e)) {
+            gaps.push("Original turn unavailable or unverified. Original rationale unknown; a summary cannot establish the agent's original reason.");
+        }
         gaps.push(
             "An agent explanation of this change was not found in the captured conversation.",
         );
@@ -205,7 +226,7 @@ pub fn notes(
 mod tests {
     use super::*;
     fn event(id: &str, kind: &str, text: &str) -> Value {
-        json!({"id":id,"kind":kind,"text":text,"timestamp":id})
+        json!({"id":id,"kind":kind,"text":text,"timestamp":id,"provenance":{"source_type":if ["user","assistant"].contains(&kind){"original_turn"}else{"tool_record"},"basis":"test_native_event","original_refs":[]}})
     }
     fn review() -> Value {
         json!({"changes":[{"file":"src/cache.rs"},{"file":"tests/cache.rs"}],

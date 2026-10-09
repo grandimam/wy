@@ -1,6 +1,7 @@
 //! Read-only review workspace. Agent requests run only after explicit input.
 mod document;
 mod explorer;
+mod layout;
 mod navigation;
 mod render;
 use crate::{agent::Cancel, arr, n, presentation, reasoning, s, security, service};
@@ -15,6 +16,7 @@ use crossterm::{
 };
 use document::{Document, View};
 use explorer::{Explorer, Kind, Target};
+use layout::{Divider, PaneSizes};
 use navigation::{ReadingState, artifact_key, options_key};
 use ratatui::{
     prelude::*,
@@ -119,6 +121,11 @@ impl QuestionContext {
 }
 #[derive(Default)]
 struct Areas {
+    body: Rect,
+    content: Rect,
+    file_divider: Rect,
+    content_divider: Rect,
+    commits: Rect,
     files: Rect,
     reader: Rect,
     code: Rect,
@@ -145,6 +152,8 @@ struct Workspace {
     editing: Option<Input>,
     draft: Option<QuestionContext>,
     sidebar: bool,
+    pane_sizes: PaneSizes,
+    dragging: Option<Divider>,
     status: String,
     error: bool,
     job: Option<Job>,
@@ -165,6 +174,7 @@ impl Workspace {
         )?;
         let sessions = crate::history::saved(&review)?;
         let mut app = Self::from_review(root, review);
+        app.pane_sizes = PaneSizes::load(root)?;
         app.sessions = sessions;
         for answer in crate::storage::Store::open(root)?
             .recent("reasoning", 40)?
@@ -209,6 +219,8 @@ impl Workspace {
             editing: None,
             draft: None,
             sidebar: true,
+            pane_sizes: PaneSizes::default(),
+            dragging: None,
             status: String::new(),
             error: false,
             job: None,
@@ -321,6 +333,8 @@ impl Workspace {
             self.explorer.target()
         } else if self.focus == Focus::Code {
             self.code.as_ref().and_then(|d| d.target.clone())
+        } else if self.document.historical() {
+            None
         } else {
             self.document
                 .target
@@ -346,6 +360,12 @@ impl Workspace {
         }
     }
     fn why_change(&mut self, refresh: bool) {
+        if self.focus == Focus::Reader && self.document.historical() {
+            self.message(
+                "Browsing saved commit conversations · select a current file to enrich it",
+            );
+            return;
+        }
         let existing = (self.focus == Focus::Reader)
             .then(|| {
                 self.document
@@ -651,6 +671,31 @@ impl Workspace {
         let (name, rest) = input.split_once(' ').unwrap_or((&input, ""));
         let rest = rest.trim();
         match name {
+            "/commits" => self.open_commits()?,
+            "/commit" => {
+                ensure!(!rest.is_empty(), "Use /commit HASH or /commits to browse");
+                self.open_commit(rest)?;
+            }
+            "/link" => {
+                let fields: Vec<_> = rest.split_whitespace().collect();
+                ensure!(
+                    (1..=2).contains(&fields.len()),
+                    "Use /link HASH [REVIEW-ID]"
+                );
+                let linked = crate::commits::link(&self.root, fields[0], fields.get(1).copied())?;
+                self.open_commit(s(&linked["commit"]))?;
+                self.message(format!(
+                    "Linked saved review {} to commit {}",
+                    s(&linked["review_id"]),
+                    s(&linked["commit"])
+                ));
+            }
+            "/layout" => {
+                ensure!(rest == "reset", "Use /layout reset to restore pane sizes");
+                self.pane_sizes = PaneSizes::default();
+                self.save_layout()?;
+                self.message("Default pane sizes restored");
+            }
             "/reason" => {
                 self.start(self.options(None, false, (!rest.is_empty()).then(|| rest.into())))
             }
@@ -687,6 +732,10 @@ impl Workspace {
             "/cancel" => self.cancel(),
             "/ask" => {
                 ensure!(!rest.is_empty(), "Use /ask QUESTION");
+                ensure!(
+                    !(self.focus == Focus::Reader && self.document.historical()),
+                    "Select a current file to ask a question; this view contains saved commit conversations"
+                );
                 self.start(context.options(rest, &self.agent, &self.source));
             }
             "/evidence" => {
@@ -697,17 +746,56 @@ impl Workspace {
                 self.open_evidence(index - 1)?;
             }
             _ if input.starts_with('/') => self.message("Unknown command · ? opens help"),
-            _ => self.start(question_options),
+            _ => {
+                ensure!(
+                    !(self.focus == Focus::Reader && self.document.historical()),
+                    "Select a current file to ask a question; this view contains saved commit conversations"
+                );
+                self.start(question_options);
+            }
         }
         Ok(())
     }
     fn open_evidence(&mut self, index: usize) -> Result<()> {
+        if !self.document.originals.is_empty() {
+            let reference=self.document.originals.get(index).ok_or_else(||anyhow::anyhow!("No original source at this position"))?;
+            let evidence=crate::history::origins::open(&self.root,reference)?;
+            self.open(document::original(&evidence));
+            return Ok(());
+        }
+        if self.document.kind == View::Commits {
+            let commit = self
+                .document
+                .commits
+                .get(index)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("No commit at this position"))?;
+            return self.open_commit(&commit);
+        }
         let artifact = self.document.artifact.clone().ok_or_else(|| {
             anyhow::anyhow!("Open an explanation first to inspect its references")
         })?;
         let doc = document::evidence(artifact, index)
             .ok_or_else(|| anyhow::anyhow!("No reference [{}] in this explanation", index + 1))?;
         self.open(doc);
+        Ok(())
+    }
+    fn open_commits(&mut self) -> Result<()> {
+        let entries = crate::commits::recent(&self.root)?;
+        self.open(document::commits(&entries));
+        self.message("Select a commit and press Enter · /commit HASH opens any revision");
+        Ok(())
+    }
+    fn open_commit(&mut self, revision: &str) -> Result<()> {
+        let context = crate::commits::lookup(&self.root, revision, "both").map_err(|error| {
+            if error.to_string().starts_with("No saved conversations linked") {
+                anyhow::anyhow!("No saved conversation matches this commit · /link {revision} [REVIEW-ID] attaches a saved review")
+            } else {
+                error
+            }
+        })?;
+        self.open(document::commit_context(&context));
+        self.message("Saved commit conversations · Esc goes back · g browses commits");
         Ok(())
     }
     fn edit(&mut self, mode: Input) {
@@ -875,6 +963,9 @@ impl Workspace {
                 return Ok(true);
             }
             KeyCode::Char('/') => self.edit(Input::Command),
+            KeyCode::Char('g') => self.open_commits()?,
+            KeyCode::Char('[') => self.adjust_pane(-3)?,
+            KeyCode::Char(']') => self.adjust_pane(3)?,
             KeyCode::Char('i') => {
                 if self.document.artifact.is_some() {
                     self.focus = Focus::Reader;
@@ -898,7 +989,10 @@ impl Workspace {
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.focus == Focus::Files {
                     self.explorer.step(-1);
-                } else if self.focus == Focus::Reader && self.document.source_selection.is_some() {
+                } else if self.focus == Focus::Reader
+                    && (self.document.source_selection.is_some()
+                        || self.document.kind == View::Commits)
+                {
                     self.select_source(-1);
                 } else {
                     self.scroll(-1);
@@ -907,7 +1001,10 @@ impl Workspace {
             KeyCode::Down | KeyCode::Char('j') => {
                 if self.focus == Focus::Files {
                     self.explorer.step(1);
-                } else if self.focus == Focus::Reader && self.document.source_selection.is_some() {
+                } else if self.focus == Focus::Reader
+                    && (self.document.source_selection.is_some()
+                        || self.document.kind == View::Commits)
+                {
                     self.select_source(1);
                 } else {
                     self.scroll(1);
@@ -945,6 +1042,8 @@ impl Workspace {
             KeyCode::Home => {
                 if self.focus == Focus::Files {
                     self.explorer.step(isize::MIN);
+                } else if self.document.kind == View::Commits {
+                    self.select_source(isize::MIN);
                 } else {
                     self.active_document().scroll = 0;
                 }
@@ -952,6 +1051,8 @@ impl Workspace {
             KeyCode::End => {
                 if self.focus == Focus::Files {
                     self.explorer.step(isize::MAX);
+                } else if self.document.kind == View::Commits {
+                    self.select_source(isize::MAX);
                 } else {
                     let max = if self.focus == Focus::Code {
                         self.code_scroll_max
@@ -973,7 +1074,7 @@ impl Workspace {
             KeyCode::Char('o') => self.show_notes(),
             KeyCode::Char('v') => self.show_enriched(),
             KeyCode::Char('x') => self.cancel(),
-            KeyCode::Char('s') if self.document.artifact.is_some() => self.select_source(0),
+            KeyCode::Char('s') if !self.document.sources.is_empty() => self.select_source(0),
             KeyCode::Char('R') => self.why_change(true),
             KeyCode::Char('p') => self.saved_explanation()?,
             KeyCode::Char('d') => self.change_view(View::Diff)?,
@@ -987,7 +1088,11 @@ impl Workspace {
                 }
             }
             KeyCode::Enter => {
-                if self.focus == Focus::Reader && self.document.source_selection.is_some() {
+                if self.focus == Focus::Reader && self.document.kind == View::Commits {
+                    if !self.document.commits.is_empty() {
+                        self.open_evidence(self.document.source_selection.unwrap_or(0))?;
+                    }
+                } else if self.focus == Focus::Reader && self.document.source_selection.is_some() {
                     let index = self.document.sources[self.document.source_selection.unwrap()].1;
                     self.open_evidence(index)?;
                 } else if self.focus == Focus::Files
@@ -1005,7 +1110,10 @@ impl Workspace {
                 self.open_evidence(c.to_digit(10).unwrap() as usize - 1)?
             }
             KeyCode::Esc => {
-                if self.focus == Focus::Reader && self.document.source_selection.take().is_some() {
+                if self.focus == Focus::Reader
+                    && self.document.kind != View::Commits
+                    && self.document.source_selection.take().is_some()
+                {
                     // Leave the source list and return to reading this explanation.
                 } else if self.focus == Focus::Files && !self.explorer.filter.is_empty() {
                     self.explorer.filter.clear();
@@ -1034,7 +1142,13 @@ impl Workspace {
         }
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if self.areas.enrich.contains(point) {
+                if self.areas.file_divider.contains(point) {
+                    self.dragging = Some(Divider::Files);
+                } else if self.areas.content_divider.contains(point) {
+                    self.dragging = Some(Divider::Content);
+                } else if self.areas.commits.contains(point) {
+                    self.open_commits()?;
+                } else if self.areas.enrich.contains(point) {
                     self.focus = Focus::Reader;
                     self.why_change(false);
                 } else if let Some((_, index)) = self
@@ -1068,6 +1182,17 @@ impl Workspace {
                 } else if self.areas.input.contains(point) {
                     self.focus = Focus::Reader;
                     self.edit(Input::Question);
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(divider) = self.dragging {
+                    self.resize_pane(divider, event.column);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(divider) = self.dragging.take() {
+                    self.resize_pane(divider, event.column);
+                    self.save_layout()?;
                 }
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {

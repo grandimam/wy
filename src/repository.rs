@@ -14,6 +14,9 @@ pub fn git(root:&Path,args:&[&str],check:bool)->Result<String>{
 }
 pub fn root(path:&Path)->Result<PathBuf>{Ok(Path::new(git(path,&["rev-parse","--show-toplevel"],true)?.trim()).canonicalize()?)}
 pub fn head(root:&Path)->Option<String>{git(root,&["rev-parse","--verify","HEAD"],false).ok().map(|s|s.trim().to_owned()).filter(|s|!s.is_empty())}
+pub fn resolve_commit(root:&Path,revision:&str)->Result<String>{
+    Ok(git(root,&["rev-parse","--verify","--end-of-options",&format!("{revision}^{{commit}}")],true)?.trim().to_owned())
+}
 pub fn sources(root:&Path)->Result<Sources>{
     let names=git(root,&["ls-files","-z","--cached","--others","--exclude-standard"],true)?;
     let mut sources=Sources{texts:Texts::new(),hashes:Texts::new(),warnings:vec![]};let mut total=0;
@@ -25,17 +28,20 @@ pub fn sources(root:&Path)->Result<Sources>{
     }Ok(sources)
 }
 pub fn committed(root:&Path,revision:&str)->Result<Texts>{
-    let commit=git(root,&["rev-parse","--verify","--end-of-options",&format!("{revision}^{{commit}}")],true)?;
+    Ok(committed_sources(root,revision)?.texts)
+}
+pub fn committed_sources(root:&Path,revision:&str)->Result<Sources>{
+    let commit=resolve_commit(root,revision)?;
     let records=git(root,&["ls-tree","-r","-z","-l",commit.trim()],true)?;
-    let mut texts=Texts::new();let mut total=0;
+    let mut sources=Sources{texts:Texts::new(),hashes:Texts::new(),warnings:vec![]};let mut total=0;
     for record in records.split('\0'){
         let Some((meta,name))=record.split_once('\t') else{continue};let parts:Vec<_>=meta.split_whitespace().collect();
         if parts.len()!=4 || parts[0]=="120000" || parts[1]!="blob" || !security::allowed(name){continue;}
         let size=parts[3].parse::<usize>().unwrap_or(usize::MAX);if size>security::MAX_FILE as usize{continue;}
         total+=size;ensure!(total<=security::MAX_REPO,"Base revision exceeds the 12 MB source limit");
         let text=git(root,&["cat-file","blob",parts[2]],true)?;
-        if !text.contains('\0'){texts.insert(name.into(),redact(&text));}
-    }Ok(texts)
+        if !text.contains('\0'){sources.hashes.insert(name.into(),digest(&text));sources.texts.insert(name.into(),redact(&text));}
+    }Ok(sources)
 }
 pub fn compare(before:&Texts,after:&Texts)->Vec<Change>{
     let mut result=Vec::new();

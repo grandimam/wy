@@ -68,6 +68,10 @@ Codex is the default answering agent; type `/agent claude` to switch. Enrichment
 
 Opening a citation like `[1]` shows the saved assistant message and surrounding conversation; `[2]` shows the supporting code. The answer is a fresh assessment of that evidence. wy saves it with its sources and flags later code changes when you reopen it.
 
+After committing reviewed changes, press **g** in the workspace to browse commits, or enter `/commit <hash>` to read their saved conversations. Shell commands `wy sessions --commit <hash>` and `wy session --commit <hash>` expose the same lookup. wy automatically matches a saved review's base and source snapshot to the commit during lookup. Use `wy link <hash> --review <review-id>` for an explicit association. Drag the workspace's pane dividers or use **[ / ]** to resize them; sizes are remembered for the repository. See [conversation lookup by commit](docs/usage.md#find-conversations-by-commit) for matching rules and local-storage limits.
+
+Compacted summaries are labeled **Secondary evidence**. Their source links open saved original messages when references can be verified. Otherwise wy explicitly shows **Original turn unavailable** and leaves the original rationale unknown. Summaries and unclassified older captures cannot establish a **Recorded** reason. See [summary provenance](docs/usage.md#summaries-and-original-turns) for resumed and branched sessions.
+
 See [project history](docs/usage.md#project-history) for log locations and capture limits.
 
 ## Evidence you can question

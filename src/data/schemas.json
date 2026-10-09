@@ -253,6 +253,143 @@
             ],
             "default": null,
             "title": "Agent"
+          },
+          "provenance": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "source_type": {
+                "enum": [
+                  "original_turn",
+                  "compaction_summary",
+                  "unknown",
+                  "tool_record"
+                ]
+              },
+              "basis": {
+                "type": "string"
+              },
+              "turn_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "parent_message_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "original_refs": {
+                "type": "array",
+                "maxItems": 96,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "session_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "turn_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "message_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "relation": {
+                      "enum": [
+                        "source",
+                        "retained_context"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "session_id",
+                    "turn_id",
+                    "message_id",
+                    "relation"
+                  ]
+                }
+              },
+              "references_truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "source_type",
+              "basis",
+              "original_refs"
+            ]
+          },
+          "lineage": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "relation": {
+                "enum": [
+                  "fork",
+                  "resume"
+                ]
+              },
+              "parent_session_id": {
+                "type": "string"
+              },
+              "through_turn_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "enum": [
+                  "boundary_recorded",
+                  "boundary_unavailable"
+                ]
+              }
+            },
+            "required": [
+              "relation",
+              "parent_session_id",
+              "through_turn_id",
+              "status"
+            ]
+          },
+          "origin_status": {
+            "type": "string"
+          },
+          "origin_reason": {
+            "type": "string"
+          },
+          "originals": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -690,7 +827,8 @@
               "tool_call",
               "tool_output",
               "change",
-              "test"
+              "test",
+              "summary"
             ],
             "title": "Kind",
             "type": "string"
@@ -776,6 +914,92 @@
           },
           "failed": {
             "type": "boolean"
+          },
+          "provenance": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "source_type": {
+                "enum": [
+                  "original_turn",
+                  "compaction_summary",
+                  "unknown",
+                  "tool_record"
+                ]
+              },
+              "basis": {
+                "type": "string"
+              },
+              "turn_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "parent_message_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "original_refs": {
+                "type": "array",
+                "maxItems": 96,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "session_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "turn_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "message_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "relation": {
+                      "enum": [
+                        "source",
+                        "retained_context"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "session_id",
+                    "turn_id",
+                    "message_id",
+                    "relation"
+                  ]
+                }
+              },
+              "references_truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "source_type",
+              "basis",
+              "original_refs"
+            ]
+          },
+          "truncated": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -837,6 +1061,42 @@
         ],
         "title": "Agent",
         "type": "string"
+      },
+      "lineage": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "relation": {
+            "enum": [
+              "fork",
+              "resume"
+            ]
+          },
+          "parent_session_id": {
+            "type": "string"
+          },
+          "through_turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "boundary_recorded",
+              "boundary_unavailable"
+            ]
+          }
+        },
+        "required": [
+          "relation",
+          "parent_session_id",
+          "through_turn_id",
+          "status"
+        ]
       }
     },
     "required": [

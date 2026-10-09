@@ -250,7 +250,7 @@ fn diff_and_why_toggle_reuses_the_answer_for_the_exact_change() {
 fn recorded_reason_leads_with_the_original_quote_and_openable_reference() {
     let mut answer = (*artifact(Some("src/cache.rs"))).clone();
     let quote = "Cache repeated reads to avoid fetching the same response again.";
-    answer["packet"]["evidence"].as_array_mut().unwrap().push(json!({"id":"statement-1","kind":"session","file":"conversation.jsonl","agent":"codex","role":"assistant","start_line":9,"text":quote}));
+    answer["packet"]["evidence"].as_array_mut().unwrap().push(json!({"id":"statement-1","kind":"session","file":"conversation.jsonl","agent":"codex","role":"assistant","start_line":9,"text":quote,"provenance":{"source_type":"original_turn","basis":"test_native_event","original_refs":[]}}));
     answer["explanation"]["judgments"][0] = json!({"choice":"Cache repeated reads","reason":"The agent explicitly connected caching to avoiding repeated fetches.","status":"recorded","quote":quote,"quote_id":"statement-1","evidence_ids":["statement-1","code-1"]});
     let answer = Arc::new(answer);
     let doc = document::explanation(answer.clone());
@@ -749,6 +749,9 @@ fn with_notes() -> Workspace {
             {"id":"edit","kind":"change","files":["src/cache.rs"],"text":"patch","timestamp":"2026-10-09T08:02:00Z"}
         ]}),
     ];
+    for event in app.sessions[0]["events"].as_array_mut().unwrap() {
+        event["provenance"] = json!({"source_type":if event["kind"]=="change"{"tool_record"}else{"original_turn"},"basis":"test_native_event","original_refs":[]});
+    }
     select(&mut app, "src/cache.rs");
     app.preview_selection();
     app.show_notes();
@@ -924,6 +927,346 @@ fn restarting_restores_completed_enrichments_without_a_request() {
     assert_eq!(app.document.artifact.unwrap()["id"], "newest");
     assert!(app.job.is_none());
     assert_eq!(app.answers.len(), 1);
+}
+
+fn commit_workspace() -> (tempfile::TempDir, Workspace, String, String) {
+    commit_workspace_with_rows(&[])
+}
+fn commit_workspace_with_rows(extra: &[Value]) -> (tempfile::TempDir, Workspace, String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.name", "Test"],
+        vec!["config", "user.email", "test@example.invalid"],
+    ] {
+        crate::repository::git(root, &args, true).unwrap();
+    }
+    std::fs::write(root.join("lib.rs"), "pub fn answer() -> i32 { 1 }\n").unwrap();
+    crate::repository::git(root, &["add", "lib.rs"], true).unwrap();
+    crate::repository::git(root, &["commit", "-qm", "Initial answer"], true).unwrap();
+    let base = crate::repository::head(root).unwrap();
+    std::fs::write(root.join("lib.rs"), "pub fn answer() -> i32 { 42 }\n").unwrap();
+    let history = root.join(".codex/sessions");
+    std::fs::create_dir_all(&history).unwrap();
+    let path = history.join("coding.jsonl");
+    let mut rows = vec![
+        json!({"type":"session_meta","payload":{"id":"coding","cwd":root.canonicalize().unwrap()}}),
+        json!({"type":"turn_context","payload":{"turn_id":"original-turn"}}),
+        json!({"type":"response_item","payload":{"type":"message","role":"assistant","id":"original-message","content":[{"type":"output_text","text":"Return 42 because it is the agreed API value."}]}}),
+    ];
+    rows.extend_from_slice(extra);
+    std::fs::write(
+        &path,
+        rows.iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+    let review = service::review(
+        root,
+        &service::ReviewOptions {
+            source: "codex".into(),
+            sessions: vec![path.clone()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    crate::repository::git(root, &["add", "lib.rs"], true).unwrap();
+    crate::repository::git(root, &["commit", "-qm", "Return agreed answer"], true).unwrap();
+    let hash = crate::repository::head(root).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let app = Workspace::from_review(root, review);
+    (dir, app, base, hash)
+}
+fn run_command(app: &mut Workspace, command: &str) -> Result<()> {
+    app.edit(Input::Command);
+    app.input = command.into();
+    app.command()
+}
+fn mouse_at(app: &mut Workspace, kind: MouseEventKind, x: u16, y: u16) {
+    app.mouse(MouseEvent {
+        kind,
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    })
+    .unwrap();
+}
+
+#[test]
+fn interactive_commit_lookup_browses_saved_history_and_restores_previous_view() {
+    let (_dir, mut app, base, hash) = commit_workspace();
+    let selected = app.explorer.target();
+    let original = app.document.kind;
+    press(&mut app, KeyCode::Char('g'));
+    assert_eq!(app.document.kind, View::Commits);
+    assert_eq!(app.document.commits, [hash.clone(), base]);
+    assert_eq!(app.document.source_selection, Some(0));
+    let (text, terminal) = screen(&mut app, 130, 30);
+    assert!(text.contains("Return agreed answer"));
+    preview("commit-picker", &terminal);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.document.kind, View::Commit);
+    let (text, terminal) = screen(&mut app, 130, 30);
+    assert!(text.contains("agreed API value"));
+    assert!(text.contains("Matched review base and source snapshot"));
+    preview("commit-conversation", &terminal);
+    assert_eq!(app.explorer.target(), selected);
+    assert!(app.code.is_none());
+    assert!(app.target().is_none());
+    press(&mut app, KeyCode::Char('e'));
+    assert!(app.job.is_none());
+    assert!(run_command(&mut app, "/ask Why?").is_err());
+    assert!(app.job.is_none());
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.document.kind, View::Commits);
+    assert_eq!(app.document.source_selection, Some(0));
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.document.kind, original);
+    assert!(app.code.is_some());
+    run_command(&mut app, &format!("/commit {}", &hash[..8])).unwrap();
+    assert_eq!(app.document.kind, View::Commit);
+    assert!(app.job.is_none());
+}
+
+#[test]
+fn interactive_commit_mouse_navigation_missing_history_and_explicit_linking() {
+    let (_dir, mut app, base, _) = commit_workspace();
+    screen(&mut app, 130, 30);
+    let button = app.areas.commits;
+    mouse_at(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        button.x + 1,
+        button.y,
+    );
+    assert_eq!(app.document.kind, View::Commits);
+    press(&mut app, KeyCode::End);
+    assert_eq!(app.document.source_selection, Some(1));
+    assert!(app.key(KeyCode::Enter, KeyModifiers::NONE).is_err());
+    assert_eq!(app.document.kind, View::Commits);
+    assert!(run_command(&mut app, "/commit missing-revision").is_err());
+    assert_eq!(app.document.kind, View::Commits);
+    run_command(&mut app, &format!("/link {base}")).unwrap();
+    assert_eq!(app.document.kind, View::Commit);
+    assert!(
+        screen(&mut app, 130, 30)
+            .0
+            .contains("Explicitly linked review")
+    );
+    run_command(&mut app, "/commits").unwrap();
+    screen(&mut app, 130, 30);
+    let source = app.areas.sources[0].0;
+    mouse_at(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        source.x + 1,
+        source.y,
+    );
+    assert_eq!(app.document.kind, View::Commit);
+    assert!(app.job.is_none());
+    assert!(app.queue.is_empty());
+}
+
+#[test]
+fn compacted_commit_sources_open_pinned_originals_and_show_missing_turns() {
+    let extra = [
+        json!({"type":"compacted","payload":{"message":"The summary reports the API value changed.","source_refs":[{"turn_id":"original-turn","message_id":"original-message"}]}}),
+        json!({"type":"compacted","payload":{"message":"Earlier discussion is no longer captured."}}),
+    ];
+    let (_dir, mut app, _, hash) = commit_workspace_with_rows(&extra);
+    run_command(&mut app, &format!("/commit {hash}")).unwrap();
+    let (text, terminal) = screen(&mut app, 140, 42);
+    assert!(text.contains("Secondary evidence · Compacted summary"));
+    assert!(text.contains("Original turn unavailable"));
+    assert_eq!(app.document.originals.len(), 1);
+    preview("commit-provenance", &terminal);
+    press(&mut app, KeyCode::Char('s'));
+    assert!(screen(&mut app, 140, 42).0.contains("Enter open"));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.document.kind, View::Original);
+    let (text, terminal) = screen(&mut app, 140, 32);
+    assert!(text.contains("agreed API value"));
+    assert!(text.contains("original-message"));
+    assert!(!text.contains("e Enrich"));
+    preview("original-turn", &terminal);
+    press(&mut app, KeyCode::Char('e'));
+    assert!(app.job.is_none());
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.document.kind, View::Commit);
+    screen(&mut app, 140, 42);
+    let source = app.areas.sources[0].0;
+    mouse_at(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        source.x + 1,
+        source.y,
+    );
+    assert_eq!(app.document.kind, View::Original);
+    assert!(app.job.is_none());
+}
+
+#[test]
+fn explanation_summary_sources_preserve_back_navigation_and_legacy_warning() {
+    let extra = [
+        json!({"type":"compacted","payload":{"message":"Summary of the API change.","source_refs":[{"message_id":"original-message"}]}}),
+    ];
+    let (_dir, mut app, _, hash) = commit_workspace_with_rows(&extra);
+    let context = crate::commits::lookup(&app.root, &hash, "both").unwrap();
+    let session = &context["sessions"][0];
+    let mut summary = crate::history::event_evidence(session, &session["events"][1]);
+    crate::history::origins::enrich(&app.root, &mut summary).unwrap();
+    let mut answer = (*artifact(Some("lib.rs"))).clone();
+    answer["packet"]["evidence"] = json!([summary]);
+    answer["explanation"]["judgments"][0]["evidence_ids"] = json!([summary["id"]]);
+    answer["explanation"]["judgments"][0]["status"] = json!("recorded");
+    answer["explanation"]["judgments"][0]["quote_id"] = summary["id"].clone();
+    answer["explanation"]["judgments"][0]["quote"] = summary["text"].clone();
+    let answer = Arc::new(answer);
+    app.open(document::explanation(answer.clone()));
+    assert!(screen(&mut app, 150, 42).0.contains("Earlier assessment"));
+    app.open(document::evidence(answer, 0).unwrap());
+    let (text, terminal) = screen(&mut app, 150, 42);
+    assert!(text.contains("Secondary evidence"));
+    assert!(text.contains("Original turns available"));
+    preview("summary-evidence", &terminal);
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.document.kind, View::Original);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.document.kind, View::Evidence);
+    assert_eq!(app.document.originals.len(), 1);
+}
+
+#[test]
+fn commit_picker_handles_empty_repositories_and_long_lists_on_small_screens() {
+    let dir = tempfile::tempdir().unwrap();
+    crate::repository::git(dir.path(), &["init", "-q"], true).unwrap();
+    let mut app = Workspace::from_review(dir.path(), json!({"changes":[]}));
+    press(&mut app, KeyCode::Char('g'));
+    assert!(screen(&mut app, 80, 24).0.contains("No commits yet"));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.document.kind, View::Commits);
+    let entries: Vec<_> = (0..50).map(|i| json!({"commit":format!("commit-{i}"),"short":format!("hash-{i}"),"subject":format!("A deliberately long commit subject for change {i} which wraps in a narrow terminal")})).collect();
+    app.open(document::commits(&entries));
+    press(&mut app, KeyCode::End);
+    let (_, _) = screen(&mut app, 40, 16);
+    assert_eq!(app.document.source_selection, Some(49));
+    assert!(app.document.scroll > 0);
+    assert!(app.areas.sources.iter().any(|(_, i)| *i == 49));
+    press(&mut app, KeyCode::Home);
+    screen(&mut app, 40, 16);
+    assert_eq!(app.document.scroll, 0);
+    assert!(app.areas.sources.iter().any(|(_, i)| *i == 0));
+}
+
+#[test]
+fn pane_dividers_drag_resize_and_persist_without_changing_reading_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = workspace();
+    app.root = dir.path().into();
+    select(&mut app, "src/cache.rs");
+    app.preview_selection();
+    screen(&mut app, 160, 36);
+    let selected = app.explorer.target();
+    let original_kind = app.document.kind;
+    let divider = app.areas.file_divider;
+    mouse_at(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        divider.x,
+        divider.y + 3,
+    );
+    mouse_at(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        divider.x + 10,
+        divider.y + 3,
+    );
+    screen(&mut app, 160, 36);
+    assert_eq!(app.areas.file_divider.x, divider.x + 10);
+    mouse_at(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        divider.x + 10,
+        divider.y + 3,
+    );
+    let divider = app.areas.content_divider;
+    let code_width = app.areas.code.width;
+    mouse_at(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        divider.x,
+        divider.y + 4,
+    );
+    mouse_at(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        divider.x + 12,
+        divider.y + 4,
+    );
+    mouse_at(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        divider.x + 12,
+        divider.y + 4,
+    );
+    let (_, terminal) = screen(&mut app, 160, 36);
+    assert!(app.areas.code.width > code_width);
+    assert!(app.areas.reader.width >= 28);
+    assert_eq!(app.explorer.target(), selected);
+    assert_eq!(app.document.kind, original_kind);
+    assert!(app.dragging.is_none());
+    assert!(app.job.is_none());
+    preview("adjusted-panes", &terminal);
+    let restored = PaneSizes::load(dir.path()).unwrap();
+    assert_eq!(restored.files, app.pane_sizes.files);
+    assert_eq!(restored.code_percent, app.pane_sizes.code_percent);
+    // Terminal size changes clamp displayed widths without destroying preferences.
+    app.focus = Focus::Reader;
+    screen(&mut app, 40, 16);
+    assert_eq!(app.areas.file_divider.width, 0);
+    assert_eq!(app.areas.content_divider.width, 0);
+    screen(&mut app, 110, 28);
+    assert!(app.areas.code.width >= 28);
+    assert!(app.areas.reader.width >= 28);
+    screen(&mut app, 160, 36);
+    assert_eq!(app.pane_sizes.files, restored.files);
+    assert_eq!(app.pane_sizes.code_percent, restored.code_percent);
+}
+
+#[test]
+fn keyboard_resizes_active_dividers_preserves_typing_and_can_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = workspace();
+    app.root = dir.path().into();
+    screen(&mut app, 150, 32);
+    let files = app.areas.file_divider.x;
+    press(&mut app, KeyCode::Char(']'));
+    screen(&mut app, 150, 32);
+    assert_eq!(app.areas.file_divider.x, files + 3);
+    app.focus = Focus::Reader;
+    let code = app.areas.code.width;
+    press(&mut app, KeyCode::Char('['));
+    screen(&mut app, 150, 32);
+    assert!(app.areas.code.width < code);
+    let ratio = app.pane_sizes.code_percent;
+    press(&mut app, KeyCode::Char('/'));
+    press(&mut app, KeyCode::Char('['));
+    assert_eq!(app.input, "/[");
+    assert_eq!(app.pane_sizes.code_percent, ratio);
+    press(&mut app, KeyCode::Esc);
+    run_command(&mut app, "/layout reset").unwrap();
+    assert_eq!(app.pane_sizes.files, None);
+    assert_eq!(app.pane_sizes.code_percent, 46);
+    assert_eq!(PaneSizes::load(dir.path()).unwrap().files, None);
+    app.sidebar = false;
+    screen(&mut app, 80, 24);
+    press(&mut app, KeyCode::Char(']'));
+    assert_eq!(app.pane_sizes.code_percent, 46);
+    assert!(app.status.contains("Widen"));
 }
 
 fn preview(name: &str, terminal: &Terminal<TestBackend>) {

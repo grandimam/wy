@@ -40,15 +40,12 @@ impl Workspace {
         let split = paired && area.width >= 108;
         let show_files = self.sidebar && (!narrow || self.focus == Focus::Files);
         let show_reader = !show_files || !narrow;
+        self.areas.body = rows[1];
         let file_width = if show_files {
             if narrow {
                 rows[1].width
             } else {
-                if split {
-                    (rows[1].width / 5).clamp(24, 34)
-                } else {
-                    (rows[1].width / 3).clamp(28, 44)
-                }
+                self.pane_sizes.file_width(rows[1].width, split)
             }
         } else {
             0
@@ -62,16 +59,23 @@ impl Workspace {
         if show_files {
             self.draw_files(frame, columns[0]);
         }
+        if show_files && show_reader {
+            self.areas.file_divider = columns[1];
+            self.draw_divider(frame, columns[1], Divider::Files);
+        }
+        self.areas.content = columns[2];
         if show_reader {
             if split {
                 let panes = Layout::horizontal([
-                    Constraint::Percentage(46),
+                    Constraint::Length(self.pane_sizes.code_width(columns[2].width)),
                     Constraint::Length(1),
-                    Constraint::Percentage(54),
+                    Constraint::Min(0),
                 ])
                 .split(columns[2]);
                 self.draw_code(frame, panes[0]);
                 self.draw_answer(frame, panes[2], inline_input);
+                self.areas.content_divider = panes[1];
+                self.draw_divider(frame, panes[1], Divider::Content);
             } else if paired && self.focus != Focus::Reader {
                 self.draw_code(frame, columns[2]);
             } else {
@@ -110,10 +114,18 @@ impl Workspace {
         );
         let keys = if self.editing.is_some() {
             " Enter submit   Esc cancel   Ctrl+U clear"
-        } else if area.width < 70 {
-            " e Enrich   Tab panes   ? help"
+        } else if self.document.kind == View::Commits && self.focus == Focus::Reader {
+            " ↑↓ commits   Enter open   /commit HASH   Esc back   ? help"
         } else if self.document.source_selection.is_some() && self.focus == Focus::Reader {
-            " ↑↓ sources   Enter open   Esc read explanation   ? help"
+            " ↑↓ sources   Enter open   Esc read   ? help"
+        } else if self.document.historical() && self.focus == Focus::Reader {
+            if self.document.sources.is_empty() {
+                " ↑↓ scroll   g commits   Esc back   [ ] resize   ? help"
+            } else {
+                " s Sources   g commits   Esc back   [ ] resize   ? help"
+            }
+        } else if area.width < 70 {
+            " e Enrich   g commits   Tab panes   ? help"
         } else if self.document.artifact.is_some() && self.focus == Focus::Reader {
             if self.document.kind == View::Recorded {
                 " s Sources   e Enrich   Tab panes   ? help"
@@ -121,7 +133,7 @@ impl Workspace {
                 " s Sources   i Follow-up   o Agent notes   R Update   Esc back   ? help"
             }
         } else if self.focus == Focus::Files {
-            " ↑↓ navigate   Enter code   e Enrich   Tab panes   ? help"
+            " ↑↓ navigate   Enter code   e Enrich   g commits   [ ] resize   ? help"
         } else if self.focus == Focus::Code {
             " ↑↓ code   e Enrich   Tab agent notes   ? help"
         } else {
@@ -163,7 +175,7 @@ impl Workspace {
             self.draw_reader(frame, area, Focus::Reader);
         }
     }
-    fn draw_header(&self, frame: &mut Frame, area: Rect) {
+    fn draw_header(&mut self, frame: &mut Frame, area: Rect) {
         let repo = self.root.file_name().unwrap_or_default().to_string_lossy();
         let (added, removed) = document::totals(&self.review);
         let mut spans = vec![
@@ -182,7 +194,32 @@ impl Workspace {
                 Style::default().fg(MUTED),
             ));
         }
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        let button_width = if area.width >= 70 { 13 } else { 0 };
+        let title = Rect::new(
+            area.x,
+            area.y,
+            area.width.saturating_sub(button_width),
+            area.height,
+        );
+        frame.render_widget(Paragraph::new(Line::from(spans)), title);
+        if button_width > 0 {
+            self.areas.commits = Rect::new(title.right(), area.y, button_width, 1);
+            frame.render_widget(
+                Paragraph::new(" g Commits ").style(Style::default().fg(ACCENT).bg(PANEL)),
+                self.areas.commits,
+            );
+        }
+    }
+    fn draw_divider(&self, frame: &mut Frame, area: Rect, divider: Divider) {
+        let lines: Vec<_> = (0..area.height).map(|_| Line::from("│")).collect();
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().fg(if self.dragging == Some(divider) {
+                ACCENT
+            } else {
+                BORDER
+            })),
+            area,
+        );
     }
     fn panel(&self, title: impl Into<String>, focus: Focus) -> Block<'static> {
         Block::default()

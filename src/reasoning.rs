@@ -64,7 +64,7 @@ fn packet_with_notes(review:&Value,question:&str,file:Option<&str>,targets:&[Val
     let mut packet=Packet{evidence:vec![],used:0,omitted:0};
     for note in notes.iter().take(8) { packet.add(note.clone(),3500); }
     if let Some((edit,session))=recorded {
-        packet.add(json!({"id":format!("recorded-code-{}",&s(&edit["id"])[..12]),"kind":"session","role":"change","agent":edit["agent"],"session_id":edit["session_id"],"event_id":edit["event_id"],"file":edit["session_path"],"start_line":edit["source_line"],"text":format!("Recorded {} to {}. Tool outcome: {}. This is a historical code excerpt, not current source.\n{}",s(&edit["operation"]),s(&edit["file"]),s(&edit["state"]),s(&edit["text"])),"truncated":edit["truncated"]}),41000);
+        packet.add(json!({"id":format!("recorded-code-{}",&s(&edit["id"])[..12]),"kind":"session","role":"change","agent":edit["agent"],"session_id":edit["session_id"],"event_id":edit["event_id"],"file":edit["session_path"],"start_line":edit["source_line"],"text":format!("Recorded {} to {}. Tool outcome: {}. This is a historical code excerpt, not current source.\n{}",s(&edit["operation"]),s(&edit["file"]),s(&edit["state"]),s(&edit["text"])),"truncated":edit["truncated"],"provenance":{"source_type":"tool_record","basis":"captured_edit","original_refs":[]}}),41000);
         let events=arr(&session["events"]);
         if let Some(at)=events.iter().position(|e|e["id"]==edit["event_id"]) {
             let nearest_user=(0..at).rev().find(|i|events[*i]["kind"]=="user");
@@ -138,12 +138,18 @@ fn packet_with_notes(review:&Value,question:&str,file:Option<&str>,targets:&[Val
         let text=s(&event["text"]);let mut offset=0;
         if text.chars().count()>3500{let search=if symbol_terms.is_empty(){&terms}else{&symbol_terms};offset=search.iter().filter_map(|t|text.to_lowercase().find(t)).min().unwrap_or(0).saturating_sub(900);while !text.is_char_boundary(offset){offset-=1;}}
         let excerpt=short(&text[offset..],3500);
-        packet.add(json!({"id":format!("event-{}-{}-{}",s(&session["agent"]),&digest(&format!("{}{}",s(&session["id"]),s(&session["path"])))[..8],s(&event["id"])),"kind":"session","agent":session["agent"],"session_id":session["id"],"event_id":event["id"],"role":event["kind"],"file":session["path"],"start_line":event["source_line"],"text":excerpt,"excerpt_offset":text[..offset].chars().count(),"call_id":event["call_id"],"truncated":excerpt!=text}),3500);
+        let mut item=session_evidence(session,event);item["text"]=json!(excerpt);item["excerpt_offset"]=json!(text[..offset].chars().count());item["truncated"]=json!(excerpt!=text||event["truncated"]==true);packet.add(item,3500);
     }
+    let mut originals=vec![];
+    for evidence in &mut packet.evidence {if evidence["kind"]=="session"{
+        history::origins::enrich(root,evidence)?;
+        for reference in arr(&evidence["originals"]) {if let Ok(original)=history::origins::open(root,reference){originals.push(original);}}
+    }}
+    for original in originals {packet.add(original,3500);}
     Ok(json!({"review_id":review["id"],"comparison_base":review["comparison_base"],"question":short(&redact(question),4000),"focus_file":file,"focus_target":focus,"focus_session_edit":recorded.map(|(e,_)|history::edit_ref(e)),"warnings":review["warnings"],"omitted_items":packet.omitted,"evidence":packet.evidence,"limitations":"Bounded excerpts may omit context. Session association is not authorship. Proposed checks have not been run by wy."}))
 }
 fn session_evidence(session:&Value,event:&Value)->Value {
-    json!({"id":format!("event-{}-{}-{}",s(&session["agent"]),&digest(&format!("{}{}",s(&session["id"]),s(&session["path"])))[..8],s(&event["id"])),"kind":"session","agent":session["agent"],"session_id":session["id"],"event_id":event["id"],"role":event["kind"],"file":session["path"],"start_line":event["source_line"],"text":event["text"],"call_id":event["call_id"]})
+    history::event_evidence(session,event)
 }
 pub fn validate_explanation(result:&Value,data:&Value)->Result<()>{
     crate::validate("Explanation",result)?;
@@ -155,9 +161,11 @@ pub fn validate_explanation(result:&Value,data:&Value)->Result<()>{
         ensure!(arr(&j["evidence_ids"]).iter().all(|id|known.contains_key(s(id))),"Judgment cited evidence outside the supplied packet; answer was not saved");
         if j["status"]=="recorded"{
             let event=known.get(s(&j["quote_id"]));
-            ensure!(event.is_some_and(|e|e["kind"]=="session"&&e["role"]=="assistant"&&!s(&j["quote"]).trim().is_empty()&&s(&e["text"]).contains(s(&j["quote"]))&&arr(&j["evidence_ids"]).contains(&j["quote_id"])),"Recorded reason requires an exact cited assistant quote; answer was not saved");
+            ensure!(event.is_some_and(|e|history::provenance::recorded_evidence(e)&&!s(&j["quote"]).trim().is_empty()&&s(&e["text"]).contains(s(&j["quote"]))&&arr(&j["evidence_ids"]).contains(&j["quote_id"])),"Recorded reason requires an exact cited original assistant turn; summaries and unknown provenance cannot establish original intent; answer was not saved");
         }else{ensure!(s(&j["quote"]).is_empty()&&s(&j["quote_id"]).is_empty(),"Only a recorded reason can include an original-reason quote");}
         ensure!(j["status"]!="inferred"||!arr(&j["evidence_ids"]).is_empty(),"Inferred reason requires supporting evidence");
+        let cited:Vec<_>=arr(&j["evidence_ids"]).iter().filter_map(|id|known.get(s(id))).map(|e|(*e).clone()).collect();
+        ensure!(!(history::provenance::secondary_only(arr(&data["evidence"]))||history::provenance::secondary_only(&cited))||j["status"]=="unknown","Original turn unavailable: secondary or unclassified history requires unknown original rationale, not inferred intent");
     }Ok(())
 }
 #[derive(Clone)]

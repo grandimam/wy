@@ -35,6 +35,7 @@ impl Provider{
         if decision["provenance"]=="recorded"{return Ok(());}
         let result=self.request(json!({"task":"justify","decision":decision}),"Justification")?;
         validate_citations(&result["evidence_ids"],decision)?;
+        ensure!(!crate::history::provenance::secondary_only(arr(&decision["evidence"]))||result["provenance"]=="unexplained","Original turn unavailable; secondary evidence cannot establish inferred original intent");
         ensure!(result["provenance"]!="inferred"||!arr(&result["evidence_ids"]).is_empty(),"Model inference has no supporting citations");
         for key in ["explanation","provenance","alternatives"]{decision[key]=result[key].clone();}
         decision["assumptions"]=json!([vec![json!("Model-generated hypothesis; citation existence is checked, semantic entailment needs review.")],arr(&result["assumptions"]).to_vec()].concat());

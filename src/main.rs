@@ -6,8 +6,8 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 use wy::{
-    arr, history, presentation, reasoning, reflection, repository, s, service, storage::Store,
-    trace,
+    arr, commits, history, presentation, reasoning, reflection, repository, s, service,
+    storage::Store, trace,
 };
 
 #[derive(Parser)]
@@ -57,8 +57,18 @@ enum Command {
         history: History,
     },
     Sessions {
+        /// List saved conversations for a commit (full SHA, short SHA, or Git revision).
+        #[arg(long)]
+        commit: Option<String>,
         #[command(flatten)]
         history: History,
+    },
+    /// Explicitly associate a saved review's conversations with a Git commit.
+    Link {
+        commit: String,
+        /// Saved review ID; defaults to the latest review.
+        #[arg(long)]
+        review: Option<String>,
     },
     Decisions,
     Gaps,
@@ -78,6 +88,9 @@ enum Command {
         citation: String,
     },
     Session {
+        /// Read captured conversations associated with this commit.
+        #[arg(long)]
+        commit: Option<String>,
         #[arg(long)]
         id: Option<String>,
         #[arg(long)]
@@ -145,7 +158,16 @@ fn run(cli: Cli) -> Result<()> {
                 },
             )?
         }
-        Command::Sessions { history: h } => json!(history::discover(&root, &h.source, None, None)?),
+        Command::Sessions { commit, history: h } => {
+            if let Some(commit) = commit {
+                let mut result = commits::lookup(&root, &commit, &h.source)?;
+                commits::summarize(&mut result);
+                result
+            } else {
+                json!(history::discover(&root, &h.source, None, None)?)
+            }
+        }
+        Command::Link { commit, review } => commits::link(&root, &commit, review.as_deref())?,
         Command::Decisions => service::load(&root)?,
         Command::Gaps => {
             let review = service::load(&root)?;
@@ -183,7 +205,20 @@ fn run(cli: Cli) -> Result<()> {
             let d = service::select(&review, &target)?;
             trace::inspect(&review, d, trace::select(d, &citation)?)?
         }
-        Command::Session { id, event } => {
+        Command::Session {
+            id,
+            event,
+            commit: Some(commit),
+        } => {
+            let mut result = commits::lookup(&root, &commit, "both")?;
+            commits::select(&mut result, id.as_deref(), event.as_deref())?;
+            result
+        }
+        Command::Session {
+            id,
+            event,
+            commit: None,
+        } => {
             let sessions = history::saved(&service::load(&root)?)?;
             let selected: Vec<_> = sessions
                 .into_iter()

@@ -13,6 +13,8 @@ pub fn inspect(review:&Value,decision:&Value,evidence:&Value)->Result<Value>{
         if d["location"]["file"]==evidence["file"]{result["file_decisions"].as_array_mut().unwrap().push(json!({"number":i+1,"id":d["id"],"question":d["question"],"line":d["location"]["start_line"],"stale":d["stale"]}));}
     }
     if evidence["kind"]=="session"{
+        let mut source=evidence.clone();history::origins::enrich(std::path::Path::new(s(&review["root"])),&mut source)?;result["evidence"]=source.clone();
+        result["provenance_label"]=json!(history::provenance::label(&source));result["original_turn_status"]=json!(history::origins::status(&source));
         result["context"]=json!([]);result["linked_tool_events"]=json!([]);
         for session in history::saved(review)?{
             if session["path"]!=evidence["file"]||!evidence["session_id"].is_null()&&session["id"]!=evidence["session_id"]||!evidence["agent"].is_null()&&session["agent"]!=evidence["agent"]{continue;}

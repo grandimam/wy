@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod commits;
 pub mod engine;
 pub mod history;
 pub mod presentation;
