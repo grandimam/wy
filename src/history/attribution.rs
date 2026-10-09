@@ -288,8 +288,15 @@ pub fn reasons(root: &Path, sessions: &[Value], file: &str, diff: Option<&str>) 
                             .find(|e| e["id"] == edit["event_id"])
                             .and_then(|e| e["model"].as_str())
                     });
+                // How many context compactions happened before this edit in its session.
+                // The reader marks the point where the agent's memory was cut.
+                let compactions = arr(&session["events"])
+                    .iter()
+                    .take_while(|e| e["id"] != edit["event_id"])
+                    .filter(|e| e["provenance"]["source_type"] == "compaction_summary")
+                    .count();
                 groups.push(json!({"key":key,"agent":session["agent"],"model":model,"session_id":session["id"],
-                    "message":message,"request":request,"after":after,"edit":edit}));
+                    "message":message,"request":request,"after":after,"edit":edit,"compactions":compactions}));
                 groups.len() - 1
             }
         };
@@ -379,6 +386,7 @@ mod tests {
         assert_eq!(reasons[0]["message"]["id"], "2");
         assert_eq!(reasons[0]["request"]["id"], "1");
         assert_eq!(reasons[0]["after"]["id"], "4");
+        assert_eq!(reasons[0]["compactions"], 0);
         let hunks = arr(&result["hunks"]);
         assert_eq!(hunks.len(), 2);
         assert_eq!(hunks[0]["label"], "line 10");

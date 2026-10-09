@@ -55,7 +55,8 @@ Select a file to read its changes in file order, each with the agent's reason ab
 - **Reasons come from exact matching.** wy compares the changed lines of each hunk with the lines in the edits the agent recorded (Codex patches; Claude Write, Edit and MultiEdit). Lines made only of punctuation are ignored. One message that led to several hunks appears once; later hunks show **same reason as above** with the badge, and selecting that line jumps back to it.
 - **No recorded reason** marks a hunk that matches no recorded edit, such as changes made through shell commands, formatters, or by hand. **edited after** marks a hunk where only some lines match the agent's edit. wy does not invent reasons for either.
 - **turn ›** marks a hunk whose turn can be opened. Press Enter, move with ↑/↓, and press Enter again (or click the header) to read the whole turn: your request, the agent's messages and the edit itself. Esc returns.
-- Files with no current Git diff show their recorded edit instead, with a note that it may differ from the file now.
+- Files with no current Git diff show their recorded edit instead, with a note that it may differ from the file now. Long edits show their first 40 lines; Enter on the header opens the whole edit.
+- A yellow **CONTEXT COMPACTED** banner marks the point between two reasons where the agent's context was compacted. Codex and Claude keep the earlier rows in the log, so the reasons above the line are still real; the agent itself no longer saw them when it wrote the ones below.
 - When no hunk matches any edit but the conversation mentions the file, a **Related conversation** block appears first, labelled as matched by file mentions rather than by an edit.
 
 A reason is the agent's visible message, not hidden reasoning. A match shows the transcript recorded that edit; it does not prove who typed the final text.

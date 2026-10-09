@@ -337,9 +337,22 @@ pub(super) fn recorded(
         }
     }
     let mut first_lines = vec![0; reasons.len()];
+    let mut compactions_seen = 0;
     for hunk in hunks {
         if let Some(index) = hunk["reason"].as_u64().map(|i| i as usize) {
             if hunk["first"] == true {
+                // Mark where the agent's context was compacted between reasons.
+                let compactions = n(&reasons[index]["compactions"]);
+                if compactions > compactions_seen {
+                    doc.gap();
+                    doc.lines.push(Line::from(vec![
+                        Span::styled(" ⚠ CONTEXT COMPACTED ", Style::default().fg(AMBER).add_modifier(Modifier::BOLD | Modifier::REVERSED)),
+                        Span::styled("  the agent's memory was cut here", Style::default().fg(AMBER).add_modifier(Modifier::BOLD)),
+                    ]));
+                    doc.text("It no longer saw the messages above when it wrote the reasons below; check that they still match.", AMBER);
+                    doc.gap();
+                }
+                compactions_seen = compactions_seen.max(compactions);
                 first_lines[index] = doc.lines.len();
                 why(&mut doc, index + 1, &reasons[index], brief);
             } else {
@@ -475,7 +488,13 @@ fn change(doc: &mut Document, hunk: &Value, reason: Option<&Value>) {
         doc.sources.push((doc.lines.len(), Link::Turn(edit.clone())));
     }
     doc.lines.push(Line::from(spans));
-    for line in s(&hunk["text"]).lines().skip(usize::from(hunk["format"] == "patch")) {
+    // A recorded edit with no current diff can be a whole-file write; keep the reason in view.
+    let limit = if hunk["status"] == "recorded" { 40 } else { usize::MAX };
+    let lines: Vec<_> = s(&hunk["text"])
+        .lines()
+        .skip(usize::from(hunk["format"] == "patch"))
+        .collect();
+    for line in lines.iter().take(limit) {
         let style = if line.starts_with('+') || hunk["format"] == "code" {
             Style::default().fg(GREEN)
         } else if line.starts_with('-') {
@@ -484,6 +503,12 @@ fn change(doc: &mut Document, hunk: &Value, reason: Option<&Value>) {
             Style::default().fg(TEXT)
         };
         doc.lines.push(Line::styled(line.replace('\t', "    "), style));
+    }
+    if lines.len() > limit {
+        doc.text(
+            format!("… {} more lines · Enter opens the full edit", lines.len() - limit),
+            MUTED,
+        );
     }
     doc.gap();
 }
