@@ -1,7 +1,7 @@
 //! Evidence provenance is assigned by the importer, never by an explaining model.
 use crate::{
     arr, s,
-    security::{digest, redact, short},
+    security::{digest, redact},
 };
 use serde_json::{Value, json};
 
@@ -72,14 +72,14 @@ pub fn classify(row: &Value, kind: &str, text: &str, turn: &str) -> Value {
         .get("source_refs")
         .or_else(|| p.get("source_refs"))
         .unwrap_or(&Value::Null));
-    for r in references.iter().take(32) {
+    for r in references {
         if r["turn_id"].is_string() || r["message_id"].is_string() {
             refs.push(json!({"session_id":r["session_id"],"turn_id":r["turn_id"],"message_id":r["message_id"],"relation":"source"}));
         }
     }
     json!({"source_type":source,"basis":if kind=="rationale" {"provider_exposed_rationale_not_verified_decision"} else if summary {"provider_compaction_marker"} else if source=="unknown" {"suspected_summary"} else {"native_event"},
         "turn_id":if turn_id.is_empty(){Value::Null}else{json!(turn_id)},"message_id":message,
-        "parent_message_id":row["parentUuid"],"original_refs":refs,"references_truncated":references.len()>32})
+        "parent_message_id":row["parentUuid"],"original_refs":refs,"references_truncated":false})
 }
 
 pub fn observe(row: &Value, session: &mut Value, turn: &mut String) {
@@ -120,7 +120,7 @@ pub fn compaction(row: &Value, session: &Value, line: usize, turn: &str) -> Vec<
         ("user_messages", "user"),
         ("assistant_messages", "assistant"),
     ] {
-        for (index, item) in arr(&p["retained_context"][key]).iter().take(32).enumerate() {
+        for (index, item) in arr(&p["retained_context"][key]).iter().enumerate() {
             if item["complete"] != true
                 || ["analysis", "summary"].contains(&s(&item["phase"]))
                 || ["analysis", "summary"].contains(&s(&item["channel"]))
@@ -136,9 +136,9 @@ pub fn compaction(row: &Value, session: &Value, line: usize, turn: &str) -> Vec<
             }
             let reference = json!({"session_id":session["id"],"turn_id":item["turn_id"],"message_id":item["message_id"],"relation":"retained_context"});
             refs.push(reference);
-            events.push(json!({"id":format!("event-{line}-retained-{role}-{index}"),"kind":role,"text":short(&redact(text),16000),"source_line":line,
+            events.push(json!({"id":format!("event-{line}-retained-{role}-{index}"),"kind":role,"text":redact(text),"source_line":line,
                 "timestamp":row["timestamp"],"files":[],"code_edits":[],"provenance":{"source_type":"original_turn","basis":"complete_retained_message",
-                "turn_id":item["turn_id"],"message_id":item["message_id"],"original_refs":[]},"truncated":text.chars().count()>16000}));
+                "turn_id":item["turn_id"],"message_id":item["message_id"],"original_refs":[]},"truncated":false}));
         }
     }
     let replacement_summary = arr(&p["replacement_history"])
@@ -160,17 +160,12 @@ pub fn compaction(row: &Value, session: &Value, line: usize, turn: &str) -> Vec<
     };
     // Even a marker with opaque/missing summary text must make the gap visible.
     let mut provenance = classify(row, "summary", text, turn);
-    provenance["references_truncated"] = json!(
-        provenance["references_truncated"] == true
-            || arr(&p["retained_context"]["user_messages"]).len() > 32
-            || arr(&p["retained_context"]["assistant_messages"]).len() > 32
-    );
     provenance["original_refs"]
         .as_array_mut()
         .unwrap()
         .extend(refs);
-    events.push(json!({"id":format!("event-{line}"),"kind":"summary","text":if text.is_empty(){"Compaction recorded; readable summary text was not retained.".into()}else{short(&redact(text),16000)},
-        "source_line":line,"timestamp":row["timestamp"],"files":[],"code_edits":[],"provenance":provenance,"truncated":text.chars().count()>16000}));
+    events.push(json!({"id":format!("event-{line}"),"kind":"summary","text":if text.is_empty(){"Compaction recorded; readable summary text was not retained.".into()}else{redact(text)},
+        "source_line":line,"timestamp":row["timestamp"],"files":[],"code_edits":[],"provenance":provenance,"truncated":false}));
     events
 }
 

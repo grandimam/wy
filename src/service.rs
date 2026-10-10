@@ -8,6 +8,45 @@ impl Default for ReviewOptions {fn default()->Self{Self{source:"all".into()}}}
 fn increment(coverage:&mut [Value],agent:&str,key:&str){
     if let Some(row)=coverage.iter_mut().find(|r|r["agent"]==agent){row[key]=json!(row[key].as_u64().unwrap_or(0)+1);}
 }
+/// Lightweight interactive catalog. Transcripts are imported only when selected.
+/// The bounded `review` path remains available for AI evidence gathering.
+pub fn workspace_review(path: &Path, opts: &ReviewOptions) -> Result<Value> {
+    history::valid_source(&opts.source)?;
+    let mut result = review(path, &ReviewOptions { source: "none".into() })?;
+    let root = Path::new(s(&result["root"]));
+    let (entries, issues) = history::discover_report(root, &opts.source, None, None)?;
+    let mut refs: Vec<_> = entries.iter().map(|entry| json!({
+        "id":entry["id"], "agent":entry["agent"], "path":entry["path"], "cwd":entry["cwd"],
+        "storage_key":format!("source:{}:{}", s(&entry["agent"]), s(&entry["id"])),
+        "source_entry":entry, "source_timestamp":entry["timestamp"]
+    })).collect();
+    let mut seen: HashSet<_> = refs.iter().map(|r| (s(&r["agent"]).to_owned(), s(&r["id"]).to_owned())).collect();
+    let (saved_sessions, skipped_headers) = Store::open(root)?.saved_session_catalog()?;
+    for saved in saved_sessions {
+        if history::source_matches(&opts.source, s(&saved["agent"])) && history::belongs(s(&saved["cwd"]), root)
+            && seen.insert((s(&saved["agent"]).to_owned(), s(&saved["id"]).to_owned())) { refs.push(saved); }
+    }
+    refs.sort_by_key(|r| std::cmp::Reverse(chrono::DateTime::parse_from_rfc3339(
+        r["last_event"].as_str().unwrap_or(s(&r["source_timestamp"]))).ok()));
+    let coverage: Vec<_> = history::AGENTS.iter().map(|agent| json!({"agent":agent,
+        "enabled":history::source_matches(&opts.source, agent),
+        "discovered":entries.iter().filter(|entry| entry["agent"] == *agent).count(),
+        "captured":0,"skipped_budget":0,"skipped_unreadable":0,"skipped_scope":0,"duplicates":0,"issues":[]
+    })).collect();
+    result["sessions"] = json!(refs);
+    result["coverage"] = json!(coverage);
+    result["history_source"] = json!(opts.source);
+    result["lazy_sessions"] = json!(true);
+    let warnings = result["warnings"].as_array_mut().unwrap();
+    warnings.retain(|w| !s(w).starts_with("No agent history captured"));
+    warnings.extend(issues.into_iter().map(Value::String));
+    if skipped_headers > 0 {
+        warnings.push(json!(format!("Skipped {skipped_headers} saved session headers with unsupported or incomplete metadata. Stored snapshots were not modified; available source transcripts can still be rediscovered.")));
+    }
+    Store::open(Path::new(s(&result["root"])))?.save_review(&result)?;
+    Ok(result)
+}
+
 /// Compare HEAD with the working tree and capture repository-scoped agent history.
 pub fn review(path:&Path,opts:&ReviewOptions)->Result<Value>{
     let root=repository::root(path)?;

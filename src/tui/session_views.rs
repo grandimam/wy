@@ -7,12 +7,24 @@ use crate::{arr, insights, s, session_work};
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc};
 
+pub(super) const SESSIONS_PER_PAGE: usize = 10;
+
 fn link(doc: &mut Document, text: impl AsRef<str>, link: Link) {
     doc.sources.push((doc.lines.len(), link));
     doc.text(text, ACCENT);
 }
 pub(super) fn picker(review: &Value, sessions: &[Value], selected: Option<&Value>) -> Document {
     let mut doc = Document::new(View::Sessions, "Sessions");
+    if review["lazy_sessions"] == true {
+        for reference in arr(&review["sessions"]) {
+            let key = s(&reference["storage_key"]);
+            let marker = if selected.is_some_and(|w| w["session"]["storage_key"] == key) { "Selected · " } else { "" };
+            link(&mut doc, format!("{marker}{} · {}", s(&reference["agent"]), s(&reference["id"])), Link::Session(key.into()));
+        }
+        if doc.sources.is_empty() { doc.text("No discovered sessions. /coverage shows discovery issues.", AMBER); }
+        doc.source_selection = (!doc.sources.is_empty()).then_some(0);
+        return doc;
+    }
     let latest = session_work::latest(sessions).map(session_work::snapshot_key);
     let mut ordered: Vec<_> = sessions.iter().collect();
     ordered.sort_by_key(|session| {

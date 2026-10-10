@@ -3,6 +3,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use std::{fs::{self, OpenOptions},io::Write,path::PathBuf,time::Duration};
 
+mod session_index;
+
 pub struct Store { connection: Connection, directory: PathBuf }
 impl Store {
     pub fn open(root: &std::path::Path) -> Result<Self> {
@@ -22,7 +24,9 @@ impl Store {
         connection.busy_timeout(Duration::from_secs(10))?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS artifacts (kind TEXT, id TEXT, data TEXT, PRIMARY KEY(kind,id));
             CREATE TABLE IF NOT EXISTS commit_reviews (commit_hash TEXT NOT NULL, review_id TEXT NOT NULL, created_at TEXT NOT NULL, association TEXT NOT NULL, PRIMARY KEY(commit_hash,review_id));
-            PRAGMA user_version=2;")?;
+            CREATE TABLE IF NOT EXISTS session_work_headers (session_key TEXT PRIMARY KEY, data TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS session_requests (session_key TEXT NOT NULL, ordinal INTEGER NOT NULL, request_id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(session_key,ordinal));
+            PRAGMA user_version=3;")?;
         Ok(Self{connection,directory})
     }
     pub fn get(&self, kind: &str, id: &str) -> Result<Value> {

@@ -126,12 +126,16 @@ impl QuestionContext {
 #[derive(Default)]
 struct Areas {
     body: Rect,
+    workspace: Rect,
+    session_divider: Rect,
+    request_divider: Rect,
     file_divider: Rect,
     files: Rect,
     reader: Rect,
     input: Rect,
     tabs: Vec<(Rect, View, Focus)>,
     sessions: Rect,
+    requests: Rect,
     sources: Vec<(Rect, Link)>,
 }
 struct Workspace {
@@ -146,9 +150,13 @@ struct Workspace {
     selected_work: Option<Value>,
     sessions: Vec<Value>,
     session_nav: ratatui::widgets::ListState,
+    session_page: usize,
     session_entries: Vec<(String, String)>,
     session_nav_focus: bool,
+    request_nav_focus: bool,
+    request_nav: ratatui::widgets::ListState,
     history_tabs: std::collections::HashMap<String,Document>,
+    session_positions: std::collections::HashMap<String, (usize, u16)>,
     views: Vec<ReadingState>,
     queue: VecDeque<reasoning::Options>,
     focus: Focus,
@@ -171,17 +179,16 @@ struct Workspace {
 }
 impl Workspace {
     fn new(root: &Path) -> Result<Self> {
-        let review = service::review(
+        let review = service::workspace_review(
             root,
             &service::ReviewOptions {
                 source: "both".into(),
                 ..Default::default()
             },
         )?;
-        let sessions = crate::history::saved(&review)?;
         let mut app = Self::from_review(root, review);
         app.pane_sizes = PaneSizes::load(root)?;
-        app.sessions = sessions;
+        if let Err(error) = app.load_catalog_selection() { app.fail(error); }
         for answer in crate::storage::Store::open(root)?
             .recent("reasoning", 40)?
             .into_iter()
@@ -225,9 +232,13 @@ impl Workspace {
             selected_work: None,
             sessions: vec![],
             session_nav: ratatui::widgets::ListState::default(),
+            session_page: 0,
             session_entries: vec![],
             session_nav_focus: false,
+            request_nav_focus: false,
+            request_nav: ratatui::widgets::ListState::default(),
             history_tabs: std::collections::HashMap::new(),
+            session_positions: std::collections::HashMap::new(),
             views: vec![],
             queue: VecDeque::new(),
             focus: Focus::Files,
@@ -264,6 +275,45 @@ impl Workspace {
     fn decision_scope(&self)->Value {
         self.selected_work.clone().unwrap_or_else(||crate::session_work::empty(&self.review))
     }
+    fn resolve_session(&mut self, key: &str) -> Result<Value> {
+        let reference = arr(&self.review["sessions"]).iter().position(|r| r["storage_key"] == key);
+        let entry = reference.and_then(|i| self.review["sessions"][i].get("source_entry")).cloned();
+        if let Some(entry) = entry {
+            let session = crate::history::collect_entry(&entry)?;
+            ensure!(crate::history::belongs(s(&session["cwd"]), &self.root) && session["id"] == entry["id"] && session["agent"] == entry["agent"],
+                "Session identity or repository changed during import");
+            crate::validate("Session", &session)?;
+            let snapshot = crate::session_work::snapshot_key(&session);
+            crate::storage::Store::open(&self.root)?.put("session", &snapshot, &session)?;
+            let reference = &mut self.review["sessions"][reference.unwrap()];
+            reference["storage_key"] = serde_json::json!(snapshot);
+            reference["last_event"] = crate::insights::session_dates(&session).1;
+            reference.as_object_mut().unwrap().remove("source_entry");
+            for coverage in self.review["coverage"].as_array_mut().into_iter().flatten() {
+                if coverage["agent"] == session["agent"] {
+                    coverage["captured"] = serde_json::json!(crate::n(&coverage["captured"]) + 1);
+                }
+            }
+            crate::storage::Store::open(&self.root)?.save_review(&self.review)?;
+            self.rebuild_session_navigation();
+            Ok(session)
+        } else {
+            let session = crate::storage::Store::open(&self.root)?.get("session", key)?;
+            crate::validate("Session", &session)?;
+            ensure!(crate::history::belongs(s(&session["cwd"]), &self.root) && crate::session_work::snapshot_key(&session) == key,
+                "Session snapshot is not verifiably scoped to this repository");
+            Ok(session)
+        }
+    }
+    fn load_catalog_selection(&mut self) -> Result<()> {
+        let refs = arr(&self.review["sessions"]);
+        let selected = self.selected_work.as_ref().and_then(|work| refs.iter().find(|r|
+            r["id"] == work["session"]["id"] && r["agent"] == work["session"]["agent"]))
+            .or_else(|| refs.first()).map(|r| s(&r["storage_key"]).to_owned());
+        self.sessions.clear();
+        if let Some(key) = selected { self.sessions = vec![self.resolve_session(&key)?]; }
+        Ok(())
+    }
     fn select_latest_work(&mut self) {
         self.rebuild_session_navigation();
         let previous=self.selected_work.as_ref();
@@ -278,8 +328,27 @@ impl Workspace {
         if self.selected_work.is_none(){self.select_latest_work();}
         let work=Arc::new(self.decision_scope());
         let key=format!("session-flow:{}",s(&work["session"]["storage_key"]));
-        let doc=self.history_tabs.get(&key).cloned().unwrap_or_else(||session_views::flow(work,0));
+        let doc = if let Some(doc) = self.history_tabs.get(&key) {
+            doc.clone()
+        } else if work["session"].is_null() {
+            session_views::flow(work, 0)
+        } else {
+            let snapshot = s(&work["session"]["storage_key"]);
+            let (selected, scroll) = self.session_positions.get(&key).copied().unwrap_or_default();
+            let result = crate::session_reader::index(&self.root, &work)
+                .and_then(|_| crate::session_reader::page(&self.root, snapshot, selected));
+            match result {
+                Ok(page) => {
+                    let mut doc = session_views::flow(Arc::new(page), selected);
+                    doc.scroll = scroll;
+                    doc
+                },
+                Err(error) => { self.fail(error); return; }
+            }
+        };
         self.open(doc);self.sidebar=false;self.code=None;
+        self.request_nav = ratatui::widgets::ListState::default();
+        self.request_nav_focus = false;
     }
     /// Rebuild only when history changes, never while drawing or moving the cursor.
     fn rebuild_session_navigation(&mut self) {
@@ -290,7 +359,9 @@ impl Workspace {
         let mut entries: Vec<_> = arr(&self.review["sessions"]).iter()
             .filter(|reference| !s(&reference["storage_key"]).is_empty())
             .map(|reference| {
-                let date = dates.get(&(s(&reference["agent"]), s(&reference["id"]))).copied().flatten();
+                let date = dates.get(&(s(&reference["agent"]), s(&reference["id"]))).copied().flatten()
+                    .or_else(|| chrono::DateTime::parse_from_rfc3339(s(&reference["last_event"])).ok())
+                    .or_else(|| chrono::DateTime::parse_from_rfc3339(s(&reference["source_timestamp"])).ok());
                 (date, (s(&reference["storage_key"]).to_owned(), s(&reference["id"]).to_owned()))
             }).collect();
         entries.sort_by_key(|(date, _)| std::cmp::Reverse(*date));
@@ -302,29 +373,74 @@ impl Workspace {
     fn step_session_navigation(&mut self, delta: isize) {
         let entries = self.navigation_sessions();
         if entries.is_empty() { return; }
-        let current = self.session_nav.selected().unwrap_or_else(|| entries.iter().position(|(key, _)|
-            self.selected_work.as_ref().is_some_and(|w| w["session"]["storage_key"] == *key)).unwrap_or(0));
-        self.session_nav.select(Some(current.saturating_add_signed(delta).min(entries.len() - 1)));
+        let count = entries.len();
+        if self.session_nav.selected().is_none() {
+            let selected = entries.iter().position(|(key, _)|
+                self.selected_work.as_ref().is_some_and(|w| w["session"]["storage_key"] == *key)).unwrap_or(0);
+            self.session_page = selected / session_views::SESSIONS_PER_PAGE;
+            self.session_nav.select(Some(selected % session_views::SESSIONS_PER_PAGE));
+        }
+        let len = count.saturating_sub(self.session_page * session_views::SESSIONS_PER_PAGE).min(session_views::SESSIONS_PER_PAGE);
+        let current = self.session_nav.selected().unwrap_or(0);
+        self.session_nav.select(Some(current.saturating_add_signed(delta).min(len.saturating_sub(1))));
+    }
+    fn change_session_page(&mut self, page: usize) {
+        self.session_page = page.min(self.session_entries.len().saturating_sub(1) / session_views::SESSIONS_PER_PAGE);
+        self.session_nav = ratatui::widgets::ListState::default();
+        if !self.session_entries.is_empty() { self.session_nav.select(Some(0)); }
+        self.session_nav_focus = true;
+        self.request_nav_focus = false;
+    }
+    fn request_position(&self) -> Option<(usize, usize)> {
+        match self.document.pagination.as_ref()? {
+            history_views::Page::Work { work, index } => Some((*index, crate::session_reader::count(work))),
+            _ => None,
+        }
+    }
+    fn step_request_navigation(&mut self, delta: isize) {
+        let Some((selected, count)) = self.request_position() else { return; };
+        let size = session_flow::REQUESTS_PER_PAGE;
+        let first = selected / size * size;
+        let len = count.saturating_sub(first).min(size);
+        if len == 0 { self.request_nav.select(None); return; }
+        let cursor = self.request_nav.selected().unwrap_or(selected % size);
+        self.request_nav.select(Some(cursor.saturating_add_signed(delta).min(len - 1)));
+    }
+    fn request_page(&mut self, delta: isize) -> Result<()> {
+        if let Some((selected, count)) = self.request_position() {
+            let size = session_flow::REQUESTS_PER_PAGE;
+            let page = (selected / size).saturating_add_signed(delta).min(count.saturating_sub(1) / size);
+            self.follow(Link::Page(page * size))?;
+        }
+        Ok(())
     }
     fn session_picker(&mut self) {
         self.open(session_views::picker(&self.review,&self.sessions,self.selected_work.as_ref()));self.sidebar=false;
     }
     fn select_session(&mut self,key:&str)->Result<()> {
-        let session=crate::storage::Store::open(&self.root)?.get("session",key)?;
-        crate::validate("Session",&session)?;
-        ensure!(crate::history::belongs(s(&session["cwd"]),&self.root) && crate::session_work::snapshot_key(&session)==key,"Session snapshot is not verifiably scoped to this repository");
+        let session = self.resolve_session(key)?;
+        let snapshot = crate::session_work::snapshot_key(&session);
+        let key = snapshot.as_str();
         let work=crate::session_work::build(&self.review,&session);
+        if self.review["lazy_sessions"] == true { self.sessions = vec![session]; }
         self.decision_brief=crate::decisions::saved(&self.root,&work)?.map(Arc::new);
         self.selected_work=Some(work);
         if let Some(index) = self.navigation_sessions().iter().position(|(entry, _)| entry == key) {
-            self.session_nav.select(Some(index));
+            self.session_page = index / session_views::SESSIONS_PER_PAGE;
+            self.session_nav.select(Some(index % session_views::SESSIONS_PER_PAGE));
         }
         self.views.clear();self.session_flow();self.back.clear();Ok(())
     }
     fn remember_section(&mut self) {
         if self.document.kind==View::SessionWork {
             let key=format!("session-flow:{}",self.document.artifact.as_ref().map(|a|s(&a["session"]["storage_key"])).unwrap_or(""));
-            if self.history_tabs.len()>=20{self.history_tabs.clear();}
+            self.session_positions.insert(key.clone(), (self.document.pagination.as_ref().map(|p| p.index()).unwrap_or(0), self.document.scroll));
+            // Keep navigation positions for every session, but only two reader documents.
+            if !self.history_tabs.contains_key(&key) && self.history_tabs.keys().filter(|k| k.starts_with("session-flow:")).count() >= 2 {
+                if let Some(old) = self.history_tabs.keys().find(|k| k.starts_with("session-flow:")).cloned() {
+                    self.history_tabs.remove(&old);
+                }
+            }
             self.history_tabs.insert(key,self.document.clone());
         }
     }
@@ -978,7 +1094,13 @@ impl Workspace {
             }
             Link::Page(index) => {
                 if let Some(page)=self.document.pagination.clone(){
-                    self.document=history_views::page(&self.review,&page,index);
+                    self.document = if let history_views::Page::Work { work, .. } = &page {
+                        if work["indexed_reader"] == true {
+                            let work = crate::session_reader::page(&self.root, s(&work["session"]["storage_key"]), index)?;
+                            session_views::flow(Arc::new(work), index)
+                        } else { history_views::page(&self.review, &page, index) }
+                    } else { history_views::page(&self.review, &page, index) };
+                    self.request_nav = ratatui::widgets::ListState::default();
                     self.focus=Focus::Reader;
                 }
                 Ok(())
@@ -990,6 +1112,7 @@ impl Workspace {
             }
             Link::Session(key) => self.select_session(&key),
             Link::SessionPicker => {self.session_picker();Ok(())}
+            Link::SessionPage(page) => {self.change_session_page(page);Ok(())}
             Link::SessionEdit(reference) => {
                 let (edit,_)=crate::history::saved_edit(&self.root,&reference)?;
                 self.open(session_views::implementation(&edit));Ok(())
@@ -1142,17 +1265,17 @@ impl Workspace {
         }
     }
     fn refresh(&mut self) -> Result<()> {
-        let review = service::review(
+        let review = service::workspace_review(
             &self.root,
             &service::ReviewOptions {
                 source: self.source.clone(),
                 ..Default::default()
             },
         )?;
-        self.sessions = crate::history::saved(&review)?;
         self.history_tabs.clear();
         self.explorer.refresh(&self.review, &review);
         self.review = review;
+        self.load_catalog_selection()?;
         // Reading history belongs to the previous snapshot.
         self.back.clear();
         self.views.clear();
@@ -1235,6 +1358,14 @@ impl Workspace {
             self.change_view(tabs[next])?;return Ok(false);
         }
         if modifiers.contains(KeyModifiers::ALT) && matches!(code,KeyCode::Left|KeyCode::Right) {
+            if self.session_nav_focus {
+                self.change_session_page(if code == KeyCode::Right { self.session_page.saturating_add(1) } else { self.session_page.saturating_sub(1) });
+                return Ok(false);
+            }
+            if self.request_position().is_some() {
+                self.request_page(if code == KeyCode::Right { 1 } else { -1 })?;
+                return Ok(false);
+            }
             if let Some(page)=&self.document.pagination {
                 let index=if code==KeyCode::Right{page.index().saturating_add(1)}else{page.index().saturating_sub(1)};
                 self.follow(Link::Page(index))?;
@@ -1242,9 +1373,40 @@ impl Workspace {
             return Ok(false);
         }
         if matches!(code, KeyCode::Tab | KeyCode::BackTab) && self.section() != View::Recorded {
-            self.session_nav_focus = !self.session_nav_focus;
+            let current = if self.session_nav_focus { 1 } else if self.request_nav_focus { 2 } else { 0 };
+            let count = if self.request_position().is_some() { 3 } else { 2 };
+            let next = if code == KeyCode::BackTab { (current + count - 1) % count } else { (current + 1) % count };
+            self.session_nav_focus = next == 1;
+            self.request_nav_focus = next == 2;
             if self.session_nav_focus { self.step_session_navigation(0); }
+            if self.request_nav_focus { self.step_request_navigation(0); }
             return Ok(false);
+        }
+        if matches!(code, KeyCode::Char('[' | ']')) {
+            self.adjust_pane(if code == KeyCode::Char('[') { -3 } else { 3 })?;
+            return Ok(false);
+        }
+        if self.request_nav_focus {
+            match code {
+                KeyCode::Up | KeyCode::Char('k') => self.step_request_navigation(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.step_request_navigation(1),
+                KeyCode::Home => self.step_request_navigation(isize::MIN),
+                KeyCode::End => self.step_request_navigation(isize::MAX),
+                KeyCode::PageUp => self.request_page(-1)?,
+                KeyCode::PageDown => self.request_page(1)?,
+                KeyCode::Enter | KeyCode::Right => {
+                    if let Some((selected, _)) = self.request_position() {
+                        let size = session_flow::REQUESTS_PER_PAGE;
+                        self.follow(Link::Page(selected / size * size + self.request_nav.selected().unwrap_or(selected % size)))?;
+                    }
+                    self.request_nav_focus = false;
+                }
+                KeyCode::Esc => self.request_nav_focus = false,
+                _ => { self.request_nav_focus = false; }
+            }
+            if matches!(code, KeyCode::Up | KeyCode::Down | KeyCode::Home | KeyCode::End | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Enter | KeyCode::Right | KeyCode::Esc | KeyCode::Char('j' | 'k')) {
+                return Ok(false);
+            }
         }
         if self.session_nav_focus {
             match code {
@@ -1252,10 +1414,10 @@ impl Workspace {
                 KeyCode::Down | KeyCode::Char('j') => self.step_session_navigation(1),
                 KeyCode::Home => self.step_session_navigation(isize::MIN),
                 KeyCode::End => self.step_session_navigation(isize::MAX),
-                KeyCode::PageUp => self.step_session_navigation(-10),
-                KeyCode::PageDown => self.step_session_navigation(10),
+                KeyCode::PageUp => self.change_session_page(self.session_page.saturating_sub(1)),
+                KeyCode::PageDown => self.change_session_page(self.session_page.saturating_add(1)),
                 KeyCode::Enter | KeyCode::Right => {
-                    if let Some((key, _)) = self.navigation_sessions().get(self.session_nav.selected().unwrap_or(0)).cloned() {
+                    if let Some((key, _)) = self.navigation_sessions().get(self.session_page * session_views::SESSIONS_PER_PAGE + self.session_nav.selected().unwrap_or(0)).cloned() {
                         self.select_session(&key)?;
                     }
                     self.session_nav_focus = false;
@@ -1275,8 +1437,6 @@ impl Workspace {
             }
             KeyCode::Char('/') => self.edit(Input::Command),
             KeyCode::Char('g') => self.open_commits()?,
-            KeyCode::Char('[') => self.adjust_pane(-3)?,
-            KeyCode::Char(']') => self.adjust_pane(3)?,
             KeyCode::Char('i') => {
                 if self.document.artifact.as_ref().is_some_and(|a|a["context"]=="decision_brief" || a["context"]=="session_work") {
                     self.message("Inspect captured evidence, or open Decisions to request an assessment");
@@ -1481,12 +1641,18 @@ impl Workspace {
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 self.session_nav_focus = false;
+                self.request_nav_focus = false;
                 if self.areas.sessions.contains(point) {
-                    let index = self.session_nav.offset() + usize::from(event.row - self.areas.sessions.y);
-                    if let Some((key, _)) = self.navigation_sessions().get(index).cloned() {
-                        self.session_nav.select(Some(index));
+                    let row = self.session_nav.offset() + usize::from(event.row - self.areas.sessions.y);
+                    let index = self.session_page * session_views::SESSIONS_PER_PAGE + row;
+                    if let Some((key, _)) = self.navigation_sessions().get(index).filter(|_| row < session_views::SESSIONS_PER_PAGE).cloned() {
+                        self.session_nav.select(Some(row));
                         self.select_session(&key)?;
                     }
+                } else if self.areas.session_divider.contains(point) {
+                    self.dragging = Some(Divider::Sessions);
+                } else if self.areas.request_divider.contains(point) {
+                    self.dragging = Some(Divider::Requests);
                 } else if self.areas.file_divider.contains(point) {
                     self.dragging = Some(Divider::Files);
                 } else if let Some((_, link)) = self
@@ -1542,12 +1708,17 @@ impl Workspace {
                     -3
                 };
                 if self.areas.sessions.contains(point) {
+                    self.request_nav_focus = false;
                     self.session_nav_focus = true;
                     self.step_session_navigation(delta);
                 } else if self.areas.files.contains(point) {
                     self.focus = Focus::Files;
                     self.explorer.step(delta);
                     self.preview_selection();
+                } else if self.areas.requests.contains(point) {
+                    self.session_nav_focus = false;
+                    self.request_nav_focus = true;
+                    self.step_request_navigation(delta);
                 } else if self.areas.reader.contains(point) {
                     self.focus = Focus::Reader;
                     self.scroll(delta);

@@ -38,6 +38,7 @@ pub(super) enum Link {
     Decision(usize),
     DiscoverDecisions,
     SessionPicker,
+    SessionPage(usize),
     SessionEdit(Value),
     CompareSessionEdit(Value),
     Explain,

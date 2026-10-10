@@ -2,6 +2,7 @@ pub mod agent;
 pub mod commits;
 pub mod decisions;
 pub mod session_work;
+pub mod session_reader;
 pub mod history;
 pub mod presentation;
 pub mod reasoning;

@@ -5,7 +5,7 @@ use super::{
     history_views::Page,
     theme::*,
 };
-use crate::{arr, history, insights, n, s, security};
+use crate::{arr, history, insights, n, s};
 use ratatui::prelude::*;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -16,31 +16,15 @@ struct Part {
     start: usize,
     end: usize,
 }
-fn pages(turns: &[Value]) -> Vec<Vec<Part>> {
-    let mut pages = vec![];
-    let mut page = vec![];
-    let mut used = 0;
-    for (turn, t) in turns.iter().enumerate() {
-        let count = arr(&t["edit_indices"]).len();
-        for start in (0..count.max(1)).step_by(20) {
-            let end = (start + 20).min(count);
-            let cost = (end - start).max(1);
-            if !page.is_empty() && (used + cost > 20 || page.len() >= 8) {
-                pages.push(page);
-                page = vec![];
-                used = 0;
-            }
-            page.push(Part { turn, start, end });
-            used += cost;
-        }
+pub(super) const REQUESTS_PER_PAGE: usize = crate::session_reader::PAGE_SIZE;
+
+pub(super) fn request_label(turn: &Value, index: usize) -> String {
+    let id = s(&turn["request"]["id"]).trim();
+    if id.is_empty() {
+        format!("Request {} · ID unavailable", index + 1)
+    } else {
+        id.to_owned()
     }
-    if !page.is_empty() {
-        pages.push(page);
-    }
-    if pages.is_empty() {
-        pages.push(vec![]);
-    }
-    pages
 }
 fn link(doc: &mut Document, text: impl AsRef<str>, action: Link) {
     doc.sources.push((doc.lines.len(), action));
@@ -70,7 +54,6 @@ fn message_lines(messages: &[Value], kind: &str) -> Vec<Line<'static>> {
         )];
     }
     let mut lines = vec![];
-    let mut remaining = 32000;
     if kind == "notes" {
         lines.push(Line::styled(
             "    Captured notes · tentative; may include ideas not used",
@@ -84,13 +67,6 @@ fn message_lines(messages: &[Value], kind: &str) -> Vec<Line<'static>> {
         ));
     }
     for e in selected {
-        if remaining == 0 {
-            lines.push(Line::styled(
-                "    Additional captured messages omitted from this excerpt.",
-                Style::default().fg(AMBER),
-            ));
-            break;
-        }
         if !lines.is_empty() {
             lines.push(Line::default());
         }
@@ -101,13 +77,11 @@ fn message_lines(messages: &[Value], kind: &str) -> Vec<Line<'static>> {
             ));
         }
         let raw = s(&e["text"]);
-        let text = security::short(raw, remaining);
-        remaining = remaining.saturating_sub(raw.chars().count());
         lines.extend(
-            text.lines()
+            raw.lines()
                 .map(|line| Line::styled(format!("    {line}"), Style::default().fg(TEXT))),
         );
-        if text != raw || e["truncated"] == true {
+        if e["truncated"] == true {
             lines.push(Line::styled(
                 "    Partial excerpt · captured text may be incomplete",
                 Style::default().fg(AMBER),
@@ -125,7 +99,7 @@ fn request(doc: &mut Document, part: Part, turn: &Value) {
     } else {
         "Original request unavailable"
     };
-    let excerpt = security::short(text, 16000);
+    let excerpt = text;
     let mut body = vec![Line::default()];
     body.extend(
         excerpt
@@ -163,7 +137,7 @@ fn group(doc: &mut Document, work: &Value, part: Part) {
             "    Earlier request in this session · context only",
             Style::default().fg(MUTED),
         )];
-        let excerpt = security::short(s(&prior["text"]), 16000);
+        let excerpt = s(&prior["text"]);
         lines.extend(
             excerpt
                 .lines()
@@ -193,7 +167,7 @@ fn group(doc: &mut Document, work: &Value, part: Part) {
         for event in arr(&turn["activity"]) {
             let (label, color, _) = super::document::conversation_role(event);
             lines.push(Line::styled(format!("    {label}"), Style::default().fg(color)));
-            lines.extend(super::document::event_body(event, 8000));
+            lines.extend(super::document::event_body(event, usize::MAX));
             lines.push(Line::default());
         }
         doc.disclosure(format!("{id}-activity"), "  Tool activity", lines);
@@ -264,11 +238,8 @@ fn group(doc: &mut Document, work: &Value, part: Part) {
     }
 }
 
-pub(super) fn flow(work: Arc<Value>, page: usize) -> Document {
-    let mut doc = Document::new(
-        View::SessionWork,
-        work["session"]["title"].as_str().unwrap_or("Session work"),
-    );
+pub(super) fn flow(work: Arc<Value>, selected: usize) -> Document {
+    let mut doc = Document::new(View::SessionWork, "Detail");
     if work["session"].is_null() {
         doc.text("No captured session", AMBER);
         link(&mut doc, "Choose a session", Link::SessionPicker);
@@ -288,28 +259,19 @@ pub(super) fn flow(work: Arc<Value>, page: usize) -> Document {
     for warning in arr(&work["warnings"]) {
         doc.text(s(warning), AMBER);
     }
-    let pages = pages(arr(&work["turns"]));
-    let page = page.min(pages.len() - 1);
-    if arr(&work["turns"]).is_empty() {
+    let turns = arr(&work["turns"]);
+    let selected = selected.min(crate::session_reader::count(&work).saturating_sub(1));
+    let local = if work["indexed_reader"] == true { 0 } else { selected };
+    if let Some(turn) = turns.get(local) {
+        doc.text(format!("Request · {}", request_label(turn, selected)), MUTED);
+        group(&mut doc, &work, Part { turn: local, start: 0, end: arr(&turn["edit_indices"]).len() });
+    } else {
         doc.gap();
         doc.text("No captured requests or supported edits", AMBER);
     }
-    for part in &pages[page] {
-        group(&mut doc, &work, *part);
-    }
-    if pages.len() > 1 {
-        doc.gap();
-        doc.text(format!("Page {} of {}", page + 1, pages.len()), MUTED);
-        if page > 0 {
-            link(&mut doc, "← Previous", Link::Page(page - 1));
-        }
-        if page + 1 < pages.len() {
-            link(&mut doc, "Next →", Link::Page(page + 1));
-        }
-    }
     doc.pagination = Some(Page::Work {
         work: work.clone(),
-        index: page,
+        index: selected,
     });
     doc.artifact = Some(Arc::new(
         json!({"context":"session_work","session":work["session"]}),

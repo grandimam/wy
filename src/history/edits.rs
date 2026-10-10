@@ -6,7 +6,7 @@ use tree_sitter::Node;
 fn edit(file: &str, format: &str, operation: &str, text: &str) -> Value {
     let text = security::redact(text);
     json!({"file":security::redact(file),"format":format,"operation":operation,
-        "text":security::short(&text, 40000),"truncated":text.chars().count()>40000})
+        "text":text,"truncated":false})
 }
 
 fn patch(text: &str) -> Vec<Value> {
@@ -60,7 +60,6 @@ fn patch(text: &str) -> Vec<Value> {
         }
     }
     flush(&file, operation, &lines, &mut result);
-    result.truncate(64);
     result
 }
 
@@ -129,7 +128,6 @@ fn wrapped(input: &str) -> Vec<Value> {
         let children: Vec<_> = node.named_children(&mut cursor).collect();
         nodes.extend(children.into_iter().rev());
     }
-    result.truncate(64);
     result
 }
 
@@ -193,7 +191,6 @@ pub(super) fn extract(tool: &str, text: &str) -> Vec<Value> {
                         .as_str()
                         .map(|file| edit(file, "patch", s(&c["kind"]), s(&c["diff"])))
                 })
-                .take(64)
                 .collect();
         }
     }

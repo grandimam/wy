@@ -65,5 +65,5 @@ pub fn changed_file(c:&Change,text:&str)->Value{
     let lines:BTreeSet<_>=c.additions.keys().copied().chain(c.hunks.iter().map(|h|h.0)).collect();
     let symbols:Vec<_>=source::outline(&c.file,text).iter().filter(|s|lines.iter().any(|n|s.start<=*n&&*n<=s.end)).map(|s|json!({"file":c.file,"symbol":s.name,"start_line":s.start,"end_line":s.end})).collect();
     let patch=redact(&c.patch);
-    json!({"file":c.file,"hunks":c.hunks.iter().map(|(a,b)|json!({"file":c.file,"symbol":"<module>","start_line":a,"end_line":b})).collect::<Vec<_>>(),"symbols":symbols,"added_lines":c.additions.keys().collect::<Vec<_>>(),"removed_line_count":c.removed.len(),"diff":security::short(&patch,40000),"diff_truncated":patch.chars().count()>40000})
+    json!({"file":c.file,"hunks":c.hunks.iter().map(|(a,b)|json!({"file":c.file,"symbol":"<module>","start_line":a,"end_line":b})).collect::<Vec<_>>(),"symbols":symbols,"added_lines":c.additions.keys().collect::<Vec<_>>(),"removed_line_count":c.removed.len(),"diff":patch,"diff_truncated":false})
 }

@@ -213,6 +213,6 @@ pub fn compare(root: &Path, work: &Value, edit: &Value) -> Value {
     } else {
         "Changed since captured edit"
     };
-    json!({"status":status,"current":current.as_ref().map(|t|security::short(t,40000)),"truncated":current.as_ref().is_some_and(|t|t.chars().count()>40000),
+    json!({"status":status,"current":current,"truncated":false,
         "note":"Comparison uses redacted text and ignores final newlines; it does not establish reversal, supersession or authorship."})
 }

@@ -584,7 +584,10 @@
           "storage_key": {
             "title": "Storage Key",
             "type": "string"
-          }
+          },
+          "source_entry": { "type": "object" },
+          "source_timestamp": { "type": ["string", "null"] },
+          "last_event": { "type": ["string", "null"] }
         },
         "required": [
           "id",
@@ -733,6 +736,7 @@
           "required": ["agent", "enabled", "discovered", "captured", "skipped_budget", "skipped_unreadable", "skipped_scope", "duplicates", "issues"]
         }
       },
+      "lazy_sessions": { "type": "boolean" },
       "history_source": {
         "anyOf": [
           {

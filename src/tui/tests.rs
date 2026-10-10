@@ -1470,7 +1470,10 @@ fn all_history_renderers_collapse_agent_notes_and_keep_metadata_in_details() {
 
 #[test]
 fn sections_cycle_without_requests_and_history_keeps_its_reading_position() {
+    let dir = tempfile::tempdir().unwrap();
     let mut app=with_notes();app.focus=Focus::Reader;
+    app.root = dir.path().canonicalize().unwrap();
+    app.review["root"] = json!(app.root);
     app.key(KeyCode::Right,KeyModifiers::CONTROL).unwrap();
     assert_eq!(app.document.kind,View::SessionWork);assert!(app.job.is_none());
     app.document.scroll=4;app.document.text("Cached history marker",TEXT);

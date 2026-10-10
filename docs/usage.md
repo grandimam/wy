@@ -73,15 +73,38 @@ selected session, interrupts a draft, or replaces a deep dive. **x** cancels req
 
 ## Session implementation flow
 
-The left navigation lists captured sessions beneath **Sessions**, newest first.
-Click a session to read its flow. Press Tab to focus the session list, use Up/Down
-and Enter to select, and Tab to return to reading. The list scrolls independently;
-on narrow terminals Tab reveals it. The latest captured session is selected by default.
+The workspace uses **Sessions | Detail | Requests**. The left navigation lists
+session IDs from a metadata catalog, newest known source date first.
+Sessions has 10 IDs per page, a session count, and Previous/Next controls.
+PageUp/PageDown or Alt+Left/Right change pages while Sessions is focused; paging
+does not import a transcript until you select it. The TUI catalog includes all
+discovered supported sessions and saved snapshots, without the old 20-session or
+40 MB aggregate capture cap. Only the selected transcript is retained in memory.
+Dates for unimported sessions come from source metadata, not file modification times.
+The importer still has a 20 MB per-transcript guard; `/coverage` distinguishes
+this from the separate bounded AI-evidence capture path.
+Select a session on the left and a request on the right; **Detail** shows only that
+request's conversation and changes. Tab cycles Detail → Sessions → Requests;
+Shift+Tab reverses direction. Use Up/Down and Enter to select. On narrow terminals,
+focus a side pane with Tab to reveal it. On wide terminals, drag the dividers beside
+Sessions and Requests to resize them. `[` / `]` shrink/grow the focused side pane.
+Widths are saved per repository; `/layout reset` restores defaults. Detail retains
+at least 40 columns when all three panes are visible.
 
-Sessions gives each original request a bordered card. **Agent response** and
+The top-right **Explain with: codex** (or another agent) identifies the configured
+explanation agent, not the source of the selected historical session.
+
+Detail gives the selected original request a bordered card. **Agent response** and
 **Agent notes** sit directly beneath it, collapsed by default, followed by the
 captured changes. Planning turns without edits remain available. Notes are
 captured context, not verified reasons; unavailable notes are labeled explicitly.
+Conversation text is no longer shortened during capture or in Detail: expanding
+responses and notes shows their full captured text, with secret redaction retained.
+Older snapshots may already contain shortened text; press `r` to recapture from
+available originals. Source omissions and compaction cannot be recovered by expanding
+a section. Code edits, Git diffs, and comparison text no longer have 40,000-character
+excerpt limits; the 64-edit parser cap and 32-message retained-context cap are removed.
+Source-file admission limits, import guards, and AI evidence budgets still apply.
 
 Change lists longer than three edits start collapsed. Execution uncertainty and
 partial-capture notices appear once per affected group, outside the disclosure.
@@ -95,11 +118,21 @@ Known failed edits are excluded; recorded inputs whose execution cannot be
 confirmed are labeled accordingly. Patches are replacement excerpts, not complete
 historical files. Truncated and empty excerpts are marked explicitly.
 
-Pages contain at most 20 edits and eight request groups. Long requests continue
-across pages without dropping edits. Previous/Next controls or Alt+Left/Right move
-between pages. Returning from Decisions preserves the selected snapshot's flow
-position. Captured **Tool activity** is expandable beneath the corresponding
+The **Requests** pane lists captured request IDs, 20 per page, rather than message
+previews. Missing IDs are explicitly labeled unavailable; Detail retains the message text. Previous/Next controls,
+Alt+Left/Right, or PageUp/PageDown while Requests is focused change its page and
+select the first request on that page. Short terminals scroll the visible page's
+list independently. Long requests and all their edits stay together in Detail,
+which scrolls as needed. Switching sessions restores each session's selected
+request and page; returning from Decisions also preserves the detail position. Captured **Tool activity** is expandable beneath the corresponding
 request, alongside responses and notes; there is no separate conversation footer.
+
+Request pages are backed by SQLite: each page reads 20 IDs and only the selected
+request's detail, including complete captured edits. Indexing an older snapshot
+happens once on selection. Only two full reader documents are cached; selection
+positions are retained separately. This is not yet a fully streaming importer or
+virtualized detail renderer: the selected transcript is still parsed in memory,
+and expanding a very large request can allocate its full rendered content.
 
 Captured code remains readable after it is committed, changed, deleted, or the
 original transcript is removed. This requires a saved, verifiably repository-scoped

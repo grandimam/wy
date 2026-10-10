@@ -33,14 +33,38 @@ impl Workspace {
         .split(area);
         self.draw_header(frame, rows[0]);
         let narrow = area.width < 88;
+        self.areas.workspace = rows[2];
+        let show_requests = self.request_position().is_some() && (area.width >= 110 || self.request_nav_focus);
+        let reserved_requests = if show_requests && area.width >= 110 {
+            self.pane_sizes.requests.unwrap_or(30).clamp(18, area.width.saturating_sub(62).max(18)) + 1
+        } else { 0 };
         let body = if narrow && !self.session_nav_focus {
             self.draw_navigation(frame, rows[1], false);
             rows[2]
         } else {
-            let columns=Layout::horizontal([Constraint::Length(if self.section() == View::Recorded { 14 } else if narrow { 20 } else { 28 }),Constraint::Min(0)]).split(rows[2]);
+            let resizable = !narrow && self.section() != View::Recorded;
+            let width = if self.section() == View::Recorded { 14 } else if narrow { 20 } else {
+                self.pane_sizes.sessions.unwrap_or(28).clamp(16, area.width.saturating_sub(reserved_requests + 45).max(16))
+            };
+            let columns=Layout::horizontal([Constraint::Length(width), Constraint::Length(u16::from(resizable)), Constraint::Min(0)]).split(rows[2]);
             self.draw_navigation(frame, columns[0], true);
-            columns[1]
+            if resizable {
+                self.areas.session_divider = columns[1];
+                self.draw_divider(frame, columns[1]);
+            }
+            columns[2]
         };
+        let body = if show_requests {
+            let resizable = area.width >= 110;
+            let width = if resizable { reserved_requests - 1 } else { body.width.min(28) };
+            let panes = Layout::horizontal([Constraint::Min(0), Constraint::Length(u16::from(resizable)), Constraint::Length(width)]).split(body);
+            if resizable {
+                self.areas.request_divider = panes[1];
+                self.draw_divider(frame, panes[1]);
+            }
+            self.draw_requests(frame, panes[2]);
+            panes[0]
+        } else { body };
         self.areas.body = body;
         let show_files = self.section()==View::Recorded && self.sidebar && (!narrow || self.focus == Focus::Files);
         let show_reader = !show_files || !narrow;
@@ -82,7 +106,7 @@ impl Workspace {
         ]);
         frame.render_widget(Paragraph::new(title), area);
         let agent = Line::from(Span::styled(
-            format!("{} ", self.agent),
+            format!("Explain with: {} ", self.agent),
             Style::default().fg(MUTED),
         ));
         frame.render_widget(Paragraph::new(agent).right_aligned(), area);
@@ -219,7 +243,8 @@ impl Workspace {
         }
         if vertical && area.height > 4 {
             let rect = Rect::new(area.x, area.y + 4, area.width.saturating_sub(1), area.height - 4);
-            self.areas.sessions = rect;
+            let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1), Constraint::Length(1), Constraint::Length(1)]).split(rect);
+            self.areas.sessions = rows[0];
             if self.session_nav.selected().is_none() {
                 self.step_session_navigation(0);
             }
@@ -228,13 +253,71 @@ impl Workspace {
                 frame.render_widget(Paragraph::new("  No captured sessions").style(Style::default().fg(MUTED)), rect);
                 return;
             }
-            let items: Vec<_> = entries.iter().map(|(key, id)| {
+            let count = entries.len();
+            let size = session_views::SESSIONS_PER_PAGE;
+            let page = self.session_page;
+            let pages = count.div_ceil(size).max(1);
+            let items: Vec<_> = entries.iter().skip(page * size).take(size).map(|(key, id)| {
                 let selected = self.selected_work.as_ref().is_some_and(|w| w["session"]["storage_key"] == *key);
                 ListItem::new(format!(" {} {}", if selected { "›" } else { " " }, fit(id, rect.width.saturating_sub(4) as usize)))
                     .style(Style::default().fg(if selected { ACCENT } else { MUTED }))
             }).collect();
             let highlight = if self.session_nav_focus { Style::default().add_modifier(Modifier::REVERSED) } else { Style::default() };
-            frame.render_stateful_widget(List::new(items).highlight_style(highlight), rect, &mut self.session_nav);
+            frame.render_stateful_widget(List::new(items).highlight_style(highlight), rows[0], &mut self.session_nav);
+            frame.render_widget(Paragraph::new(format!("{count} {} · {}/{pages}", if self.review["lazy_sessions"] == true { "sessions" } else { "captured" }, page + 1)).style(Style::default().fg(MUTED)), rows[1]);
+            let controls = Layout::horizontal([Constraint::Ratio(1, 2); 2]).split(rows[2]);
+            if page > 0 {
+                frame.render_widget(Paragraph::new("← Previous").style(Style::default().fg(ACCENT)), controls[0]);
+                self.areas.sources.push((controls[0], Link::SessionPage(page - 1)));
+            }
+            if page + 1 < pages {
+                frame.render_widget(Paragraph::new("Next →").style(Style::default().fg(ACCENT)), controls[1]);
+                self.areas.sources.push((controls[1], Link::SessionPage(page + 1)));
+            }
+            frame.render_widget(Paragraph::new(if self.review["lazy_sessions"] == true { "Load on selection" } else { "Capture limits: /coverage" }).style(Style::default().fg(MUTED)), rows[3]);
+        }
+    }
+    fn draw_requests(&mut self, frame: &mut Frame, area: Rect) {
+        let Some(history_views::Page::Work { work, index }) = self.document.pagination.as_ref() else { return; };
+        let selected = *index;
+        let indexed = work["indexed_reader"] == true;
+        let turns = arr(&work[if indexed { "request_page" } else { "turns" }]);
+        let total = crate::session_reader::count(work);
+        let size = session_flow::REQUESTS_PER_PAGE;
+        let page = selected / size;
+        let count = total.div_ceil(size).max(1);
+        let first = page * size;
+        let rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0), Constraint::Length(1), Constraint::Length(1)]).split(area);
+        frame.render_widget(Paragraph::new("Requests").style(Style::default().fg(if self.request_nav_focus { ACCENT } else { TEXT }).bold()), rows[0]);
+        self.areas.requests = rows[1];
+        if self.request_nav.selected().is_none() && !turns.is_empty() {
+            self.request_nav.select(Some(selected % size));
+        }
+        let items: Vec<_> = turns.iter().enumerate().skip(if indexed { 0 } else { first }).take(size).map(|(index, turn)| {
+            let index = if indexed { first + index } else { index };
+            let label = session_flow::request_label(turn, index);
+            ListItem::new(format!("{} {}", if index == selected { "›" } else { " " }, fit(&label, area.width.saturating_sub(3) as usize)))
+                .style(Style::default().fg(if index == selected { ACCENT } else { MUTED }))
+        }).collect();
+        let highlight = if self.request_nav_focus { Style::default().add_modifier(Modifier::REVERSED) } else { Style::default() };
+        frame.render_stateful_widget(List::new(items).highlight_style(highlight), rows[1], &mut self.request_nav);
+        for row in 0..rows[1].height {
+            let index = first + self.request_nav.offset() + usize::from(row);
+            if index >= total.min(first + size) { break; }
+            self.areas.sources.push((Rect::new(rows[1].x, rows[1].y + row, rows[1].width, 1), Link::Page(index)));
+        }
+        if turns.is_empty() {
+            frame.render_widget(Paragraph::new("No captured requests").style(Style::default().fg(MUTED)), rows[1]);
+        }
+        frame.render_widget(Paragraph::new(format!("Page {} / {count}", page + 1)).style(Style::default().fg(MUTED)), rows[2]);
+        let controls = Layout::horizontal([Constraint::Ratio(1, 2); 2]).split(rows[3]);
+        if page > 0 {
+            frame.render_widget(Paragraph::new("← Previous").style(Style::default().fg(ACCENT)), controls[0]);
+            self.areas.sources.push((controls[0], Link::Page((page - 1) * size)));
+        }
+        if page + 1 < count {
+            frame.render_widget(Paragraph::new("Next →").style(Style::default().fg(ACCENT)), controls[1]);
+            self.areas.sources.push((controls[1], Link::Page((page + 1) * size)));
         }
     }
     fn draw_reader(&mut self, frame: &mut Frame, area: Rect) {
@@ -429,7 +512,7 @@ impl Workspace {
         } else if reader && self.document.kind==View::DecisionOverview {
             vec![("↑↓", "decisions"), ("Enter", "open"), ("e", "discover"), ("t", "session")]
         } else if reader && self.document.kind==View::SessionWork {
-            vec![("Tab", "sessions / reader"), ("s", "select"), ("Enter", "open"), ("d", "decisions")]
+            vec![("Tab", "panes"), ("s", "select"), ("Enter", "open"), ("d", "decisions")]
         } else if reader && self.document.kind==View::DecisionDetail {
             vec![("↑↓", "read"), ("s", "evidence"), ("d", "decisions"), ("Esc", "back")]
         } else if reader && self.document.source_selection.is_some() {

@@ -36,7 +36,7 @@ fn captured(doc:&mut Document,review:&Value){
 }
 pub(super) fn coverage(review:&Value,sessions:&[Value])->Document{
     let mut doc=Document::new(View::Coverage,"History coverage");captured(&mut doc,review);
-    doc.text(format!("Source filter: {} · up to 20 sessions / 40 MB total / 20 MB per input",s(&review["history_source"])),MUTED);
+    doc.text(format!("Source filter: {} · {}",s(&review["history_source"]), if review["lazy_sessions"] == true { "Metadata catalog · transcripts load on selection; 20 MB importer guard remains" } else { "Bounded evidence capture: 20 sessions / 40 MB total / 20 MB per input" }),MUTED);
     if arr(&review["coverage"]).is_empty(){doc.heading("Coverage unavailable for this older capture · press r");}
     for row in arr(&review["coverage"]){
         doc.heading(format!("{} · {}",s(&row["agent"]),if row["enabled"]==true{"enabled"}else{"not selected"}));
