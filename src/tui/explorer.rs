@@ -189,7 +189,7 @@ pub(super) struct Explorer {
 }
 impl Explorer {
     fn section(&mut self,key:&str,label:&str,count:usize){
-        self.rows.push(Row{key:key.into(),label:label.into(),depth:0,kind:Kind::Section,target:None,expandable:false,expanded:false,count,added:0,removed:0,session:false,diff:false});
+        self.rows.push(Row{key:key.into(),label:label.into(),depth:0,kind:Kind::Section,target:None,expandable:true,expanded:!self.filter.is_empty()||!self.closed.contains(key),count,added:0,removed:0,session:false,diff:false});
     }
     pub fn selected(&self) -> Option<&Row> {
         self.state.selected().and_then(|i| self.rows.get(i))
@@ -212,10 +212,10 @@ impl Explorer {
         if historical.count()>0 {
             if tree.count()>0 {
                 self.section("@changes","Current changes",tree.count());
-                tree.flatten("",1,self,false);
+                if !self.closed.contains("@changes")||!self.filter.is_empty(){tree.flatten("",1,self,false);}
             }
-            self.section("@history","Historical edits",historical.count());
-            historical.flatten("",1,self,true);
+            self.section("@history","Earlier sessions",historical.count());
+            if !self.closed.contains("@history")||!self.filter.is_empty(){historical.flatten("",1,self,true);}
         } else {tree.flatten("",0,self,false);}
         for row in &mut self.rows {
             if row.kind == Kind::File {
@@ -245,7 +245,7 @@ impl Explorer {
             .unwrap_or(0)
             .saturating_add_signed(delta)
             .min(self.rows.len() - 1);
-        while self.rows[next].kind==Kind::Section {
+        while self.rows[next].kind==Kind::Section && !self.rows[next].expandable {
             let candidate=next.saturating_add_signed(if delta<0{-1}else{1}).min(self.rows.len()-1);
             if candidate==next{return;}
             next=candidate;
@@ -257,7 +257,7 @@ impl Explorer {
             return;
         };
         match row.kind {
-            Kind::Folder => {
+            Kind::Folder | Kind::Section => {
                 if !self.filter.is_empty() {
                     return;
                 }
@@ -270,7 +270,7 @@ impl Explorer {
                     self.open_files.insert(row.key);
                 }
             }
-            Kind::Symbol | Kind::Section => {}
+            Kind::Symbol => {}
         }
         self.rebuild(review);
     }

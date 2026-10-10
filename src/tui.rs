@@ -1,5 +1,6 @@
 //! Read-only review workspace. Agent requests run only after explicit input.
 mod document;
+mod code_view;
 mod history_views;
 mod explorer;
 mod layout;
@@ -803,6 +804,13 @@ impl Workspace {
     }
     fn follow(&mut self, link: Link) -> Result<()> {
         match link {
+            Link::Page(index) => {
+                if let Some(page)=self.document.pagination.clone(){
+                    self.document=history_views::page(&self.review,&page,index);
+                    self.focus=Focus::Reader;
+                }
+                Ok(())
+            }
             Link::Explain => {self.why_change(false);Ok(())}
             Link::Disclosure(id) => {
                 let selection=self.document.source_selection;
@@ -836,9 +844,9 @@ impl Workspace {
             return;
         }
         let (scroll, selection) = (self.document.scroll, self.document.source_selection);
-        let expanded = self.document.expanded.clone();
+        let disclosures:Vec<_>=self.document.sources.iter().filter_map(|(_,link)|if let Link::Disclosure(id)=link{Some((id.clone(),self.document.expanded.contains(id)))}else{None}).collect();
         self.document = self.local_notes(&code);
-        for id in expanded { self.document.toggle_disclosure(&id); }
+        for (id,open) in disclosures {if self.document.expanded.contains(&id)!=open{self.document.toggle_disclosure(&id);}}
         self.document.scroll = scroll;
         self.document.source_selection =
             selection.filter(|&i| i < self.document.sources.len());
@@ -887,6 +895,12 @@ impl Workspace {
     }
     fn change_view(&mut self, view: View) -> Result<()> {
         if self.document.kind==view {self.focus=Focus::Reader;return Ok(());}
+        if self.document.kind==View::Recorded {
+            if let Some(code)=&self.code {
+                if self.history_tabs.len()>=8{self.history_tabs.clear();}
+                self.history_tabs.insert(format!("changes:{}",navigation::code_key(code)),self.document.clone());
+            }
+        }
         if self.document.kind==View::Timeline {
             if let Some(target)=&self.document.target {
                 if self.history_tabs.len()>=8{self.history_tabs.clear();}
@@ -896,7 +910,13 @@ impl Workspace {
         let target=self.document.target.clone().or_else(||self.explorer.target());
         match view {
             View::Diff | View::Recorded => {
-                if let Some(target)=target {self.code=Some(document::preview(&self.review,target));self.show_notes();}
+                if let Some(target)=target {
+                    let code=document::preview(&self.review,target);
+                    let key=format!("changes:{}",navigation::code_key(&code));
+                    let saved=self.history_tabs.get(&key).cloned();
+                    self.code=Some(code);
+                    if let Some(doc)=saved{self.document=doc;self.focus=Focus::Reader;}else{self.show_notes();}
+                }
             }
             View::Explanation => {
                 if let Some(target)=target {
@@ -1028,6 +1048,13 @@ impl Workspace {
             let next=if code==KeyCode::Right{(current+1)%3}else{(current+2)%3};
             self.change_view(tabs[next])?;return Ok(false);
         }
+        if modifiers.contains(KeyModifiers::ALT) && matches!(code,KeyCode::Left|KeyCode::Right) {
+            if let Some(page)=&self.document.pagination {
+                let index=if code==KeyCode::Right{page.index().saturating_add(1)}else{page.index().saturating_sub(1)};
+                self.follow(Link::Page(index))?;
+            }
+            return Ok(false);
+        }
         let selection_before = self.explorer.selected().map(|r| r.key.clone());
         match code {
             KeyCode::Char('q') => {
@@ -1130,6 +1157,13 @@ impl Workspace {
                     Focus::Reader
                 };
             }
+            KeyCode::Char('z') => {
+                let codes:Vec<_>=self.document.sources.iter().filter_map(|(_,link)|if let Link::Disclosure(id)=link{id.starts_with("code-block-").then_some(id.clone())}else{None}).collect();
+                let expand=codes.iter().any(|id|!self.document.expanded.contains(id));
+                for id in &codes{if self.document.expanded.contains(id)!=expand{self.document.toggle_disclosure(id);}}
+                self.document.source_selection=None;
+                self.message(if codes.is_empty(){"No code blocks in this view"}else if expand{"Code blocks expanded"}else{"Code blocks collapsed"});
+            }
             KeyCode::Char('e') => self.why_change(false),
             KeyCode::Char('w') => {
                 self.brief = !self.brief;
@@ -1167,7 +1201,7 @@ impl Workspace {
                     && self
                         .explorer
                         .selected()
-                        .is_some_and(|r| r.kind == Kind::Folder)
+                        .is_some_and(|r| matches!(r.kind,Kind::Folder|Kind::Section))
                 {
                     self.explorer.toggle(&self.review);
                 } else {
@@ -1239,7 +1273,7 @@ impl Workspace {
                         self.explorer.state.select(Some(index));
                         self.focus = Focus::Files;
                         // A click previews the file (or toggles a folder) without leaving the tree.
-                        if self.explorer.selected().is_some_and(|r| r.kind == Kind::Folder) {
+                        if self.explorer.selected().is_some_and(|r| matches!(r.kind,Kind::Folder|Kind::Section)) {
                             self.explorer.toggle(&self.review);
                         }
                         self.preview_selection();

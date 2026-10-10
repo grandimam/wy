@@ -224,6 +224,12 @@ pub fn headline(text: &str) -> (String, String) {
     (text[..end].trim().to_owned(), text[end..].trim().to_owned())
 }
 
+/// Recognize confirmations explicitly; a short instruction can still be substantive.
+pub fn confirmation(text:&str)->bool {
+    let normalized=text.split_whitespace().map(|word|word.trim_matches([',','.','!','?'])).collect::<Vec<_>>().join(" ").to_lowercase();
+    ["yes","yes do it","yes please","do it","continue","continue with this","go ahead","ok","okay","implement it","proceed","please do","sounds good","sure","yep"].contains(&normalized.as_str())
+}
+
 /// The agent's reasons for the changes to one file, with the hunks in file order.
 ///
 /// Each reason is the agent message written just before an edit, with the user
@@ -271,12 +277,12 @@ pub fn reasons(root: &Path, sessions: &[Value], file: &str, diff: Option<&str>) 
             .unwrap_or(turn.len());
         let message = turn[..at].iter().rev().find(|e| e["kind"] == "assistant");
         let request = turn[..at].iter().find(|e| e["kind"] == "user");
-        // A short confirmation ("yes do it") needs the substantive request before it.
+        // Preserve earlier substantive context for confirmations, without claiming causation.
         let events = arr(&session["events"]);
         let prior = request
-            .filter(|r| s(&r["text"]).trim().chars().count() < 40)
+            .filter(|r| confirmation(s(&r["text"])))
             .and_then(|r| events.iter().position(|e| e["id"] == r["id"]))
-            .and_then(|i| events[..i].iter().rev().find(|e| e["kind"] == "user" && s(&e["text"]).trim().chars().count() >= 40));
+            .and_then(|i| events[..i].iter().rev().find(|e| e["kind"] == "user" && super::provenance::original(e) && !s(&e["text"]).trim().is_empty() && !confirmation(s(&e["text"])) && !["<environment_context>","<permissions","# AGENTS.md","<turn_aborted>"].iter().any(|prefix|s(&e["text"]).trim_start().starts_with(prefix))));
         let after = turn[at..].iter().find(|e| e["kind"] == "assistant");
         let anchor = message
             .or(request)

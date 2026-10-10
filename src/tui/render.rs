@@ -1,6 +1,15 @@
 //! Two areas: the file tree and one reader that switches between Changes and Notes.
-//! No boxes; a single contextual hint line at the bottom.
+//! Request cards separate the user's intent from code and optional diagnostics.
 use super::*;
+use std::collections::HashMap;
+use ratatui::widgets::{Block, Borders, BorderType, Padding};
+
+/// Native panel chrome. A scrolled panel draws only its visible edges.
+fn reader_block(request:bool)->Block<'static>{
+    Block::default().border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(if request{ACCENT}else{BORDER}))
+        .borders(Borders::LEFT|Borders::RIGHT).padding(Padding::horizontal(1))
+}
 
 impl Workspace {
     pub(super) fn draw(&mut self, frame: &mut Frame) {
@@ -112,7 +121,7 @@ impl Workspace {
             .rows
             .iter()
             .map(|row| {
-                if row.kind==Kind::Section{return ListItem::new(Line::styled(format!("{} · {}",row.label,row.count),Style::default().fg(TEXT).bold()));}
+                if row.kind==Kind::Section{return ListItem::new(Line::styled(format!("{} {} · {}",if row.expanded{"▾"}else{"▸"},row.label,row.count),Style::default().fg(TEXT).bold()));}
                 let icon = if row.expandable {
                     if row.expanded { "▾" } else { "▸" }
                 } else if row.kind == Kind::Symbol {
@@ -137,7 +146,7 @@ impl Workspace {
                     Kind::Folder => format!(" {}", row.count),
                     Kind::File if reviewed => " ✓".into(),
                     Kind::File if row.diff => format!(" +{} −{}", row.added, row.removed),
-                    Kind::File if row.session => " · recorded".into(),
+                    Kind::File if row.session => String::new(),
                     Kind::File => String::new(),
                     Kind::Symbol => {
                         format!(" :{}", row.target.as_ref().map(|t| t.line).unwrap_or(0))
@@ -204,7 +213,7 @@ impl Workspace {
             let label=if rect.width>=18{format!(" {label} [{key}] ")}else if rect.width>=label.len() as u16+2{format!(" {label} ")}else{short.into()};
             let selected=self.document.kind==view;
             let style=if selected{Style::default().fg(ACCENT).bold().add_modifier(Modifier::REVERSED)}else{Style::default().fg(TEXT)};
-            frame.render_widget(Paragraph::new(Span::styled(label,style)).centered(),rect);
+            frame.render_widget(Paragraph::new(Span::styled(label,style)).style(style).centered(),rect);
             self.areas.tabs.push((rect,view,Focus::Reader));
         }
     }
@@ -241,11 +250,20 @@ impl Workspace {
         let content = Rect::new(rows[3].x, rows[3].y, rows[3].width.saturating_sub(1), rows[3].height);
         let mut lines = self.document.lines.clone();
         let mut source_positions = vec![];
+        let panels=if content.width>=6{self.document.reader_panels()}else{vec![]};
+        let mut panel_rows=HashMap::new();
+        for (first,last,request) in &panels{
+            for row in *first..=*last{panel_rows.insert(row,(*first,*last,*request));}
+        }
+        let panel_width=|request:bool|if request{content.width.min(100)}else{content.width};
+        let row_width=|index:usize|panel_rows.get(&index).map(|(_,_,request)|reader_block(*request).inner(Rect::new(0,0,panel_width(*request),1)).width).unwrap_or(content.width);
         // Compute wrapped offsets once. Re-laying out every preceding line for
         // each clickable row made long history views quadratic to redraw.
         let mut offsets=Vec::with_capacity(lines.len()+1);offsets.push(0usize);
-        for line in &lines {
-            let height=if self.document.code(){1}else{Paragraph::new(line.clone()).wrap(Wrap{trim:false}).line_count(content.width).max(1)};
+        for (index,line) in lines.iter().enumerate() {
+            let width=row_width(index).max(1);
+            let edge=panel_rows.get(&index).is_some_and(|(first,last,_)|index==*first||index==*last);
+            let height=if edge||self.document.code()||self.document.code_gutters.contains_key(&index){1}else{Paragraph::new(line.clone()).wrap(Wrap{trim:false}).line_count(width).max(1)};
             offsets.push(offsets.last().unwrap()+height);
         }
         for (position, (line, link)) in self.document.sources.iter().enumerate() {
@@ -262,18 +280,14 @@ impl Workspace {
                         .min(u16::MAX as usize) as u16;
                 }
             }
-            source_positions.push((offset, height, link.clone()));
+            source_positions.push((offset, height, panel_rows.get(line).map(|(_,_,request)|panel_width(*request)).unwrap_or(content.width), link.clone()));
         }
-        let mut paragraph = Paragraph::new(lines);
-        if !self.document.code() {
-            paragraph = paragraph.wrap(Wrap { trim: false });
-        }
-        let count = paragraph.line_count(content.width);
+        let count = *offsets.last().unwrap_or(&0);
         let scroll_max = count
             .saturating_sub(content.height as usize)
             .min(u16::MAX as usize) as u16;
         self.document.scroll = self.document.scroll.min(scroll_max);
-        for (offset, height, link) in source_positions {
+        for (offset, height, width, link) in source_positions {
             let scroll = usize::from(self.document.scroll);
             let top = offset.max(scroll);
             let bottom = (offset + height).min(scroll + usize::from(content.height));
@@ -282,31 +296,56 @@ impl Workspace {
                     Rect::new(
                         content.x,
                         content.y + (top - scroll) as u16,
-                        content.width,
+                        width,
                         (bottom - top) as u16,
                     ),
                     link,
                 ));
             }
         }
-        let longest = self
-            .document
-            .lines
-            .iter()
-            .map(Line::width)
-            .max()
-            .unwrap_or(0);
-        self.document.horizontal = self.document.horizontal.min(
-            longest
-                .saturating_sub(content.width as usize)
-                .min(u16::MAX as usize) as u16,
-        );
+        let overflow=self.document.lines.iter().enumerate().filter(|(i,_)|self.document.code()||self.document.code_gutters.contains_key(i)).map(|(i,line)|line.width().saturating_sub(row_width(i) as usize)).max().unwrap_or(0);
+        self.document.horizontal=self.document.horizontal.min(overflow.min(u16::MAX as usize) as u16);
         self.scroll_max = scroll_max;
         self.page_size = content.height.saturating_sub(2).max(1);
-        frame.render_widget(
-            paragraph.scroll((self.document.scroll, self.document.horizontal)),
-            content,
-        );
+        // Layout prose and code separately: prose wraps, code stays on one row.
+        // Only render visible source rows; never materialize a fully wrapped document.
+        let top=self.document.scroll as usize;let bottom=top+content.height as usize;
+        for (first,last,request) in &panels{
+            let start=offsets[*first];let end=offsets[*last+1];
+            if end<=top||start>=bottom{continue;}
+            let mut borders=Borders::LEFT|Borders::RIGHT;
+            if start>=top{borders|=Borders::TOP;}
+            if first!=last&&end<=bottom{borders|=Borders::BOTTOM;}
+            let mut block=reader_block(*request).borders(borders);
+            if start>=top{
+                let mut spans=vec![Span::raw(" ")];spans.extend(lines[*first].spans.clone());spans.push(Span::raw(" "));
+                block=block.title(Line::from(spans).style(lines[*first].style.add_modifier(Modifier::BOLD)));
+            }
+            frame.render_widget(block,Rect::new(content.x,content.y+(start.max(top)-top) as u16,panel_width(*request),(end.min(bottom)-start.max(top)) as u16));
+        }
+        for (index,line) in lines.iter().enumerate(){
+            if offsets[index+1]<=top{continue;}if offsets[index]>=bottom{break;}
+            let y=offsets[index].max(top);
+            let rect=Rect::new(content.x,content.y+(y-top) as u16,content.width,(offsets[index+1].min(bottom)-y) as u16);
+            let code=self.document.code()||self.document.code_gutters.contains_key(&index);
+            let rect=if let Some((first,last,request))=panel_rows.get(&index){
+                if index==*first||index==*last{continue;}
+                reader_block(*request).inner(Rect::new(rect.x,rect.y,panel_width(*request),rect.height))
+            }else{rect};
+            if let Some(gutter)=self.document.code_gutters.get(&index){
+                let width=(*gutter as u16).min(rect.width.saturating_sub(1));
+                frame.render_widget(Paragraph::new(line.spans[0].clone()),Rect::new(rect.x,rect.y,width,1));
+                let body=Line::from(line.spans[1..].to_vec());
+                frame.render_widget(Paragraph::new(body).scroll((0,self.document.horizontal)),Rect::new(rect.x+width,rect.y,rect.width-width,1));
+            }else if code{
+                frame.render_widget(Paragraph::new(line.clone()).scroll((0,self.document.horizontal)),rect);
+            }else{
+                frame.render_widget(Paragraph::new(line.clone()).wrap(Wrap{trim:false}).scroll(((y-offsets[index]) as u16,0)),rect);
+            }
+            if code&&rect.width>0&&line.width()>rect.width as usize+self.document.horizontal as usize{
+                frame.render_widget(Paragraph::new("›").style(Style::default().fg(ACCENT)),Rect::new(rect.right()-1,rect.y,1,1));
+            }
+        }
         if count > content.height as usize && content.height > 0 {
             let mut state = ScrollbarState::new(count)
                 .position(self.document.scroll as usize)

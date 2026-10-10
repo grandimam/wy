@@ -28,6 +28,7 @@ pub(super) enum View {
 /// What a clickable or selectable line opens.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Link {
+    Page(usize),
     Explain,
     Disclosure(String),
     Session(String),
@@ -53,8 +54,11 @@ pub(super) struct Document {
     pub notice: Option<(String, Color)>,
     pub commits: Vec<String>,
     pub originals: Vec<Value>,
-    disclosures: HashMap<String, (String, Vec<Line<'static>>)>,
+    disclosures: HashMap<String, (String, Vec<Line<'static>>, HashMap<usize,usize>)>,
     pub expanded: HashSet<String>,
+    pub pagination: Option<super::history_views::Page>,
+    /// Code rows keep a fixed gutter and pan independently of prose.
+    pub code_gutters: HashMap<usize,usize>,
 }
 impl Document {
     pub fn new(kind: View, title: impl Into<String>) -> Self {
@@ -74,32 +78,62 @@ impl Document {
             originals: vec![],
             disclosures: HashMap::new(),
             expanded: HashSet::new(),
+            pagination: None,
+            code_gutters: HashMap::new(),
         }
     }
     pub fn disclosure(&mut self, id: String, title: &str, lines: Vec<Line<'static>>) {
         self.sources.push((self.lines.len(),Link::Disclosure(id.clone())));
         self.text(format!("▶ {title}"),ACCENT);
-        self.disclosures.insert(id,(title.into(),lines));
+        self.disclosures.insert(id,(title.into(),lines,HashMap::new()));
+    }
+    /// Fold a newly rendered code block, preserving its fixed gutters on reopen.
+    pub fn fold_code(&mut self,id:String,title:&str,start:usize,open:bool){
+        let body=self.lines.split_off(start);
+        let gutters=self.code_gutters.iter().filter(|(line,_)|**line>=start).map(|(line,width)|(line-start,*width)).collect();
+        self.code_gutters.retain(|line,_|*line<start);
+        self.disclosure(id.clone(),title,body);
+        self.disclosures.get_mut(&id).unwrap().2=gutters;
+        if open{self.toggle_disclosure(&id);}
     }
     pub fn toggle_disclosure(&mut self, id: &str) {
-        let Some((title,body))=self.disclosures.get(id) else{return};
+        let Some((title,body,gutters))=self.disclosures.get(id) else{return};
         let Some(at)=self.sources.iter().find_map(|(line,link)|(*link==Link::Disclosure(id.into())).then_some(*line)) else{return};
         let opening=!self.expanded.contains(id);
         let count=body.len();let pivot=at+1;
         if opening {self.lines.splice(pivot..pivot,body.clone());self.expanded.insert(id.into());}
-        else {self.lines.drain(pivot..pivot+count);self.expanded.remove(id);}
+        else {
+            self.lines.drain(pivot..pivot+count);self.expanded.remove(id);
+            self.code_gutters.retain(|line,_|*line<pivot||*line>=pivot+count);
+        }
         self.lines[at]=Line::styled(format!("{} {title}",if opening{"▼"}else{"▶"}),Style::default().fg(ACCENT));
         let shift=|line:usize|if line<pivot{line}else if opening{line+count}else{line.saturating_sub(count).max(at)};
+        self.code_gutters=self.code_gutters.drain().map(|(line,width)|(shift(line),width)).collect();
+        if opening{self.code_gutters.extend(gutters.iter().map(|(line,width)|(pivot+line,*width)));}
         for (line,link) in &mut self.sources {
             *line=shift(*line);
             if let Link::Line(target)=link {*target=shift(*target);}
         }
+    }
+    /// Inclusive logical-row bounds; Ratatui sizes panels to the current viewport.
+    pub fn reader_panels(&self)->Vec<(usize,usize,bool)>{
+        self.sources.iter().filter_map(|(row,link)|{
+            let Link::Disclosure(id)=link else{return None};
+            let request=id.starts_with("reason-")&&id.ends_with("-request");
+            if !request&&!id.starts_with("code-block-"){return None;}
+            let (_,body,_)=self.disclosures.get(id)?;
+            Some((*row,*row+if self.expanded.contains(id){body.len()}else{0},request))
+        }).collect()
     }
     pub fn explain_button(&mut self) {
         self.gap();
         self.sources.push((self.lines.len(),Link::Explain));
         self.lines.push(Line::styled("  Ask AI to explain this change  ",Style::default().fg(ACCENT).add_modifier(Modifier::REVERSED|Modifier::BOLD)));
         self.text("Click or select and press Enter · e is the shortcut",TEXT);
+    }
+    pub fn code_line(&mut self,gutter:String,body:&str,color:Color){
+        self.code_gutters.insert(self.lines.len(),Line::from(gutter.as_str()).width());
+        self.lines.push(Line::from(vec![Span::styled(gutter,Style::default().fg(color)),Span::styled(body.replace('\t',"    "),Style::default().fg(color))]));
     }
     pub fn code(&self) -> bool {
         matches!(self.kind, View::Diff | View::SessionCode)
@@ -186,12 +220,6 @@ pub(super) fn recorded_code(edit: &Value) -> Document {
         },
         MUTED,
     );
-    if edit["format"] == "patch" {
-        doc.text(
-            "Patch excerpt · line numbers may be relative to the edit.",
-            MUTED,
-        );
-    }
     doc.gap();
     if s(&edit["text"]).is_empty() {
         doc.text(
@@ -199,26 +227,7 @@ pub(super) fn recorded_code(edit: &Value) -> Document {
             AMBER,
         );
     }
-    for (i, line) in s(&edit["text"]).lines().enumerate() {
-        if edit["format"] == "code" {
-            doc.text(
-                format!("{:>5}  {}", i + 1, line.replace('\t', "    ")),
-                TEXT,
-            );
-        } else {
-            let style = if line.starts_with('+') {
-                Style::default().fg(GREEN)
-            } else if line.starts_with('-') {
-                Style::default().fg(RED)
-            } else if line.starts_with("@@") {
-                Style::default().fg(ACCENT)
-            } else {
-                Style::default().fg(TEXT)
-            };
-            doc.lines
-                .push(Line::styled(line.replace('\t', "    "), style));
-        }
-    }
+    super::code_view::render(&mut doc,s(&edit["text"]),s(&edit["format"]),true,usize::MAX);
     if edit["truncated"] == true {
         doc.text("Recorded code truncated at the capture limit.", AMBER);
     }
@@ -303,8 +312,8 @@ pub(super) fn citations(artifact: &Value) -> Vec<Value> {
         presentation::citations(artifact)
     }
 }
-/// The reader: this file's changes in order, each reason placed just above the
-/// hunks it explains. `brief` collapses every reason to its headline.
+/// Request-led reader: the saved user request, then changes, then optional agent
+/// context. Matching does not establish that a request caused a particular edit.
 pub(super) fn recorded(
     review: &Value,
     sessions: &[Value],
@@ -333,7 +342,7 @@ pub(super) fn recorded(
     let diff = change_diff(review, &target.file);
     if diff.is_none() {
         doc.notice = Some((
-            "No current Git diff · showing the recorded session edit, which may differ from the file now".into(),
+            "No current Git changes · showing code saved in an earlier agent session".into(),
             AMBER,
         ));
     }
@@ -350,7 +359,11 @@ pub(super) fn recorded(
     let hunks = arr(&found["hunks"]);
     // Without a matching edit, fall back to conversation that mentions this file.
     let evidence = arr(&notes["evidence"]);
-    if reasons.is_empty() {doc.heading("CODE CHANGES");}
+    if reasons.is_empty() {
+        doc.text("Original request not captured for these changes.",TEXT);
+        doc.heading("CODE CHANGES");
+    }
+    let mut request_positions:HashMap<String,usize>=HashMap::new();
     let mut first_lines = vec![0; reasons.len()];
     let mut compactions_seen = 0;
     for hunk in hunks {
@@ -369,7 +382,23 @@ pub(super) fn recorded(
                 }
                 compactions_seen = compactions_seen.max(compactions);
                 first_lines[index] = doc.lines.len();
-                why(&mut doc, index + 1, &reasons[index], brief);
+                if let Some((request,earlier))=primary_request(&reasons[index]) {
+                    let key=format!("{}:{}:{}",s(&reasons[index]["agent"]),s(&reasons[index]["session_id"]),s(&request["id"]));
+                    if let Some(line)=request_positions.get(&key) {
+                        doc.sources.push((doc.lines.len(),Link::Line(*line)));
+                        doc.text(if earlier{"↑ Earlier request above · context only"}else{"↑ Your request above"},ACCENT);
+                    } else {
+                        request_positions.insert(key,doc.lines.len());
+                        request_block(&mut doc,index+1,&reasons[index],request,earlier,!brief);
+                    }
+                } else {
+                    doc.text("Original request not captured for this change.",TEXT);
+                    if let Some(text)=reasons[index]["request"]["text"].as_str(){
+                        let mut lines=vec![];quoted(&mut lines,text,1200,TEXT);
+                        doc.disclosure(format!("reason-{}-confirmation",index+1),"Saved follow-up · request context unavailable",lines);
+                    }
+                }
+                doc.gap();
             } else {
                 doc.sources.push((doc.lines.len(), Link::Line(first_lines[index])));
                 doc.lines.push(Line::from(vec![
@@ -379,7 +408,18 @@ pub(super) fn recorded(
                 ]));
             }
         }
+        if !reasons.is_empty()&&hunk["reason"].is_null(){doc.text("Original request not captured for this change.",TEXT);}
         change(&mut doc, hunk, reasons.get(hunk["reason"].as_u64().unwrap_or(u64::MAX) as usize));
+        if hunk["first"]==true {
+            if let Some(index)=hunk["reason"].as_u64().map(|i|i as usize){why(&mut doc,index+1,&reasons[index],brief);}
+        }
+        let reason=reasons.get(hunk["reason"].as_u64().unwrap_or(u64::MAX) as usize);
+        if let Some(edit)=reason.map(|r|&r["edit"]).filter(|e|e.is_object()){
+            doc.sources.push((doc.lines.len(),Link::Turn(edit.clone())));
+            doc.text("[ View original chat ]",ACCENT);
+        }
+        super::code_view::technical_details(&mut doc,s(&hunk["text"]),s(&hunk["format"]),reason.map(session_details).unwrap_or_default());
+        doc.gap();
     }
     if hunks.is_empty() {
         doc.text("No changes recorded for this file.", MUTED);
@@ -437,48 +477,65 @@ fn quoted(lines:&mut Vec<Line<'static>>, text:&str, limit:usize, color:Color){
     for line in short.lines(){lines.push(Line::from(vec![Span::styled("  │ ",Style::default().fg(color)),Span::styled(line.to_owned(),Style::default().fg(TEXT))]));}
     if plain(text).chars().count()>limit {lines.push(Line::styled("  [shortened · open the conversation for the full text]",Style::default().fg(AMBER)));}
 }
-/// One context block: the complete agent message first, with supporting material
-/// behind disclosures. `brief` shows only the headline.
+fn primary_request(reason:&Value)->Option<(&Value,bool)>{
+    let request=&reason["request"];
+    if request["kind"]!="user"||!crate::history::provenance::original(request)||s(&request["text"]).trim().is_empty(){return None;}
+    if attribution::confirmation(s(&request["text"])){
+        let prior=&reason["prior_request"];
+        (prior["kind"]=="user"&&crate::history::provenance::original(prior)&&!s(&prior["text"]).trim().is_empty()&&!attribution::confirmation(s(&prior["text"]))).then_some((prior,true))
+    }else{Some((request,false))}
+}
+fn request_block(doc:&mut Document,number:usize,reason:&Value,request:&Value,earlier:bool,open:bool){
+    let mut lines=vec![];
+    lines.push(Line::default());
+    lines.extend(crate::security::short(&plain(s(&request["text"])),16000).lines().map(|line|Line::styled(line.to_owned(),Style::default().fg(TEXT))));
+    if s(&request["text"]).chars().count()>16000{lines.push(Line::styled("[Request excerpt shortened]",Style::default().fg(AMBER)));}
+    lines.push(Line::default());
+    if earlier{lines.push(Line::styled("Earlier request in this session · context only, not a confirmed link.",Style::default().fg(TEXT)));}
+    lines.push(Line::styled(crate::insights::local_date(&request["timestamp"]),Style::default().fg(TEXT)));
+    if earlier{lines.push(Line::styled(format!("Follow-up that started this turn: {}",crate::security::short(s(&reason["request"]["text"]),200)),Style::default().fg(TEXT)));}
+    // A final empty row is the card's bottom border; body text wraps inside it.
+    lines.push(Line::default());
+    let id=format!("reason-{number}-request");
+    doc.disclosure(id.clone(),"YOUR REQUEST",lines);
+    if open{doc.toggle_disclosure(&id);}
+}
+/// Agent response and working notes remain secondary, below the changed code.
 fn why(doc: &mut Document, number: usize, reason: &Value, brief: bool) {
     let message = &reason["message"];
     let text = plain(s(&message["text"]));
     let decision=crate::insights::decision(message);
     let original=message.is_object()&&crate::history::provenance::original(message);
     let (label,color)=if decision.is_some(){("RECORDED DECISION",GREEN)}else if text.is_empty(){("NO AGENT MESSAGE BEFORE THIS EDIT",AMBER)}else if original{("AGENT MESSAGE",GREEN)}else{("UNVERIFIED CONTEXT",AMBER)};
-    doc.lines.push(Line::from(vec![badge(number),Span::raw(" "),Span::styled(label,Style::default().fg(color).bold())]));
-    if text.is_empty(){doc.text("  No explicit explanation was recorded for this edit.",AMBER);}
-    else if brief {doc.text(format!("  {}",attribution::headline(&text).0),TEXT);}
-    else {quoted(&mut doc.lines,&text,16000,color);}
-    doc.text(format!("  {}",crate::insights::local_date(&reason["edit"]["timestamp"])),TEXT);
-    if brief {doc.gap();return;}
     let id=|name:&str|format!("reason-{number}-{name}");
+    if text.is_empty(){doc.text("No explanation was saved with this change.",TEXT);}
+    else {
+        let mut lines=vec![Line::styled(label,Style::default().fg(color).bold())];
+        quoted(&mut lines,&text,16000,color);
+        lines.push(Line::styled(crate::insights::local_date(&reason["edit"]["timestamp"]),Style::default().fg(TEXT)));
+        doc.disclosure(id("message"),if decision.is_some(){"Why the agent chose this"}else{"Agent response"},lines);
+    }
+    if brief {doc.gap();return;}
     if let Some(rationale)=reason["rationale"]["text"].as_str(){
         let mut lines=vec![Line::styled("  These notes may include ideas the agent did not use.",Style::default().fg(AMBER))];
         quoted(&mut lines,rationale,1200,AMBER);
-        doc.disclosure(id("rationale"),"Recorded reasoning",lines);
+        doc.disclosure(id("rationale"),"Agent notes",lines);
     }
-    if let Some(request)=reason["request"]["text"].as_str(){
-        let mut lines=vec![];
-        if let Some(prior)=reason["prior_request"]["text"].as_str(){
-            lines.push(Line::styled("  Earlier request in this session:",Style::default().fg(TEXT)));
-            quoted(&mut lines,prior,600,ACCENT);
-        }
-        lines.push(Line::styled("  Request that started this turn:",Style::default().fg(TEXT)));
-        quoted(&mut lines,request,600,ACCENT);
-        doc.disclosure(id("request"),"Your request",lines);
-    }
-    let lines=vec![
+    doc.gap();
+}
+fn session_details(reason:&Value)->Vec<Line<'static>>{
+    let decision=crate::insights::decision(&reason["message"]);
+    let original=reason["message"].is_object()&&crate::history::provenance::original(&reason["message"]);
+    vec![
         Line::styled(format!("  Coding tool: {}",s(&reason["agent"])),Style::default().fg(TEXT)),
         Line::styled(format!("  Model: {}",reason["model"].as_str().unwrap_or("unknown")),Style::default().fg(TEXT)),
         Line::styled(format!("  Session: {}",s(&reason["session_id"])),Style::default().fg(TEXT)),
         Line::styled(if decision.is_some(){"  This decision is the agent's own explanation, not independent verification."}else if original{"  Message linked through a matching recorded edit."}else{"  Source could not be verified as an original message."},Style::default().fg(TEXT)),
         Line::styled(format!("  Edit recorded {}",crate::insights::when(&reason["edit"]["timestamp"])),Style::default().fg(TEXT)),
         Line::styled("  Matching text links the message to this edit; it does not establish intent.",Style::default().fg(TEXT)),
-        Line::styled("  Open conversation shows the saved turn, not a new explanation.",Style::default().fg(TEXT)),
-    ];
-    doc.disclosure(id("details"),"Session details",lines);
-    doc.heading("CODE CHANGES");
-    doc.gap();
+        Line::styled("  View original chat shows saved messages, not a new AI conversation.",Style::default().fg(TEXT)),
+        Line::default(),
+    ]
 }
 /// Stable, literal labels: colour is supplemental, never the only distinction.
 pub(super) fn conversation_role(event: &Value) -> (&'static str, Color, &'static str) {
@@ -547,46 +604,19 @@ fn related(doc: &mut Document, evidence: &[Value]) {
 /// One hunk: `@@ line 10 · fn get()  +2 −1`, a status when needed, then its lines.
 /// The header opens the turn that made the change when a recorded edit matched.
 fn change(doc: &mut Document, hunk: &Value, reason: Option<&Value>) {
-    let mut spans = vec![
-        Span::styled("@@ ", Style::default().fg(ACCENT)),
-        Span::styled(s(&hunk["label"]).to_owned(), Style::default().fg(ACCENT).bold()),
-        Span::styled(
-            format!("  +{} −{}", n(&hunk["added"]), n(&hunk["removed"])),
-            Style::default().fg(MUTED),
-        ),
-    ];
+    let historical=hunk["status"]=="recorded";
+    let label=if historical{format!("Earlier session · {}",reason.map(|r|crate::insights::local_date(&r["edit"]["timestamp"])).unwrap_or_else(||"date unknown".into()))}else{format!("Change · {}",s(&hunk["label"]))};
+    let mut spans=vec![];
+    if let Some(index)=hunk["reason"].as_u64(){spans.extend([badge(index as usize+1),Span::raw(" ")]);}
+    spans.push(Span::styled(label,Style::default().fg(ACCENT).bold()));
+    if !historical {spans.push(Span::styled(format!("  +{} −{}",n(&hunk["added"]),n(&hunk["removed"])),Style::default().fg(TEXT)));}
     match s(&hunk["status"]) {
         "partial" => spans.push(Span::styled("  · partial text overlap", Style::default().fg(AMBER))),
-        "none" => spans.push(Span::styled("  · no recorded agent edit", Style::default().fg(MUTED))),
+        "none" => spans.push(Span::styled("  · no matching edit found", Style::default().fg(MUTED))),
         _ => {}
     }
-    if let Some(edit) = reason.map(|r| &r["edit"]).filter(|e| e.is_object()) {
-        spans.push(Span::styled("  open conversation ›", Style::default().fg(ACCENT)));
-        doc.sources.push((doc.lines.len(), Link::Turn(edit.clone())));
-    }
     doc.lines.push(Line::from(spans));
-    // A recorded edit with no current diff can be a whole-file write; keep the reason in view.
-    let limit = if hunk["status"] == "recorded" { 40 } else { usize::MAX };
-    let lines: Vec<_> = s(&hunk["text"])
-        .lines()
-        .skip(usize::from(hunk["format"] == "patch"))
-        .collect();
-    for line in lines.iter().take(limit) {
-        let style = if line.starts_with('+') || hunk["format"] == "code" {
-            Style::default().fg(GREEN)
-        } else if line.starts_with('-') {
-            Style::default().fg(RED)
-        } else {
-            Style::default().fg(TEXT)
-        };
-        doc.lines.push(Line::styled(line.replace('\t', "    "), style));
-    }
-    if lines.len() > limit {
-        doc.text(
-            format!("… {} more lines · Enter opens the full edit", lines.len() - limit),
-            MUTED,
-        );
-    }
+    super::code_view::render_code(doc,s(&hunk["text"]),s(&hunk["format"]),historical,if historical{80}else{usize::MAX});
     doc.gap();
 }
 /// Lines before the first hunk (`diff --git`, `---`, `+++`).
@@ -595,7 +625,7 @@ fn diff_header(diff: &str) -> usize {
 }
 /// The conversation around one recorded edit, with the edit itself in place.
 pub(super) fn turn(session: &Value, edit: &Value) -> Document {
-    let mut doc = Document::new(View::Turn, format!("Turn · {}", s(&edit["file"])));
+    let mut doc = Document::new(View::Turn, format!("Messages around this change · {}", s(&edit["file"])));
     doc.notice = Some(("Historical conversation · Esc goes back".into(), MUTED));
     let (start,last)=crate::insights::session_dates(session);
     doc.text(format!("{} · session {}",s(&session["agent"]),s(&session["id"])),MUTED);
@@ -610,16 +640,7 @@ pub(super) fn turn(session: &Value, edit: &Value) -> Document {
                 Span::styled(s(&edit["file"]).to_owned(), Style::default().fg(TEXT)),
                 Span::styled(format!("  +{added} −{removed}"), Style::default().fg(MUTED)),
             ]));
-            for line in s(&edit["text"]).lines() {
-                let style = if line.starts_with('+') || edit["format"] == "code" {
-                    Style::default().fg(GREEN)
-                } else if line.starts_with('-') {
-                    Style::default().fg(RED)
-                } else {
-                    Style::default().fg(MUTED)
-                };
-                doc.lines.push(Line::styled(line.replace('\t', "    "), style));
-            }
+            super::code_view::render(&mut doc,s(&edit["text"]),s(&edit["format"]),true,usize::MAX);
             doc.gap();
             continue;
         }
@@ -1021,6 +1042,8 @@ Esc  back · x  cancel running and queued requests",
         (
             "Navigate",
             "Tab  switch between the file tree and the reader · Shift+Tab  back to the tree
+Ctrl+←/→  cycle Changes / Explanation / History · o / v / t  jump directly
+Alt+←/→  previous / next history page · z  collapse / expand code
 ↑/↓ or j/k  select files or scroll · ←/→ or h/l  expand the tree or pan
 Space  expand changed symbols · f  filter file paths
 PageUp/PageDown  scroll · Home/End  start/end

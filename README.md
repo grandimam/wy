@@ -40,7 +40,7 @@ wy
 - **Explanation tab:** click **Ask AI to explain this change** for a new, cited assessment through your signed-in Codex or Claude CLI. `e` is the shortcut; opening the tab alone never calls a model.
 - **r:** capture current changes and history again.
 
-**Changes / Explanation / History** tabs keep code, new assessments, and historical context separate (`o` / `v` / `t`). The sidebar separates current changes from historical edits. Supporting notes and session metadata stay collapsed until opened.
+**Changes / Explanation / History** tabs keep code, new assessments, and historical context separate (`o` / `v` / `t`). The sidebar separates current changes from earlier sessions. Your saved request leads each group of changes in a padded Ratatui card, expanded but collapsible, above a separate code panel. Historical code, agent responses and notes stay collapsed until opened. **View original chat** opens the saved conversation; raw patches and session metadata are tucked into **Technical details**. Short confirmations show earlier request context when available; missing requests remain unknown. `z` folds/unfolds code. History is paginated at 20 events per page, with Previous/Next buttons.
 
 **Tab** switches panes · **w** collapses nearby context · **?** opens help.
 

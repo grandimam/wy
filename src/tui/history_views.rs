@@ -4,6 +4,30 @@ use crate::{arr, s, n, insights, history};
 use serde_json::{Value,json};
 use std::{path::Path,sync::Arc};
 
+pub(super) const EVENTS_PER_PAGE:usize=20;
+#[derive(Clone)]
+pub(super) enum Page {
+    History{items:Arc<Vec<Value>>,target:Target,decisions:bool,index:usize},
+    Session{session:Arc<Value>,index:usize},
+}
+pub(super) fn page(review:&Value,state:&Page,index:usize)->Document {
+    match state {
+        Page::History{items,target,decisions,..}=>context_page(review,items.clone(),target.clone(),*decisions,index),
+        Page::Session{session,..}=>session_page(session.clone(),index),
+    }
+}
+impl Page {pub fn index(&self)->usize{match self{Self::History{index,..}|Self::Session{index,..}=>*index}}}
+fn pager(doc:&mut Document,index:usize,count:usize){
+    doc.text(format!("Page {} of {} · up to {EVENTS_PER_PAGE} events",index+1,count.max(1)),TEXT);
+    if index>0 {
+        doc.sources.push((doc.lines.len(),Link::Page(index-1)));
+        doc.text("[ ← Previous page ]",ACCENT);
+    }
+    if index+1<count {
+        doc.sources.push((doc.lines.len(),Link::Page(index+1)));
+        doc.text("[ Next page → ]",ACCENT);
+    }
+}
 fn captured(doc:&mut Document,review:&Value){
     doc.text(format!("History captured: {}",insights::when(&review["created_at"])),MUTED);
     doc.text("Historical context is not necessarily current intent. r refreshes capture; source dates do not change.",AMBER);
@@ -47,15 +71,24 @@ pub(super) fn sessions(review:&Value,sessions:&[Value])->Document{
     doc.notice=Some(("Select a session and press Enter · sessions remain separate across tools".into(),MUTED));doc
 }
 pub(super) fn session(session:&Value)->Document{
+    session_page(Arc::new(session.clone()),0)
+}
+fn session_page(session:Arc<Value>,index:usize)->Document{
+    let count=arr(&session["events"]).len().div_ceil(EVENTS_PER_PAGE).max(1);
+    let index=index.min(count-1);
     let mut doc=Document::new(View::Session,format!("{} · {}",s(&session["agent"]),s(&session["id"])));
-    let (start,last)=insights::session_dates(session);
+    pager(&mut doc,index,count);
+    let (start,last)=insights::session_dates(&session);
     doc.text(format!("Started / earliest captured: {}",insights::when(&start)),MUTED);
     doc.text(format!("Last captured event: {}",insights::when(&last)),MUTED);
     doc.text("Historical transcript · original source position for JSONL; normalized position for SQLite.",AMBER);
     for warning in arr(&session["warnings"]){doc.text(s(warning),AMBER);}
-    let events=arr(&session["events"]);let start=events.len().saturating_sub(500);
-    if start>0{doc.text(format!("Showing last 500 events; {start} earlier events omitted from this view."),AMBER);}
-    for e in &events[start..]{event(&mut doc,e,s(&session["agent"]),2400);}
+    let events=arr(&session["events"]);
+    let end=events.len().saturating_sub(index*EVENTS_PER_PAGE);let start=end.saturating_sub(EVENTS_PER_PAGE);
+    doc.text("Latest page first; messages on each page remain in recorded order.",TEXT);
+    for e in &events[start..end]{event(&mut doc,e,s(&session["agent"]),2400);}
+    if count>1{pager(&mut doc,index,count);}
+    doc.pagination=Some(Page::Session{session,index});
     doc
 }
 fn event(doc:&mut Document,e:&Value,agent:&str,limit:usize){
@@ -63,23 +96,30 @@ fn event(doc:&mut Document,e:&Value,agent:&str,limit:usize){
 
 }
 pub(super) fn context(review:&Value,sessions:&[Value],target:Target,decisions:bool)->Document{
+    let items=Arc::new(insights::timeline(Path::new(s(&review["root"])),sessions,&target.file,target.symbol.as_deref()));
+    context_page(review,items,target,decisions,0)
+}
+fn context_page(review:&Value,items:Arc<Vec<Value>>,target:Target,decisions:bool,page_index:usize)->Document{
+    // Page descriptors are just indices. Do not copy turn/event JSON when paging.
+    let slots:Vec<_>=items.iter().enumerate().rev().flat_map(|(i,item)|{
+        (0..arr(&item["events"]).len().div_ceil(EVENTS_PER_PAGE).max(1)).map(move|part|(i,part))
+    }).collect();
+    let count=slots.len().max(1);let page_index=page_index.min(count-1);
     let mut doc=Document::new(if decisions{View::Decisions}else{View::Timeline},format!("{} · {}",if decisions{"Decision context"}else{"History"},target.selector()));
-    captured(&mut doc,review);
-    doc.text("Grouped by recorded user turn, oldest first. File edits or explicit file mentions establish relevance, not causation. Symbol filtering uses explicit text/record matches, not semantic attribution.",MUTED);
-    let items=insights::timeline(Path::new(s(&review["root"])),sessions,&target.file,target.symbol.as_deref());
-    if items.is_empty(){doc.heading("No captured context matches this file/symbol");doc.text("Original intent unknown. Try the whole file, /coverage, or ask for an explicitly inferred explanation with /why.",AMBER);}
-    let start=items.len().saturating_sub(40);
-    if start>0{doc.text(format!("Showing latest 40 turns; {start} older turns omitted."),AMBER);}
-    for (index,item) in items.iter().enumerate().skip(start){
+    pager(&mut doc,page_index,count);
+    doc.text("Conversations newest first · messages within a conversation stay in order",TEXT);
+    if items.is_empty(){doc.heading("No captured context matches this file/symbol");doc.text("Try the whole file or /coverage to inspect capture gaps.",TEXT);}
+    for &(index,part) in slots.get(page_index).into_iter(){
+        let item=&items[index];
         doc.heading(format!("Turn {} · {} · Open session ›",index+1,insights::local_date(&item["timestamp"])));
         if let Some(reference)=arr(&review["sessions"]).iter().find(|r|r["agent"]==item["agent"]&&r["id"]==item["session_id"]){doc.sources.push((doc.lines.len()-1,Link::Session(s(&reference["storage_key"]).into())));}
         doc.text(format!("Linkage: {} · {} recorded edits",s(&item["match"]),arr(&item["edits"]).len()),MUTED);
         if items[index+1..].iter().any(|later|!arr(&later["edits"]).is_empty()){
-            doc.text("Later edits to this file are captured below. This context may no longer apply; no supersession is inferred automatically.",AMBER);
+            doc.text("Newer edits to this file are also captured. This earlier context may no longer apply.",AMBER);
         }
         if decisions{
             if arr(&item["records"]).is_empty(){doc.text("No structured decision record in this turn. Alternatives, assumptions, and intended tradeoffs may be unknown.",AMBER);}
-            for r in arr(&item["records"]){let record=&r["record"];
+            for r in arr(&item["records"]).iter().take(8){let record=&r["record"];
                 doc.heading("Recorded decision · self-reported");
                 for field in ["symbol","decision","reason","requirement","timing","validation"]{doc.text(format!("{field}: {}",record[field].as_str().unwrap_or("unknown / not recorded")),TEXT);}
                 for field in ["alternatives","tradeoffs","evidence","related_edits"]{let values:Vec<_>=arr(&record[field]).iter().filter_map(Value::as_str).collect();doc.text(format!("{field}: {}",if values.is_empty(){"unknown / not recorded".into()}else{values.join("; ")}),MUTED);}
@@ -87,15 +127,19 @@ pub(super) fn context(review:&Value,sessions:&[Value],target:Target,decisions:bo
             }
             doc.heading("Review and validation");
             if arr(&item["validation"]).is_empty(){doc.text("Validation gap: no test command captured in this turn. Tests may have run elsewhere.",AMBER);}
-            for test in arr(&item["validation"]){doc.text(format!("{} · {}",s(&test["event_id"]),s(&test["outcome"])),TEXT);doc.text(crate::security::short(s(&test["command"]),1000),MUTED);}
+            for test in arr(&item["validation"]).iter().take(8){doc.text(format!("{} · {}",s(&test["event_id"]),s(&test["outcome"])),TEXT);doc.text(crate::security::short(s(&test["command"]),1000),MUTED);}
             doc.text("Reviewer checks (proposed, not agent intent): confirm the requirement, boundary responsibilities, failure handling, and regression coverage.",MUTED);
         }
         doc.heading(if decisions{"Supporting captured context"}else{"Captured events"});
         let events=arr(&item["events"]);
-        for e in events.iter().take(60){event(&mut doc,e,s(&item["agent"]),if decisions{1000}else{1600});}
-        if events.len()>60{doc.text(format!("{} more events omitted; open the session to inspect.",events.len()-60),AMBER);}
+        let start=part*EVENTS_PER_PAGE;let end=(start+EVENTS_PER_PAGE).min(events.len());
+        doc.text(format!("Events {}–{} of {} in this turn",if events.is_empty(){0}else{start+1},end,events.len()),TEXT);
+        for e in &events[start..end]{event(&mut doc,e,s(&item["agent"]),if decisions{1000}else{1600});}
+        if decisions && (arr(&item["records"]).len()>8||arr(&item["validation"]).len()>8){doc.text("Decision/test overview limited to 8 records each; page through captured events to inspect the rest.",TEXT);}
     }
-    doc.target=Some(target);doc
+    if count>1{pager(&mut doc,page_index,count);}
+    doc.target=Some(target.clone());
+    doc.pagination=Some(Page::History{items,target,decisions,index:page_index});doc
 }
 pub(super) fn export(review:&Value,sessions:&[Value])->Document{
     let text=insights::brief(review,sessions);let mut doc=Document::new(View::Export,"Export preview · review before sharing");
