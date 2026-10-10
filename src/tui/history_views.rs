@@ -56,6 +56,7 @@ pub(super) fn coverage(review:&Value,sessions:&[Value])->Document{
     doc.heading("Capture warnings");for w in arr(&review["warnings"]){doc.text(s(w),AMBER);}
     doc.heading("Next steps");doc.text("/sessions opens captured conversations. /source AGENT then r narrows capture. /timeline FILE shows handoffs. /decisions FILE:SYMBOL inspects decision context.",TEXT);doc
 }
+#[cfg(test)]
 pub(super) fn session(session:&Value)->Document{
     session_page(Arc::new(session.clone()),0)
 }

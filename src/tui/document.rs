@@ -38,7 +38,6 @@ pub(super) enum Link {
     Decision(usize),
     DiscoverDecisions,
     SessionPicker,
-    SessionChat(String),
     SessionEdit(Value),
     CompareSessionEdit(Value),
     Explain,
@@ -591,7 +590,7 @@ fn event_details(event:&Value,agent:&str)->Vec<Line<'static>> {
     if let Some(status)=crate::history::origins::status(event){lines.push(Line::styled(format!("  {status}"),Style::default().fg(TEXT)));}
     lines
 }
-fn event_body(event:&Value,limit:usize)->Vec<Line<'static>> {
+pub(super) fn event_body(event:&Value,limit:usize)->Vec<Line<'static>> {
     let mut lines=vec![];
     let (label,color,_)=conversation_role(event);
     if ["TOOL ACTION","TOOL RESULT"].contains(&label) {

@@ -164,7 +164,7 @@ fn decision_completion_stays_with_selected_snapshot_and_does_not_interrupt_readi
     assert_eq!(app.decision_brief.as_ref().unwrap()["id"], "updated");
 }
 #[test]
-fn only_decisions_and_sessions_are_primary_and_older_sessions_require_the_picker() {
+fn only_decisions_and_sessions_are_primary_and_picker_remains_available() {
     let (_dir, mut app) = app();
     for width in [40, 80, 140] {
         app.decision_home();
@@ -224,6 +224,51 @@ fn only_decisions_and_sessions_are_primary_and_older_sessions_require_the_picker
         assert!(text(&app.document).contains("persist(job)"));
         assert!(app.job.is_none());
     }
+}
+#[test]
+fn session_navigation_supports_click_keyboard_scrolling_and_narrow_terminals() {
+    let (_dir, mut app) = app();
+    let base = app.sessions[0].clone();
+    for index in 0..30 {
+        let mut session = base.clone();
+        session["id"] = json!(format!("older-{index}"));
+        let key = crate::session_work::snapshot_key(&session);
+        app.review["sessions"].as_array_mut().unwrap().push(json!({"storage_key":key,"id":session["id"],"agent":session["agent"]}));
+        app.sessions.push(session);
+    }
+    app.rebuild_session_navigation();
+    assert_eq!(app.navigation_sessions().len(), 31);
+    assert_eq!(app.navigation_sessions()[0].1, "coding");
+    // Navigation must use cached metadata, even without loaded transcripts.
+    let entries = app.navigation_sessions().to_vec();
+    app.sessions.clear();
+    assert_eq!(app.navigation_sessions(), entries.as_slice());
+    let mut terminal = Terminal::new(TestBackend::new(120, 18)).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let rect = app.areas.sessions;
+    assert!(!rect.is_empty());
+    assert!(rect.right() <= app.areas.reader.x);
+    app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: rect.x, row: rect.y, modifiers: KeyModifiers::NONE }).unwrap();
+    assert_eq!(app.document.kind, View::SessionWork);
+    assert!(!text(&app.document).contains("Open conversation"));
+    assert!(!text(&app.document).contains("Original context"));
+    assert!(!text(&app.document).contains("Capture details"));
+    assert!(text(&app.document).contains("Tool activity"));
+    app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+    app.key(KeyCode::End, KeyModifiers::NONE).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    assert_eq!(app.session_nav.selected(), Some(30));
+    assert!(app.session_nav.offset() > 0);
+    app.key(KeyCode::Home, KeyModifiers::NONE).unwrap();
+    app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    assert!(!app.session_nav_focus);
+    assert_eq!(app.document.kind, View::SessionWork);
+    let mut narrow = Terminal::new(TestBackend::new(60, 18)).unwrap();
+    narrow.draw(|f| app.draw(f)).unwrap();
+    assert!(app.areas.sessions.is_empty());
+    app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+    narrow.draw(|f| app.draw(f)).unwrap();
+    assert!(!app.areas.sessions.is_empty());
 }
 #[test]
 fn clean_tree_does_not_erase_session_work_and_missing_history_never_uses_today() {

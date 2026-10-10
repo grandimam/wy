@@ -70,7 +70,7 @@ fn request_turns(session: &Value, edits: &[Value]) -> Vec<Value> {
             .or_default()
             .push(i);
     }
-    let blank = || json!({"request":null,"prior_request":null,"messages":[],"edit_indices":[]});
+    let blank = || json!({"request":null,"prior_request":null,"messages":[],"activity":[],"edit_indices":[]});
     let mut current = blank();
     let mut turns = vec![];
     let mut prior = Value::Null;
@@ -78,6 +78,7 @@ fn request_turns(session: &Value, edits: &[Value]) -> Vec<Value> {
         if event["kind"] == "user" {
             if !current["request"].is_null()
                 || !arr(&current["messages"]).is_empty()
+                || !arr(&current["activity"]).is_empty()
                 || !arr(&current["edit_indices"]).is_empty()
             {
                 turns.push(current);
@@ -98,6 +99,8 @@ fn request_turns(session: &Value, edits: &[Value]) -> Vec<Value> {
                 .as_array_mut()
                 .unwrap()
                 .push(event.clone());
+        } else {
+            current["activity"].as_array_mut().unwrap().push(event.clone());
         }
         if let Some(indices) =
             by_event.remove(&(s(&event["id"]).into(), crate::n(&event["source_line"])))
@@ -109,6 +112,7 @@ fn request_turns(session: &Value, edits: &[Value]) -> Vec<Value> {
         }
     }
     if !current["request"].is_null()
+        || !arr(&current["activity"]).is_empty()
         || !arr(&current["messages"]).is_empty()
         || !arr(&current["edit_indices"]).is_empty()
     {

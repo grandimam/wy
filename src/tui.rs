@@ -131,6 +131,7 @@ struct Areas {
     reader: Rect,
     input: Rect,
     tabs: Vec<(Rect, View, Focus)>,
+    sessions: Rect,
     sources: Vec<(Rect, Link)>,
 }
 struct Workspace {
@@ -144,6 +145,9 @@ struct Workspace {
     decision_brief: Option<Arc<Value>>,
     selected_work: Option<Value>,
     sessions: Vec<Value>,
+    session_nav: ratatui::widgets::ListState,
+    session_entries: Vec<(String, String)>,
+    session_nav_focus: bool,
     history_tabs: std::collections::HashMap<String,Document>,
     views: Vec<ReadingState>,
     queue: VecDeque<reasoning::Options>,
@@ -220,6 +224,9 @@ impl Workspace {
             decision_brief: None,
             selected_work: None,
             sessions: vec![],
+            session_nav: ratatui::widgets::ListState::default(),
+            session_entries: vec![],
+            session_nav_focus: false,
             history_tabs: std::collections::HashMap::new(),
             views: vec![],
             queue: VecDeque::new(),
@@ -258,10 +265,13 @@ impl Workspace {
         self.selected_work.clone().unwrap_or_else(||crate::session_work::empty(&self.review))
     }
     fn select_latest_work(&mut self) {
+        self.rebuild_session_navigation();
         let previous=self.selected_work.as_ref();
         let selected=previous.and_then(|w|self.sessions.iter().find(|s|s["id"]==w["session"]["id"] && s["agent"]==w["session"]["agent"]))
             .or_else(||crate::session_work::latest(&self.sessions));
         self.selected_work=selected.map(|s|crate::session_work::build(&self.review,s));
+        self.session_nav.select(None);
+        self.step_session_navigation(0);
     }
     fn session_flow(&mut self) {
         self.remember_section();
@@ -270,6 +280,31 @@ impl Workspace {
         let key=format!("session-flow:{}",s(&work["session"]["storage_key"]));
         let doc=self.history_tabs.get(&key).cloned().unwrap_or_else(||session_views::flow(work,0));
         self.open(doc);self.sidebar=false;self.code=None;
+    }
+    /// Rebuild only when history changes, never while drawing or moving the cursor.
+    fn rebuild_session_navigation(&mut self) {
+        let dates: std::collections::HashMap<_, _> = self.sessions.iter().map(|session| {
+            ((s(&session["agent"]), s(&session["id"])),
+             chrono::DateTime::parse_from_rfc3339(s(&crate::insights::session_dates(session).1)).ok())
+        }).collect();
+        let mut entries: Vec<_> = arr(&self.review["sessions"]).iter()
+            .filter(|reference| !s(&reference["storage_key"]).is_empty())
+            .map(|reference| {
+                let date = dates.get(&(s(&reference["agent"]), s(&reference["id"]))).copied().flatten();
+                (date, (s(&reference["storage_key"]).to_owned(), s(&reference["id"]).to_owned()))
+            }).collect();
+        entries.sort_by_key(|(date, _)| std::cmp::Reverse(*date));
+        self.session_entries = entries.into_iter().map(|(_, entry)| entry).collect();
+    }
+    fn navigation_sessions(&self) -> &[(String, String)] {
+        &self.session_entries
+    }
+    fn step_session_navigation(&mut self, delta: isize) {
+        let entries = self.navigation_sessions();
+        if entries.is_empty() { return; }
+        let current = self.session_nav.selected().unwrap_or_else(|| entries.iter().position(|(key, _)|
+            self.selected_work.as_ref().is_some_and(|w| w["session"]["storage_key"] == *key)).unwrap_or(0));
+        self.session_nav.select(Some(current.saturating_add_signed(delta).min(entries.len() - 1)));
     }
     fn session_picker(&mut self) {
         self.open(session_views::picker(&self.review,&self.sessions,self.selected_work.as_ref()));self.sidebar=false;
@@ -280,7 +315,11 @@ impl Workspace {
         ensure!(crate::history::belongs(s(&session["cwd"]),&self.root) && crate::session_work::snapshot_key(&session)==key,"Session snapshot is not verifiably scoped to this repository");
         let work=crate::session_work::build(&self.review,&session);
         self.decision_brief=crate::decisions::saved(&self.root,&work)?.map(Arc::new);
-        self.selected_work=Some(work);self.views.clear();self.session_flow();self.back.clear();Ok(())
+        self.selected_work=Some(work);
+        if let Some(index) = self.navigation_sessions().iter().position(|(entry, _)| entry == key) {
+            self.session_nav.select(Some(index));
+        }
+        self.views.clear();self.session_flow();self.back.clear();Ok(())
     }
     fn remember_section(&mut self) {
         if self.document.kind==View::SessionWork {
@@ -960,12 +999,6 @@ impl Workspace {
                 let work=crate::session_work::build(&self.review,&session);
                 self.open(session_views::comparison(&self.root,&work,&edit));Ok(())
             }
-            Link::SessionChat(key) => {
-                let session=crate::storage::Store::open(&self.root)?.get("session",&key)?;
-                crate::validate("Session",&session)?;
-                ensure!(crate::history::belongs(s(&session["cwd"]),&self.root),"Session is not scoped to this repository");
-                self.open(history_views::session(&session));Ok(())
-            }
             Link::Source(index) => self.open_evidence(index),
             Link::Turn(edit) => {
                 let (_, session) = crate::history::saved_edit(&self.root, &crate::history::edit_ref(&edit))?;
@@ -1208,6 +1241,32 @@ impl Workspace {
             }
             return Ok(false);
         }
+        if matches!(code, KeyCode::Tab | KeyCode::BackTab) && self.section() != View::Recorded {
+            self.session_nav_focus = !self.session_nav_focus;
+            if self.session_nav_focus { self.step_session_navigation(0); }
+            return Ok(false);
+        }
+        if self.session_nav_focus {
+            match code {
+                KeyCode::Up | KeyCode::Char('k') => self.step_session_navigation(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.step_session_navigation(1),
+                KeyCode::Home => self.step_session_navigation(isize::MIN),
+                KeyCode::End => self.step_session_navigation(isize::MAX),
+                KeyCode::PageUp => self.step_session_navigation(-10),
+                KeyCode::PageDown => self.step_session_navigation(10),
+                KeyCode::Enter | KeyCode::Right => {
+                    if let Some((key, _)) = self.navigation_sessions().get(self.session_nav.selected().unwrap_or(0)).cloned() {
+                        self.select_session(&key)?;
+                    }
+                    self.session_nav_focus = false;
+                }
+                KeyCode::Esc => self.session_nav_focus = false,
+                _ => { self.session_nav_focus = false; }
+            }
+            if matches!(code, KeyCode::Up | KeyCode::Down | KeyCode::Home | KeyCode::End | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Enter | KeyCode::Right | KeyCode::Esc | KeyCode::Char('j' | 'k')) {
+                return Ok(false);
+            }
+        }
         let selection_before = self.explorer.selected().map(|r| r.key.clone());
         match code {
             KeyCode::Char('q') => {
@@ -1421,7 +1480,14 @@ impl Workspace {
         }
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if self.areas.file_divider.contains(point) {
+                self.session_nav_focus = false;
+                if self.areas.sessions.contains(point) {
+                    let index = self.session_nav.offset() + usize::from(event.row - self.areas.sessions.y);
+                    if let Some((key, _)) = self.navigation_sessions().get(index).cloned() {
+                        self.session_nav.select(Some(index));
+                        self.select_session(&key)?;
+                    }
+                } else if self.areas.file_divider.contains(point) {
                     self.dragging = Some(Divider::Files);
                 } else if let Some((_, link)) = self
                     .areas
@@ -1475,7 +1541,10 @@ impl Workspace {
                 } else {
                     -3
                 };
-                if self.areas.files.contains(point) {
+                if self.areas.sessions.contains(point) {
+                    self.session_nav_focus = true;
+                    self.step_session_navigation(delta);
+                } else if self.areas.files.contains(point) {
                     self.focus = Focus::Files;
                     self.explorer.step(delta);
                     self.preview_selection();

@@ -33,11 +33,11 @@ impl Workspace {
         .split(area);
         self.draw_header(frame, rows[0]);
         let narrow = area.width < 88;
-        let body = if narrow {
+        let body = if narrow && !self.session_nav_focus {
             self.draw_navigation(frame, rows[1], false);
             rows[2]
         } else {
-            let columns=Layout::horizontal([Constraint::Length(14),Constraint::Min(0)]).split(rows[2]);
+            let columns=Layout::horizontal([Constraint::Length(if self.section() == View::Recorded { 14 } else if narrow { 20 } else { 28 }),Constraint::Min(0)]).split(rows[2]);
             self.draw_navigation(frame, columns[0], true);
             columns[1]
         };
@@ -216,6 +216,25 @@ impl Workspace {
             let style=if selected{Style::default().fg(ACCENT).bold().add_modifier(Modifier::REVERSED)}else{Style::default().fg(TEXT)};
             frame.render_widget(Paragraph::new(format!(" {label}")).style(style),rect);
             self.areas.tabs.push((rect,view,Focus::Reader));
+        }
+        if vertical && area.height > 4 {
+            let rect = Rect::new(area.x, area.y + 4, area.width.saturating_sub(1), area.height - 4);
+            self.areas.sessions = rect;
+            if self.session_nav.selected().is_none() {
+                self.step_session_navigation(0);
+            }
+            let entries = self.navigation_sessions();
+            if entries.is_empty() {
+                frame.render_widget(Paragraph::new("  No captured sessions").style(Style::default().fg(MUTED)), rect);
+                return;
+            }
+            let items: Vec<_> = entries.iter().map(|(key, id)| {
+                let selected = self.selected_work.as_ref().is_some_and(|w| w["session"]["storage_key"] == *key);
+                ListItem::new(format!(" {} {}", if selected { "›" } else { " " }, fit(id, rect.width.saturating_sub(4) as usize)))
+                    .style(Style::default().fg(if selected { ACCENT } else { MUTED }))
+            }).collect();
+            let highlight = if self.session_nav_focus { Style::default().add_modifier(Modifier::REVERSED) } else { Style::default() };
+            frame.render_stateful_widget(List::new(items).highlight_style(highlight), rect, &mut self.session_nav);
         }
     }
     fn draw_reader(&mut self, frame: &mut Frame, area: Rect) {
@@ -410,7 +429,7 @@ impl Workspace {
         } else if reader && self.document.kind==View::DecisionOverview {
             vec![("↑↓", "decisions"), ("Enter", "open"), ("e", "discover"), ("t", "session")]
         } else if reader && self.document.kind==View::SessionWork {
-            vec![("s", "select"), ("Enter", "open"), ("d", "decisions"), ("b", "sessions")]
+            vec![("Tab", "sessions / reader"), ("s", "select"), ("Enter", "open"), ("d", "decisions")]
         } else if reader && self.document.kind==View::DecisionDetail {
             vec![("↑↓", "read"), ("s", "evidence"), ("d", "decisions"), ("Esc", "back")]
         } else if reader && self.document.source_selection.is_some() {

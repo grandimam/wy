@@ -25,8 +25,8 @@ The left navigation has two sections:
 
 On narrow terminals, these become a compact top row. Ctrl+Left/Right switches
 sections. Original conversations are available within a session—not in a separate
-History section. Other sessions appear only when you open the session picker with
-**b**, `/sessions`, or **Change session**.
+History section. Captured sessions appear beneath **Sessions** in the left navigation.
+The session picker remains available through **b** or `/sessions`.
 
 At startup wy selects the latest captured session using known source-event dates.
 It does not claim that session is currently active: wy observes agent history,
@@ -73,6 +73,11 @@ selected session, interrupts a draft, or replaces a deep dive. **x** cancels req
 
 ## Session implementation flow
 
+The left navigation lists captured sessions beneath **Sessions**, newest first.
+Click a session to read its flow. Press Tab to focus the session list, use Up/Down
+and Enter to select, and Tab to return to reading. The list scrolls independently;
+on narrow terminals Tab reveals it. The latest captured session is selected by default.
+
 Sessions gives each original request a bordered card. **Agent response** and
 **Agent notes** sit directly beneath it, collapsed by default, followed by the
 captured changes. Planning turns without edits remain available. Notes are
@@ -93,8 +98,8 @@ historical files. Truncated and empty excerpts are marked explicitly.
 Pages contain at most 20 edits and eight request groups. Long requests continue
 across pages without dropping edits. Previous/Next controls or Alt+Left/Right move
 between pages. Returning from Decisions preserves the selected snapshot's flow
-position. **Original context** opens the saved conversation, with optional tool
-activity and metadata. Session transcripts paginate at 20 events per page.
+position. Captured **Tool activity** is expandable beneath the corresponding
+request, alongside responses and notes; there is no separate conversation footer.
 
 Captured code remains readable after it is committed, changed, deleted, or the
 original transcript is removed. This requires a saved, verifiably repository-scoped

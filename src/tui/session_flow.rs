@@ -86,7 +86,7 @@ fn message_lines(messages: &[Value], kind: &str) -> Vec<Line<'static>> {
     for e in selected {
         if remaining == 0 {
             lines.push(Line::styled(
-                "    More context is available in Open conversation.",
+                "    Additional captured messages omitted from this excerpt.",
                 Style::default().fg(AMBER),
             ));
             break;
@@ -109,7 +109,7 @@ fn message_lines(messages: &[Value], kind: &str) -> Vec<Line<'static>> {
         );
         if text != raw || e["truncated"] == true {
             lines.push(Line::styled(
-                "    Partial excerpt · open the conversation for captured context",
+                "    Partial excerpt · captured text may be incomplete",
                 Style::default().fg(AMBER),
             ));
         }
@@ -188,6 +188,16 @@ fn group(doc: &mut Document, work: &Value, part: Part) {
         "  Agent notes",
         message_lines(messages, "notes"),
     );
+    if !arr(&turn["activity"]).is_empty() {
+        let mut lines = vec![];
+        for event in arr(&turn["activity"]) {
+            let (label, color, _) = super::document::conversation_role(event);
+            lines.push(Line::styled(format!("    {label}"), Style::default().fg(color)));
+            lines.extend(super::document::event_body(event, 8000));
+            lines.push(Line::default());
+        }
+        doc.disclosure(format!("{id}-activity"), "  Tool activity", lines);
+    }
     if messages.iter().any(summary) {
         doc.disclosure(
             format!("{id}-summary"),
@@ -264,7 +274,6 @@ pub(super) fn flow(work: Arc<Value>, page: usize) -> Document {
         link(&mut doc, "Choose a session", Link::SessionPicker);
         return doc;
     }
-    doc.sources.push((doc.lines.len(), Link::SessionPicker));
     doc.lines.push(Line::from(vec![
         Span::styled(
             format!(
@@ -274,8 +283,11 @@ pub(super) fn flow(work: Arc<Value>, page: usize) -> Document {
             ),
             Style::default().fg(MUTED),
         ),
-        Span::styled("    Change session", Style::default().fg(ACCENT)),
+
     ]));
+    for warning in arr(&work["warnings"]) {
+        doc.text(s(warning), AMBER);
+    }
     let pages = pages(arr(&work["turns"]));
     let page = page.min(pages.len() - 1);
     if arr(&work["turns"]).is_empty() {
@@ -295,19 +307,6 @@ pub(super) fn flow(work: Arc<Value>, page: usize) -> Document {
             link(&mut doc, "Next →", Link::Page(page + 1));
         }
     }
-    doc.heading("Original context");
-    link(
-        &mut doc,
-        "Open conversation",
-        Link::SessionChat(s(&work["session"]["storage_key"]).into()),
-    );
-    let mut details = vec![Line::from(
-        "Recorded edit order, not a reconstructed runtime call graph. Shell, manual and unsupported edits may be missing; known failed edits are excluded. No current files were substituted.",
-    )];
-    for warning in arr(&work["warnings"]) {
-        details.push(Line::from(s(warning).to_owned()));
-    }
-    doc.disclosure("session-coverage".into(), "Capture details", details);
     doc.pagination = Some(Page::Work {
         work: work.clone(),
         index: page,
