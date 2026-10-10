@@ -236,9 +236,9 @@ fn diff_and_why_toggle_reuses_the_answer_for_the_exact_change() {
     let (_, _) = screen(&mut app, 120, 32);
     let why = app
         .areas
-        .tabs
+        .sources
         .iter()
-        .find(|(_, view, _)| *view == View::Explanation)
+        .find(|(_, link)| *link == Link::Explain)
         .unwrap()
         .0;
     app.mouse(MouseEvent {
@@ -683,7 +683,7 @@ fn explanation_shares_the_reader_and_sources_open_by_mouse_and_keyboard() {
     app.open(document::explanation(artifact(Some("src/cache.rs"))));
     let (text, terminal) = screen(&mut app, 140, 38);
     assert!(text.contains("Repeated requests can reuse"));
-    assert!(text.contains("Explanation"));
+    assert_eq!(app.section(), View::Recorded);
     preview("code-and-explanation", &terminal);
     // Tab moves between the tree and the reader; the answer stays open.
     press(&mut app, KeyCode::Tab);
@@ -872,12 +872,12 @@ fn completion_does_not_interrupt_drafts_or_sources_and_ready_button_reuses_answe
     assert_eq!(app.document.kind, View::Evidence);
     press(&mut app, KeyCode::Char('o'));
     let (text, _) = screen(&mut app, 140, 38);
-    assert!(text.contains("Explanation"));
+    assert!(text.contains("Ask AI to explain"));
     let button = app
         .areas
-        .tabs
+        .sources
         .iter()
-        .find(|(_, view, _)| *view == View::Explanation)
+        .find(|(_, link)| *link == Link::Explain)
         .unwrap()
         .0;
     app.mouse(MouseEvent {
@@ -932,11 +932,13 @@ fn restarting_restores_completed_enrichments_without_a_request() {
     store.put("reasoning", "newest", &answer).unwrap();
     store.put("reasoning", "latest", &answer).unwrap();
     assert_eq!(store.recent("reasoning", 40).unwrap().len(), 2);
-    let app = Workspace::new(dir.path()).unwrap();
-    assert_eq!(app.document.kind, View::Explanation);
-    assert_eq!(app.document.artifact.unwrap()["id"], "newest");
+    let mut app = Workspace::new(dir.path()).unwrap();
+    assert_eq!(app.document.kind, View::DecisionOverview);
+    assert!(!app.sidebar);
     assert!(app.job.is_none());
     assert_eq!(app.answers.len(), 1);
+    app.change_view(View::Explanation).unwrap();
+    assert_eq!(app.document.artifact.as_ref().unwrap()["id"], "newest");
 }
 
 fn commit_workspace() -> (tempfile::TempDir, Workspace, String, String) {
@@ -1260,9 +1262,11 @@ fn history_views_expose_source_dates_coverage_and_safe_preview_actions() {
     assert_eq!(app.document.kind,View::Coverage);
     let text=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
     assert!(text.contains("2026-10-10"));assert!(text.contains("Budget exclusions 2"));
+    app.review["sessions"]=json!([{"storage_key":crate::session_work::snapshot_key(&app.sessions[0]),"id":"old-session","agent":"pi"}]);
     run_command(&mut app,"/sessions").unwrap();
     let text=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-    assert!(text.contains("2024-01-01"));assert!(text.contains("2024-01-02"));assert!(text.contains("old-session"));
+    assert!(text.contains("latest captured"));assert!(text.contains("old-session"));
+    assert!(text.contains(&crate::insights::local_date(&json!("2024-01-02T00:00:00Z"))));
     run_command(&mut app,"/timeline src/cache.rs").unwrap();assert_eq!(app.document.kind,View::Timeline);
     run_command(&mut app,"/decisions src/cache.rs").unwrap();assert_eq!(app.document.kind,View::Decisions);
     assert!(run_command(&mut app,"/export save").is_err());
@@ -1405,13 +1409,14 @@ fn conversation_roles_are_explicit_and_user_text_is_not_dimmed() {
 }
 
 #[test]
-fn main_tabs_are_visible_without_answers_and_button_queues_the_selected_file() {
+fn sections_are_visible_without_answers_and_inline_explanation_button_queues_the_selected_file() {
     let mut app=workspace();select(&mut app,"src/cache.rs");app.preview_selection();app.focus=Focus::Reader;
     let (text,_)=screen(&mut app,120,32);
-    assert!(text.contains("Changes"));assert!(text.contains("Explanation"));assert!(text.contains("History"));
-    let history=app.areas.tabs.iter().find(|(_,view,_)|*view==View::Timeline).unwrap().0;
+    assert!(text.contains("Decisions"));assert!(text.contains("Sessions"));
+    assert_eq!(app.areas.tabs.len(),2);
+    let history=app.areas.tabs.iter().find(|(_,view,_)|*view==View::Sessions).unwrap().0;
     mouse_at(&mut app,MouseEventKind::Down(MouseButton::Left),history.x+1,history.y);
-    assert_eq!(app.document.kind,View::Timeline);assert!(app.job.is_none());
+    assert_eq!(app.document.kind,View::SessionWork);assert!(app.job.is_none());
     press(&mut app,KeyCode::Char('v'));assert_eq!(app.document.kind,View::Explanation);assert!(app.job.is_none());
     assert_eq!(app.document.target.as_ref().unwrap().file,"src/cache.rs");
     let (text,_)=screen(&mut app,100,30);assert!(text.contains("Ask AI to explain this change"));
@@ -1464,33 +1469,32 @@ fn all_history_renderers_collapse_agent_notes_and_keep_metadata_in_details() {
 }
 
 #[test]
-fn tabs_cycle_without_requests_and_history_keeps_its_reading_position() {
+fn sections_cycle_without_requests_and_history_keeps_its_reading_position() {
     let mut app=with_notes();app.focus=Focus::Reader;
     app.key(KeyCode::Right,KeyModifiers::CONTROL).unwrap();
-    assert_eq!(app.document.kind,View::Explanation);assert!(app.job.is_none());
-    app.key(KeyCode::Right,KeyModifiers::CONTROL).unwrap();
-    assert_eq!(app.document.kind,View::Timeline);
+    assert_eq!(app.document.kind,View::SessionWork);assert!(app.job.is_none());
     app.document.scroll=4;app.document.text("Cached history marker",TEXT);
     let depth=app.back.len();
-    app.change_view(View::Timeline).unwrap();assert_eq!(app.back.len(),depth);
+    app.change_view(View::Sessions).unwrap();assert_eq!(app.back.len(),depth);
     app.key(KeyCode::Left,KeyModifiers::CONTROL).unwrap();
-    assert_eq!(app.document.kind,View::Explanation);
+    assert_eq!(app.document.kind,View::DecisionOverview);
     app.key(KeyCode::Right,KeyModifiers::CONTROL).unwrap();
     assert_eq!(app.document.scroll,4);
     assert!(app.document.lines.iter().any(|line|line.to_string()=="Cached history marker"));
     assert!(app.job.is_none());
-    app.key(KeyCode::Right,KeyModifiers::CONTROL).unwrap();assert_eq!(app.document.kind,View::Recorded);
+    app.key(KeyCode::Right,KeyModifiers::CONTROL).unwrap();assert_eq!(app.document.kind,View::DecisionOverview);
+    app.key(KeyCode::Right,KeyModifiers::CONTROL).unwrap();assert_eq!(app.document.kind,View::SessionWork);
     app.sidebar=false;
     for width in [40,80,140] {
         screen(&mut app,width,24);
         let tabs:Vec<_>=app.areas.tabs.iter().filter(|(_,_,focus)|*focus==Focus::Reader).collect();
-        assert_eq!(tabs.len(),3);
-        assert!(tabs.windows(2).all(|pair|pair[0].0.right()<=pair[1].0.x));
-        assert!(tabs.iter().all(|(rect,_,_)|rect.width>=10));
+        assert_eq!(tabs.len(),2);
+        assert!(tabs.windows(2).all(|pair|if width>=88 {pair[0].0.bottom()<=pair[1].0.y}else{pair[0].0.right()<=pair[1].0.x}));
+        assert!(tabs.iter().all(|(rect,_,_)|rect.width>=8));
     }
     app.edit(Input::Command);
     app.key(KeyCode::Right,KeyModifiers::CONTROL).unwrap();
-    assert_eq!(app.document.kind,View::Recorded);
+    assert_eq!(app.document.kind,View::SessionWork);
 }
 
 #[test]

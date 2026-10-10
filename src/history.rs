@@ -7,7 +7,7 @@ mod recent;
 pub mod provenance;
 pub mod origins;
 pub mod attribution;
-pub use recent::{recent_code, saved_edit, edit_ref};
+pub use recent::{recent_code, saved_edit, edit_ref, records as session_edits};
 use anyhow::{Result,ensure,bail};
 use serde_json::{json,Value};
 use std::{collections::{HashSet,HashMap},fs::File,io::{BufRead,BufReader,Read},path::{Path,PathBuf}};

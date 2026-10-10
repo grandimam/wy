@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-/// Review AI-generated code with Git diffs, conversation history, and agent explanations.
+/// Understand decisions and captured code from your coding-agent sessions.
 ///
 /// wy is an interactive terminal app: run it inside a repository and press ? for help.
 #[derive(Parser)]

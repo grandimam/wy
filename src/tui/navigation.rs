@@ -33,6 +33,7 @@ pub(super) fn options_key(options: &reasoning::Options) -> String {
 }
 impl Workspace {
     pub(super) fn current_key(&self) -> Option<String> {
+        if self.document.artifact.as_ref().is_some_and(|a|a["context"]=="decision_brief" || a["context"]=="session_work") {return None;}
         self.document
             .artifact
             .as_ref()

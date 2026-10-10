@@ -1,5 +1,4 @@
-//! Two areas: the file tree and one reader that switches between Changes and Notes.
-//! Request cards separate the user's intent from code and optional diagnostics.
+//! Section navigation beside the reader; the file tree belongs only to Code.
 use super::*;
 use std::collections::HashMap;
 use ratatui::widgets::{Block, Borders, BorderType, Padding};
@@ -33,10 +32,17 @@ impl Workspace {
         ])
         .split(area);
         self.draw_header(frame, rows[0]);
-        let body = rows[2];
-        self.areas.body = body;
         let narrow = area.width < 88;
-        let show_files = self.sidebar && (!narrow || self.focus == Focus::Files);
+        let body = if narrow {
+            self.draw_navigation(frame, rows[1], false);
+            rows[2]
+        } else {
+            let columns=Layout::horizontal([Constraint::Length(14),Constraint::Min(0)]).split(rows[2]);
+            self.draw_navigation(frame, columns[0], true);
+            columns[1]
+        };
+        self.areas.body = body;
+        let show_files = self.section()==View::Recorded && self.sidebar && (!narrow || self.focus == Focus::Files);
         let show_reader = !show_files || !narrow;
         let file_width = match (show_files, narrow) {
             (false, _) => 0,
@@ -69,14 +75,10 @@ impl Workspace {
     }
     fn draw_header(&mut self, frame: &mut Frame, area: Rect) {
         let repo = self.root.file_name().unwrap_or_default().to_string_lossy();
-        let files = explorer::files(&self.review).len();
         let title = Line::from(vec![
             Span::styled(" wy", Style::default().fg(ACCENT).bold()),
             Span::styled(format!("  {repo}"), Style::default().fg(TEXT).bold()),
-            Span::styled(
-                format!(" · {files} file{}", if files == 1 { "" } else { "s" }),
-                Style::default().fg(MUTED),
-            ),
+
         ]);
         frame.render_widget(Paragraph::new(title), area);
         let agent = Line::from(Span::styled(
@@ -206,14 +208,13 @@ impl Workspace {
         let suffix=state.map(|(s,_)|format!(" · explanation {s}")).unwrap_or_default();
         frame.render_widget(Paragraph::new(fit(&format!("{}{}",self.document.title,suffix),area.width as usize)).style(Style::default().fg(TEXT).bold()),area);
     }
-    fn draw_reader_tabs(&mut self,frame:&mut Frame,area:Rect){
-        if self.document.target.is_none(){return;}
-        let tabs=Layout::horizontal([Constraint::Ratio(1,3);3]).split(area);
-        for ((label,short,view,key),rect) in [("Changes","Code",View::Recorded,"o"),("Explanation","AI",View::Explanation,"v"),("History","History",View::Timeline,"t")].into_iter().zip(tabs.iter().copied()) {
-            let label=if rect.width>=18{format!(" {label} [{key}] ")}else if rect.width>=label.len() as u16+2{format!(" {label} ")}else{short.into()};
-            let selected=self.document.kind==view;
+    fn draw_navigation(&mut self,frame:&mut Frame,area:Rect,vertical:bool){
+        let horizontal=Layout::horizontal([Constraint::Ratio(1,2);2]).split(area);
+        for (index,(label,view)) in [("Decisions",View::DecisionOverview),("Sessions",View::Sessions)].into_iter().enumerate() {
+            let rect=if vertical {Rect::new(area.x,area.y+index as u16*2,area.width.saturating_sub(1),1)}else{horizontal[index]};
+            let selected=self.section()==view || (view==View::Sessions && self.section()==View::Recorded);
             let style=if selected{Style::default().fg(ACCENT).bold().add_modifier(Modifier::REVERSED)}else{Style::default().fg(TEXT)};
-            frame.render_widget(Paragraph::new(Span::styled(label,style)).style(style).centered(),rect);
+            frame.render_widget(Paragraph::new(format!(" {label}")).style(style),rect);
             self.areas.tabs.push((rect,view,Focus::Reader));
         }
     }
@@ -238,7 +239,7 @@ impl Workspace {
         ])
         .split(area);
         self.draw_title(frame, rows[0]);
-        self.draw_reader_tabs(frame,rows[2]);
+
         if let Some((text, color)) = &self.document.notice {
             frame.render_widget(
                 Paragraph::new(text.as_str())
@@ -255,8 +256,17 @@ impl Workspace {
         for (first,last,request) in &panels{
             for row in *first..=*last{panel_rows.insert(row,(*first,*last,*request));}
         }
+        let mut indents=HashMap::new();
+        if self.document.kind==View::SessionWork {
+            for (index,line) in lines.iter_mut().enumerate().filter(|(i,_)|!panel_rows.contains_key(i)) {
+                if let Some(first)=line.spans.first_mut() {
+                    let indent=first.content.bytes().take_while(|b|*b==b' ').count().min(4).min(content.width.saturating_sub(1) as usize);
+                    if indent>0 {first.content=first.content[indent..].to_owned().into();indents.insert(index,indent as u16);}
+                }
+            }
+        }
         let panel_width=|request:bool|if request{content.width.min(100)}else{content.width};
-        let row_width=|index:usize|panel_rows.get(&index).map(|(_,_,request)|reader_block(*request).inner(Rect::new(0,0,panel_width(*request),1)).width).unwrap_or(content.width);
+        let row_width=|index:usize|panel_rows.get(&index).map(|(_,_,request)|reader_block(*request).inner(Rect::new(0,0,panel_width(*request),1)).width).unwrap_or(content.width.saturating_sub(*indents.get(&index).unwrap_or(&0)));
         // Compute wrapped offsets once. Re-laying out every preceding line for
         // each clickable row made long history views quadratic to redraw.
         let mut offsets=Vec::with_capacity(lines.len()+1);offsets.push(0usize);
@@ -331,7 +341,10 @@ impl Workspace {
             let rect=if let Some((first,last,request))=panel_rows.get(&index){
                 if index==*first||index==*last{continue;}
                 reader_block(*request).inner(Rect::new(rect.x,rect.y,panel_width(*request),rect.height))
-            }else{rect};
+            }else{
+                let indent=*indents.get(&index).unwrap_or(&0);
+                Rect::new(rect.x+indent,rect.y,rect.width.saturating_sub(indent),rect.height)
+            };
             if let Some(gutter)=self.document.code_gutters.get(&index){
                 let width=(*gutter as u16).min(rect.width.saturating_sub(1));
                 frame.render_widget(Paragraph::new(line.spans[0].clone()),Rect::new(rect.x,rect.y,width,1));
@@ -394,6 +407,12 @@ impl Workspace {
         let reasons = if self.brief { "reasons" } else { "brief" };
         let keys: Vec<(&str, &str)> = if reader && self.document.kind == View::Commits {
             vec![("↑↓", "commits"), ("Enter", "open"), ("Esc", "back")]
+        } else if reader && self.document.kind==View::DecisionOverview {
+            vec![("↑↓", "decisions"), ("Enter", "open"), ("e", "discover"), ("t", "session")]
+        } else if reader && self.document.kind==View::SessionWork {
+            vec![("s", "select"), ("Enter", "open"), ("d", "decisions"), ("b", "sessions")]
+        } else if reader && self.document.kind==View::DecisionDetail {
+            vec![("↑↓", "read"), ("s", "evidence"), ("d", "decisions"), ("Esc", "back")]
         } else if reader && self.document.source_selection.is_some() {
             vec![("↑↓", "select"), ("Enter", "open"), ("Esc", "done")]
         } else if reader && self.document.historical() {

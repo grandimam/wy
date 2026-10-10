@@ -1,0 +1,23 @@
+{
+  "type": "object", "additionalProperties": false,
+  "properties": {
+    "decisions": {"type":"array", "maxItems":8, "items": {
+      "type":"object", "additionalProperties":false,
+      "properties": {
+        "choice":{"type":"string","minLength":1,"maxLength":300},
+        "reason":{"type":"string","minLength":1,"maxLength":1200},
+        "significance":{"type":"string","minLength":1,"maxLength":500},
+        "status":{"type":"string","enum":["recorded","inferred","unknown"]},
+        "files":{"type":"array","minItems":1,"maxItems":20,"uniqueItems":true,"items":{"type":"string"}},
+        "alternatives":{"type":"array","maxItems":4,"items":{"type":"string","maxLength":600}},
+        "tradeoffs":{"type":"array","maxItems":4,"items":{"type":"string","maxLength":600}},
+        "evidence_ids":{"type":"array","minItems":1,"maxItems":16,"uniqueItems":true,"items":{"type":"string"}},
+        "quote":{"type":"string","maxLength":1800},
+        "quote_id":{"type":"string","maxLength":200}
+      },
+      "required":["choice","reason","significance","status","files","alternatives","tradeoffs","evidence_ids","quote","quote_id"]
+    }},
+    "unknowns":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":800}}
+  },
+  "required":["decisions","unknowns"]
+}

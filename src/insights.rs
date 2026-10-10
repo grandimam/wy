@@ -41,9 +41,13 @@ pub fn session_dates(session:&Value)->(Value,Value){
 
 /// Only an original assistant statement can declare a decision record. Treat its
 /// contents as self-reported assertions, not validated facts or executable inputs.
-pub fn decision(event:&Value)->Option<Value>{
-    if event["kind"]!="assistant" || !history::provenance::original(event){return None;}
-    let text=s(&event["text"]);let (_,body)=text.split_once("WY_DECISION")?;
+pub fn decision(event:&Value)->Option<Value>{decisions(event).into_iter().next()}
+/// An assistant can emit several independent records in one public response.
+pub fn decisions(event:&Value)->Vec<Value>{
+    if event["kind"]!="assistant" || !history::provenance::original(event){return vec![];}
+    s(&event["text"]).split("WY_DECISION").skip(1).take(80).filter_map(parse_decision).collect()
+}
+fn parse_decision(body:&str)->Option<Value>{
     let body=body.trim_start().strip_prefix("```json").unwrap_or(body.trim_start()).trim_start();
     let record=serde_json::Deserializer::from_str(body).into_iter::<Value>().next()?.ok()?;
     let file=record["file"].as_str()?;
@@ -80,15 +84,15 @@ pub fn timeline(root:&Path,sessions:&[Value],file:&str,symbol:Option<&str>)->Vec
         let relevant:Vec<_>=edits.iter().filter(|e|e["session_id"]==session["id"]&&e["agent"]==session["agent"]).collect();
         for (at,event) in events.iter().enumerate(){
             let edit=relevant.iter().any(|e|e["event_id"]==event["id"]);
-            let explicit=decision(event).is_some_and(|r|r["file"]==file)||mentions(s(&event["text"]),file);
+            let explicit=decisions(event).iter().any(|r|r["file"]==file)||mentions(s(&event["text"]),file);
             if !edit&&!explicit{continue;}
             let start=events[..=at].iter().rposition(|e|e["kind"]=="user").unwrap_or(0);
             if !starts.insert(start){continue;}
             let end=events[start+1..].iter().position(|e|e["kind"]=="user").map(|i|start+1+i).unwrap_or(events.len());
             let turn=&events[start..end];
-            if symbol.filter(|s|!s.is_empty()).is_some_and(|symbol|!turn.iter().any(|e|mentions(s(&e["text"]),symbol)||decision(e).is_some_and(|r|r["symbol"]==symbol))){continue;}
+            if symbol.filter(|s|!s.is_empty()).is_some_and(|symbol|!turn.iter().any(|e|mentions(s(&e["text"]),symbol)||decisions(e).iter().any(|r|r["symbol"]==symbol))){continue;}
             let related:Vec<_>=relevant.iter().filter(|e|turn.iter().any(|event|event["id"]==e["event_id"])).map(|e|(*e).clone()).collect();
-            let records:Vec<_>=turn.iter().filter_map(|e|decision(e).map(|r|json!({"record":r,"event_id":e["id"]}))).filter(|r|r["record"]["file"]==file).collect();
+            let records:Vec<_>=turn.iter().flat_map(|e|decisions(e).into_iter().map(|r|json!({"record":r,"event_id":e["id"]}))).filter(|r|r["record"]["file"]==file).collect();
             let outcomes:Vec<_>=turn.iter().filter(|e|e["kind"]=="test").map(|test|{
                 let output=turn.iter().find(|e|e["kind"]=="tool_output"&&test["call_id"].is_string()&&e["call_id"]==test["call_id"]);
                 json!({"event_id":test["id"],"command":test["text"],"outcome":if test["failed"]==true||output.is_some_and(|e|e["failed"]==true){"tool reported failure"}else if output.is_some(){"output recorded; inspect assertions and exit status"}else{"completion/result not captured"},"output":output})

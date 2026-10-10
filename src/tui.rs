@@ -1,5 +1,10 @@
 //! Read-only review workspace. Agent requests run only after explicit input.
 mod document;
+mod decision_views;
+mod session_views;
+mod session_flow;
+#[cfg(test)]
+mod decision_tests;
 mod code_view;
 mod history_views;
 mod explorer;
@@ -136,6 +141,8 @@ struct Workspace {
     back: Vec<(Document, Focus, Option<Document>)>,
     code: Option<Document>,
     answers: Vec<Arc<Value>>,
+    decision_brief: Option<Arc<Value>>,
+    selected_work: Option<Value>,
     sessions: Vec<Value>,
     history_tabs: std::collections::HashMap<String,Document>,
     views: Vec<ReadingState>,
@@ -184,6 +191,12 @@ impl Workspace {
         app.document = document::empty(&app.review);
         app.code = None;
         app.preview_selection();
+        app.select_latest_work();
+        app.decision_brief = crate::decisions::saved(root, &app.decision_scope())?.map(Arc::new);
+        // The secondary current-file browser must not mix in earlier sessions.
+        app.review["recent_code"]=serde_json::json!([]);app.explorer.rebuild(&app.review);
+        app.decision_home();
+        app.back.clear();
         Ok(app)
     }
     fn from_review(root: &Path, review: Value) -> Self {
@@ -204,6 +217,8 @@ impl Workspace {
             back: vec![],
             code: None,
             answers: vec![],
+            decision_brief: None,
+            selected_work: None,
             sessions: vec![],
             history_tabs: std::collections::HashMap::new(),
             views: vec![],
@@ -227,6 +242,105 @@ impl Workspace {
         };
         app.preview_selection();
         app
+    }
+    /// Primary section, retained when opening a decision's cited evidence.
+    fn section(&self) -> View {
+        if matches!(self.document.kind,View::DecisionOverview|View::DecisionDetail) || self.document.artifact.as_ref().is_some_and(|a|a["context"]=="decision_brief") {
+            View::DecisionOverview
+        } else if self.document.historical() {
+            View::Sessions
+        } else {View::Recorded}
+    }
+    fn session_context(&self)->bool {
+        self.document.artifact.as_ref().is_some_and(|a|a["scope_kind"]=="session" || a["context"]=="session_work")
+    }
+    fn decision_scope(&self)->Value {
+        self.selected_work.clone().unwrap_or_else(||crate::session_work::empty(&self.review))
+    }
+    fn select_latest_work(&mut self) {
+        let previous=self.selected_work.as_ref();
+        let selected=previous.and_then(|w|self.sessions.iter().find(|s|s["id"]==w["session"]["id"] && s["agent"]==w["session"]["agent"]))
+            .or_else(||crate::session_work::latest(&self.sessions));
+        self.selected_work=selected.map(|s|crate::session_work::build(&self.review,s));
+    }
+    fn session_flow(&mut self) {
+        self.remember_section();
+        if self.selected_work.is_none(){self.select_latest_work();}
+        let work=Arc::new(self.decision_scope());
+        let key=format!("session-flow:{}",s(&work["session"]["storage_key"]));
+        let doc=self.history_tabs.get(&key).cloned().unwrap_or_else(||session_views::flow(work,0));
+        self.open(doc);self.sidebar=false;self.code=None;
+    }
+    fn session_picker(&mut self) {
+        self.open(session_views::picker(&self.review,&self.sessions,self.selected_work.as_ref()));self.sidebar=false;
+    }
+    fn select_session(&mut self,key:&str)->Result<()> {
+        let session=crate::storage::Store::open(&self.root)?.get("session",key)?;
+        crate::validate("Session",&session)?;
+        ensure!(crate::history::belongs(s(&session["cwd"]),&self.root) && crate::session_work::snapshot_key(&session)==key,"Session snapshot is not verifiably scoped to this repository");
+        let work=crate::session_work::build(&self.review,&session);
+        self.decision_brief=crate::decisions::saved(&self.root,&work)?.map(Arc::new);
+        self.selected_work=Some(work);self.views.clear();self.session_flow();self.back.clear();Ok(())
+    }
+    fn remember_section(&mut self) {
+        if self.document.kind==View::SessionWork {
+            let key=format!("session-flow:{}",self.document.artifact.as_ref().map(|a|s(&a["session"]["storage_key"])).unwrap_or(""));
+            if self.history_tabs.len()>=20{self.history_tabs.clear();}
+            self.history_tabs.insert(key,self.document.clone());
+        }
+    }
+    fn decision_home(&mut self) {
+        self.remember_section();
+        if self.selected_work.is_none(){self.select_latest_work();}
+        let scope=self.decision_scope();
+        let sessions:Vec<_>=self.sessions.iter().filter(|session|crate::session_work::snapshot_key(session)==s(&scope["session"]["storage_key"])).cloned().collect();
+        let sessions=if sessions.is_empty(){crate::session_work::load(&self.root,&scope).ok().into_iter().collect()}else{sessions};
+        let brief = self.decision_brief.clone().filter(|a|a["scope_key"]==crate::decisions::scope_key(&scope))
+            .unwrap_or_else(||Arc::new(crate::decisions::recorded(&scope,&sessions)));
+        self.open(decision_views::overview(brief));
+        self.sidebar=false;
+        self.code=None;
+    }
+    fn discover_decisions(&mut self) {
+        if self.job.is_some() {
+            self.message("Wait for the current request or cancel it with x before discovering decisions");
+            return;
+        }
+        if self.review["history_source"]!=self.source {
+            if let Err(error)=self.refresh() {self.fail(error);return;}
+        }
+        let scope=self.decision_scope();
+        if arr(&scope["edits"]).is_empty() {
+            self.message("No captured code edits in the selected session · current files will not be substituted");
+            return;
+        }
+        let root=self.root.clone();
+        let review=scope;
+        let agent=self.agent.clone();
+        let cancel=Arc::new(AtomicBool::new(false));
+        let worker_cancel=cancel.clone();
+        let (sender,receiver)=mpsc::channel();
+        let handle=thread::spawn(move || {
+            let result=crate::decisions::run(&root,&review,&agent,&worker_cancel,|p|{let _=sender.send(Update::Progress(p.into()));});
+            let _=sender.send(Update::Done(result));
+        });
+        self.job=Some(Job{receiver,cancel,handle,started:Instant::now(),scope:"session decisions".into(),key:"decision-brief".into(),file:None,progress:"Preparing decision discovery…".into()});
+        self.message("Decision discovery requested · selected evidence is sent to your reasoning CLI · keep browsing");
+    }
+    fn finish_decisions(&mut self, artifact: Arc<Value>) {
+        if artifact["scope_key"]!=crate::decisions::scope_key(&self.decision_scope()) {
+            self.message("Decision brief saved for an earlier capture · refresh and request a new brief");
+            return;
+        }
+        self.decision_brief=Some(artifact.clone());
+        // Do not interrupt a deep dive, scrolled reader, evidence view or draft.
+        if self.document.kind==View::DecisionOverview && self.document.scroll==0 && self.editing.is_none() {
+            self.document=decision_views::overview(artifact);
+            let mut doc=self.document.clone();
+            self.check_freshness(&mut doc);
+            self.document=doc;
+        }
+        self.message("Decisions ready");
     }
     fn message(&mut self, message: impl Into<String>) {
         self.status = message.into();
@@ -294,7 +408,7 @@ impl Workspace {
             document.notice=Some(("Export of a dated snapshot, not a live review · preview sensitive content before saving".into(),AMBER));
             return;
         }
-        if document::is_recorded(artifact) {
+        if document::is_recorded(artifact) || artifact["scope_kind"]=="session" || artifact["context"]=="session_work" {
             return;
         }
         let Some(review_id) = artifact["review_id"].as_str() else {
@@ -307,9 +421,10 @@ impl Workspace {
                 && saved["head"] == serde_json::json!(crate::repository::head(&self.root)))
         })();
         document.notice = Some(match current {
+            Ok(true) if artifact["context"]=="decision_brief" => {document.notice=None;return;}
             Ok(true) => ("Source matches the captured review".into(), GREEN),
             Ok(false) => (
-                "SOURCE CHANGED · this answer describes an earlier version. R updates the answer."
+                "SOURCE CHANGED · this describes an earlier version. Refresh with r before requesting an update."
                     .into(),
                 AMBER,
             ),
@@ -357,6 +472,9 @@ impl Workspace {
         }
     }
     fn why_change(&mut self, refresh: bool) {
+        if self.session_context() {
+            self.message("Open Decisions to assess this session's captured work");return;
+        }
         if self.focus == Focus::Reader && self.document.historical() {
             self.message(
                 "Browsing saved commit conversations · select a current file to enrich it",
@@ -408,6 +526,7 @@ impl Workspace {
         self.start(options);
     }
     fn why_options(&self, _refresh: bool) -> Option<reasoning::Options> {
+        if self.session_context(){return None;}
         let target = if self.focus == Focus::Reader {
             if let Some(artifact) = &self.document.artifact {
                 document::artifact_target(artifact)
@@ -558,6 +677,7 @@ impl Workspace {
             let job = self.job.take().unwrap();
             let _ = job.handle.join();
             match result {
+                Ok(artifact) if artifact["context"]=="decision_brief" => self.finish_decisions(Arc::new(artifact)),
                 Ok(artifact) => self.finish_answer(&job.key, Arc::new(artifact)),
                 Err(error) => self.fail(format!("{}: {error:#}", job.scope)),
             }
@@ -615,7 +735,7 @@ impl Workspace {
                     target: artifact["packet"]["focus_target"]["target"]
                         .as_str()
                         .map(str::to_owned),
-                    previous: (!document::is_recorded(artifact)).then(|| artifact.clone()),
+                    previous: (!document::is_recorded(artifact) && artifact["context"]!="decision_brief" && artifact["context"]!="session_work").then(|| artifact.clone()),
                     note_refs: arr(&artifact["packet"]["note_refs"]).to_vec(),
                     session_edit: artifact["packet"]["focus_session_edit"]
                         .as_object()
@@ -660,6 +780,7 @@ impl Workspace {
             return Ok(());
         }
         if mode == Some(Input::Question) && !input.starts_with('/') {
+            ensure!(!self.session_context(),"Open Decisions to assess captured session evidence; current-code follow-ups are separate");
             self.start(question_options);
             return Ok(());
         }
@@ -667,7 +788,10 @@ impl Workspace {
         let rest = rest.trim();
         match name {
             "/coverage" => self.open(history_views::coverage(&self.review,&self.sessions)),
-            "/sessions" => self.open(history_views::sessions(&self.review,&self.sessions)),
+            "/sessions" => self.session_picker(),
+            "/changes" => self.open(session_views::working_changes(&self.review)),
+            "/decisions" if rest.is_empty() => self.decision_home(),
+            "/decisions" if rest=="discover" => self.discover_decisions(),
             "/timeline" | "/decisions" => {
                 let target=if rest.is_empty(){self.document.target.clone().or_else(||self.explorer.target()).ok_or_else(||anyhow::anyhow!("Select a file or use /timeline FILE[:SYMBOL]"))?}else{
                     let (file,symbol)=rest.split_once(':').map(|(f,s)|(f,Some(s.to_owned()))).unwrap_or((rest,None));
@@ -754,6 +878,7 @@ impl Workspace {
             "/cancel" => self.cancel(),
             "/ask" => {
                 ensure!(!rest.is_empty(), "Use /ask QUESTION");
+                ensure!(!self.session_context(),"Open Decisions to assess captured session evidence; current-code follow-ups are separate");
                 ensure!(
                     !(self.focus == Focus::Reader && self.document.historical()),
                     "Select a current file to ask a question; this view contains saved commit conversations"
@@ -769,6 +894,7 @@ impl Workspace {
             }
             _ if input.starts_with('/') => self.message("Unknown command · ? opens help"),
             _ => {
+                ensure!(!self.session_context(),"Open Decisions to assess captured session evidence; current-code follow-ups are separate");
                 ensure!(
                     !(self.focus == Focus::Reader && self.document.historical()),
                     "Select a current file to ask a question; this view contains saved commit conversations"
@@ -804,6 +930,13 @@ impl Workspace {
     }
     fn follow(&mut self, link: Link) -> Result<()> {
         match link {
+            Link::DecisionHome => {self.decision_home();Ok(())}
+            Link::DiscoverDecisions => {self.discover_decisions();Ok(())}
+            Link::Decision(index) => {
+                let brief=self.document.artifact.clone().filter(|a|a["context"]=="decision_brief").ok_or_else(||anyhow::anyhow!("Open the decision overview first"))?;
+                let doc=decision_views::detail(brief,index).ok_or_else(||anyhow::anyhow!("Decision not found"))?;
+                self.open(doc);self.code=None;Ok(())
+            }
             Link::Page(index) => {
                 if let Some(page)=self.document.pagination.clone(){
                     self.document=history_views::page(&self.review,&page,index);
@@ -813,12 +946,21 @@ impl Workspace {
             }
             Link::Explain => {self.why_change(false);Ok(())}
             Link::Disclosure(id) => {
-                let selection=self.document.source_selection;
                 self.document.toggle_disclosure(&id);
-                self.document.source_selection=selection;
                 Ok(())
             }
-            Link::Session(key) => {
+            Link::Session(key) => self.select_session(&key),
+            Link::SessionPicker => {self.session_picker();Ok(())}
+            Link::SessionEdit(reference) => {
+                let (edit,_)=crate::history::saved_edit(&self.root,&reference)?;
+                self.open(session_views::implementation(&edit));Ok(())
+            }
+            Link::CompareSessionEdit(reference) => {
+                let (edit,session)=crate::history::saved_edit(&self.root,&reference)?;
+                let work=crate::session_work::build(&self.review,&session);
+                self.open(session_views::comparison(&self.root,&work,&edit));Ok(())
+            }
+            Link::SessionChat(key) => {
                 let session=crate::storage::Store::open(&self.root)?.get("session",&key)?;
                 crate::validate("Session",&session)?;
                 ensure!(crate::history::belongs(s(&session["cwd"]),&self.root),"Session is not scoped to this repository");
@@ -894,6 +1036,12 @@ impl Workspace {
         }
     }
     fn change_view(&mut self, view: View) -> Result<()> {
+        self.remember_section();
+        if view==View::Recorded {self.sidebar=true;}
+        if view==View::Sessions {
+            if self.document.kind!=View::SessionWork {self.session_flow();}
+            self.focus=Focus::Reader;return Ok(());
+        }
         if self.document.kind==view {self.focus=Focus::Reader;return Ok(());}
         if self.document.kind==View::Recorded {
             if let Some(code)=&self.code {
@@ -909,6 +1057,7 @@ impl Workspace {
         }
         let target=self.document.target.clone().or_else(||self.explorer.target());
         match view {
+            View::DecisionOverview => self.decision_home(),
             View::Diff | View::Recorded => {
                 if let Some(target)=target {
                     let code=document::preview(&self.review,target);
@@ -916,7 +1065,7 @@ impl Workspace {
                     let saved=self.history_tabs.get(&key).cloned();
                     self.code=Some(code);
                     if let Some(doc)=saved{self.document=doc;self.focus=Focus::Reader;}else{self.show_notes();}
-                }
+                } else {self.open(document::empty(&self.review));}
             }
             View::Explanation => {
                 if let Some(target)=target {
@@ -976,8 +1125,12 @@ impl Workspace {
         self.views.clear();
         self.code = None;
         self.document = document::empty(&self.review);
-        self.preview_selection();
-        self.message("Offline review refreshed · review marks reset for changed files");
+        self.select_latest_work();
+        self.decision_brief=crate::decisions::saved(&self.root,&self.decision_scope())?.map(Arc::new);
+        self.review["recent_code"]=serde_json::json!([]);self.explorer.rebuild(&self.review);
+        self.decision_home();
+        self.back.clear();
+        self.message("Changes refreshed");
         Ok(())
     }
     fn scroll(&mut self, delta: isize) {
@@ -1043,9 +1196,9 @@ impl Workspace {
             return Ok(false);
         }
         if modifiers.contains(KeyModifiers::CONTROL) && matches!(code,KeyCode::Left|KeyCode::Right) {
-            let tabs=[View::Recorded,View::Explanation,View::Timeline];
-            let current=tabs.iter().position(|v|*v==self.document.kind).unwrap_or(0);
-            let next=if code==KeyCode::Right{(current+1)%3}else{(current+2)%3};
+            let tabs=[View::DecisionOverview,View::Sessions];
+            let current=tabs.iter().position(|v|*v==self.section()).unwrap_or(0);
+            let next=if code==KeyCode::Right{(current+1)%tabs.len()}else{(current+tabs.len()-1)%tabs.len()};
             self.change_view(tabs[next])?;return Ok(false);
         }
         if modifiers.contains(KeyModifiers::ALT) && matches!(code,KeyCode::Left|KeyCode::Right) {
@@ -1066,7 +1219,9 @@ impl Workspace {
             KeyCode::Char('[') => self.adjust_pane(-3)?,
             KeyCode::Char(']') => self.adjust_pane(3)?,
             KeyCode::Char('i') => {
-                if self.document.artifact.is_some() {
+                if self.document.artifact.as_ref().is_some_and(|a|a["context"]=="decision_brief" || a["context"]=="session_work") {
+                    self.message("Inspect captured evidence, or open Decisions to request an assessment");
+                } else if self.document.artifact.is_some() {
                     self.focus = Focus::Reader;
                     self.edit(Input::Question);
                 } else {
@@ -1075,11 +1230,16 @@ impl Workspace {
             }
             KeyCode::Char('f') => self.edit(Input::Filter),
             // Tab toggles Changes and Notes; Shift+Tab returns to the file tree.
+            KeyCode::Tab | KeyCode::BackTab if (self.selected_work.is_some() || matches!(self.document.kind,View::DecisionOverview|View::SessionWork|View::Sessions)) && self.section()!=View::Recorded => {
+                self.change_view(View::Sessions)?;
+            }
             KeyCode::BackTab => {
+                self.change_view(View::Recorded)?;
                 self.sidebar = true;
                 self.focus = Focus::Files;
             }
             KeyCode::Tab => {
+                if self.section()!=View::Recorded {self.change_view(View::Recorded)?;}
                 self.focus = match self.focus {
                     Focus::Files => Focus::Reader,
                     Focus::Reader => {
@@ -1115,7 +1275,7 @@ impl Workspace {
             KeyCode::Right | KeyCode::Char('l') => {
                 if self.focus == Focus::Files {
                     self.explorer.expand(&self.review);
-                } else if self.active_document().code() {
+                } else if self.document.code() || !self.document.code_gutters.is_empty() {
                     let doc = self.active_document();
                     doc.horizontal = doc.horizontal.saturating_add(4);
                 }
@@ -1149,7 +1309,9 @@ impl Workspace {
                     self.document.scroll = self.scroll_max;
                 }
             }
+            KeyCode::Char('b') if self.selected_work.is_some() || self.section()!=View::Recorded => self.session_picker(),
             KeyCode::Char('b') => {
+                if self.section()!=View::Recorded {self.change_view(View::Recorded)?;self.sidebar=false;}
                 self.sidebar = !self.sidebar;
                 self.focus = if self.sidebar {
                     Focus::Files
@@ -1164,16 +1326,21 @@ impl Workspace {
                 self.document.source_selection=None;
                 self.message(if codes.is_empty(){"No code blocks in this view"}else if expand{"Code blocks expanded"}else{"Code blocks collapsed"});
             }
+            KeyCode::Char('d') => self.decision_home(),
+            KeyCode::Char('e') if matches!(self.document.kind,View::DecisionOverview|View::SessionWork) => self.discover_decisions(),
             KeyCode::Char('e') => self.why_change(false),
             KeyCode::Char('w') => {
                 self.brief = !self.brief;
                 self.rebuild_reader();
             }
+            KeyCode::Char('o') if self.selected_work.is_some() => self.session_flow(),
             KeyCode::Char('o') => self.change_view(View::Recorded)?,
+            KeyCode::Char('v') if self.session_context() => self.decision_home(),
             KeyCode::Char('v') => self.change_view(View::Explanation)?,
-            KeyCode::Char('t') => self.change_view(View::Timeline)?,
+            KeyCode::Char('t') => self.change_view(View::Sessions)?,
             KeyCode::Char('x') => self.cancel(),
             KeyCode::Char('s') if !self.document.sources.is_empty() => self.select_source(0),
+            KeyCode::Char('R') if matches!(self.document.kind,View::DecisionOverview|View::SessionWork) => self.discover_decisions(),
             KeyCode::Char('R') => self.why_change(true),
             KeyCode::Char('p') => self.saved_explanation()?,
             KeyCode::Char('m') => self.mark(),
@@ -1193,7 +1360,7 @@ impl Workspace {
                     let link = self.document.sources[self.document.source_selection.unwrap()].1.clone();
                     self.follow(link)?;
                 } else if self.focus == Focus::Reader
-                    && matches!(self.document.kind,View::Recorded|View::Explanation|View::Sessions|View::Timeline|View::Decisions|View::Session|View::Turn|View::Evidence|View::Original|View::Commit)
+                    && matches!(self.document.kind,View::SessionWork|View::SessionImplementation|View::SessionComparison|View::DecisionOverview|View::DecisionDetail|View::Recorded|View::Explanation|View::Sessions|View::Timeline|View::Decisions|View::Session|View::Turn|View::Evidence|View::Original|View::Commit)
                     && !self.document.sources.is_empty()
                 {
                     self.select_source(0);
@@ -1213,7 +1380,13 @@ impl Workspace {
                 }
             }
             KeyCode::Char(c @ '1'..='9') => {
-                self.open_evidence(c.to_digit(10).unwrap() as usize - 1)?
+                let index=c.to_digit(10).unwrap() as usize-1;
+                if self.document.kind==View::DecisionOverview {
+                    self.follow(Link::Decision(index))?;
+                } else if self.document.kind==View::DecisionDetail {
+                    let link=self.document.sources.iter().filter(|(_,link)|matches!(link,Link::Source(_))).nth(index).map(|(_,link)|link.clone()).ok_or_else(||anyhow::anyhow!("No evidence at this position for this decision"))?;
+                    self.follow(link)?;
+                } else {self.open_evidence(index)?;}
             }
             KeyCode::Esc => {
                 if self.focus == Focus::Reader

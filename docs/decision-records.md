@@ -32,23 +32,65 @@ never edits those instructions automatically):
 > evidence you actually observed; do not invent references or retroactive reasons.
 > Update the record if tests or requirements change the decision.
 >
-> WY_DECISION
-> - File / symbol: src/session_repository.rs :: SessionRepository
-> - Decision: Separate persistence from session discovery.
-> - Requirement: Support JSONL and SQLite sources without duplicating persistence.
-> - Reason: A shared storage boundary lets each adapter focus on its input format.
-> - Alternatives / tradeoffs: Inline persistence is simpler initially; the shared
->   boundary adds an abstraction but avoids adapter-specific cache behavior.
-> - Evidence: Relevant user request, inspected files, and tool-call IDs if available.
-> - Related edits: Files/symbols changed and edit IDs if available.
-> - Validation: Tests actually run and their results, or explicitly "not yet run".
-> - Timing: Decision-time record, revision, or retrospective explanation.
+Use **JSON**, not a bullet list, after each `WY_DECISION` marker:
 
-These records are retained verbatim as assistant statements, not parsed into
-self-certified causal claims. File references and neighboring edits make them
-available to wy's existing recorded-notes and explanation evidence selection.
-Proximity alone is not proof that a statement caused an edit. For existing sessions,
-wy can only use the rationale and evidence that were actually saved.
+```text
+WY_DECISION
+{
+  "file": "src/session_repository.rs",
+  "symbol": "SessionRepository",
+  "decision": "Separate persistence from discovery",
+  "reason": "Both JSONL and SQLite adapters need the same saved-history boundary",
+  "requirement": "Support multiple coding tools",
+  "alternatives": ["Inline persistence inside each adapter"],
+  "tradeoffs": ["Adds an abstraction; avoids duplicated persistence behavior"],
+  "evidence": ["Actual inspected file or message/tool event reference"],
+  "related_edits": [],
+  "validation": "Not yet run",
+  "timing": "decision-time"
+}
+```
+
+This example demonstrates the format, not a decision to apply. Multiple markers
+in one assistant response are supported. For a choice spanning files, repeat the
+same choice, reason, alternatives and trade-offs with each relevant file path;
+the decision overview groups identical assertions across those files. Different
+reasons remain separate rather than silently resolving conflicting records.
+
+`/setup` previews the full template; `/setup save` saves it locally. Records are
+parsed only from original assistant messages and retained as self-reported
+statements, not proven causal claims. A record and edit mentioning the same file
+within a session do not establish semantic causality or current applicability.
+User messages and compaction summaries cannot declare recorded decisions.
+
+## Selected-session decision overview
+
+wy opens on decisions in the **latest dated captured session**, without asserting
+that the session is currently active. `d` returns to decisions; `t` opens the
+selected session's implementation flow; `b` or `/sessions` chooses another session.
+Offline records are ordered by affected-file count, not assessed importance.
+Records and code links remain scoped to that one captured session.
+
+Choose **Identify decisions with AI**, press `e`, or use `/decisions discover` for
+a bounded retrospective assessment. This explicit action sends only the selected
+session's captured edits and context to the chosen Codex or Claude CLI. It groups
+choices across files and returns at most eight decisions ordered by assessed
+consequence. No captured edits means discovery is unavailable: current source code
+is never substituted for missing historical code.
+
+Each detail shows why, significance, alternatives, trade-offs, captured code and
+original context. Recorded/inferred/unknown rationale stays visible. Alternatives
+are assessments unless explicitly attributed to a cited record. Every affected
+file must cite a captured edit from the selected session. Recorded rationale
+requires an exact original assistant quote; validation checks references, not
+semantic truth. An input with unconfirmed execution is not a proven implementation.
+
+Briefs are cached by repository and pinned session snapshot, independently of Git
+HEAD and current files. Committing or deleting files does not erase captured work;
+new captured session content invalidates the cached brief. Current-code comparison
+is an explicit drill-down, never part of the session inference packet. Partial
+patches cannot establish full historical files and are never replayed onto today's
+code. `/changes` keeps working-tree changes separate, with attribution unknown.
 
 ## Storage adapters
 

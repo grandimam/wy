@@ -9,14 +9,16 @@ pub(super) const EVENTS_PER_PAGE:usize=20;
 pub(super) enum Page {
     History{items:Arc<Vec<Value>>,target:Target,decisions:bool,index:usize},
     Session{session:Arc<Value>,index:usize},
+    Work{work:Arc<Value>,index:usize},
 }
 pub(super) fn page(review:&Value,state:&Page,index:usize)->Document {
     match state {
         Page::History{items,target,decisions,..}=>context_page(review,items.clone(),target.clone(),*decisions,index),
         Page::Session{session,..}=>session_page(session.clone(),index),
+        Page::Work{work,..}=>super::session_views::flow(work.clone(),index),
     }
 }
-impl Page {pub fn index(&self)->usize{match self{Self::History{index,..}|Self::Session{index,..}=>*index}}}
+impl Page {pub fn index(&self)->usize{match self{Self::History{index,..}|Self::Session{index,..}|Self::Work{index,..}=>*index}}}
 fn pager(doc:&mut Document,index:usize,count:usize){
     doc.text(format!("Page {} of {} · up to {EVENTS_PER_PAGE} events",index+1,count.max(1)),TEXT);
     if index>0 {
@@ -53,22 +55,6 @@ pub(super) fn coverage(review:&Value,sessions:&[Value])->Document{
     doc.text("Text overlap is not proof of authorship. Missing linkage may reflect shell/formatter edits, unsupported formats, excluded sessions, or later changes. It does not mean no rationale exists.",MUTED);
     doc.heading("Capture warnings");for w in arr(&review["warnings"]){doc.text(s(w),AMBER);}
     doc.heading("Next steps");doc.text("/sessions opens captured conversations. /source AGENT then r narrows capture. /timeline FILE shows handoffs. /decisions FILE:SYMBOL inspects decision context.",TEXT);doc
-}
-pub(super) fn sessions(review:&Value,sessions:&[Value])->Document{
-    let mut doc=Document::new(View::Sessions,"Captured sessions");captured(&mut doc,review);
-    let mut ordered:Vec<_>=sessions.iter().collect();ordered.sort_by_key(|session|std::cmp::Reverse(insights::session_dates(session).1.as_str().unwrap_or("").to_owned()));
-    for session in ordered{
-        let (start,last)=insights::session_dates(session);
-        doc.heading(format!("{} · {} · open ›",s(&session["agent"]),s(&session["id"])));
-        if let Some(reference)=arr(&review["sessions"]).iter().find(|r|r["agent"]==session["agent"]&&r["id"]==session["id"]){doc.sources.push((doc.lines.len()-1,Link::Session(s(&reference["storage_key"]).into())));}
-        doc.text(format!("Started / earliest captured: {}",insights::when(&start)),TEXT);
-        doc.text(format!("Last captured event: {}",insights::when(&last)),TEXT);
-        let mut models:Vec<_>=arr(&session["events"]).iter().filter_map(|e|e["model"].as_str()).filter(|m|!m.is_empty()).collect();models.sort();models.dedup();
-        doc.text(format!("Models: {} · {} events",if models.is_empty(){"unknown".into()}else{models.join(", ")},arr(&session["events"]).len()),MUTED);
-    }
-    if sessions.is_empty(){doc.text("No captured sessions. /coverage explains discovery and exclusions.",AMBER);}
-    if !doc.sources.is_empty(){doc.source_selection=Some(0);}
-    doc.notice=Some(("Select a session and press Enter · sessions remain separate across tools".into(),MUTED));doc
 }
 pub(super) fn session(session:&Value)->Document{
     session_page(Arc::new(session.clone()),0)

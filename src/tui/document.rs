@@ -7,6 +7,11 @@ use std::{sync::Arc, collections::{HashMap, HashSet}};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum View {
     Empty,
+    DecisionOverview,
+    DecisionDetail,
+    SessionWork,
+    SessionImplementation,
+    SessionComparison,
     Diff,
     SessionCode,
     Recorded,
@@ -29,6 +34,13 @@ pub(super) enum View {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Link {
     Page(usize),
+    DecisionHome,
+    Decision(usize),
+    DiscoverDecisions,
+    SessionPicker,
+    SessionChat(String),
+    SessionEdit(Value),
+    CompareSessionEdit(Value),
     Explain,
     Disclosure(String),
     Session(String),
@@ -55,6 +67,7 @@ pub(super) struct Document {
     pub commits: Vec<String>,
     pub originals: Vec<Value>,
     disclosures: HashMap<String, (String, Vec<Line<'static>>, HashMap<usize,usize>)>,
+    disclosure_links: HashMap<String, Vec<(usize, Link)>>,
     pub expanded: HashSet<String>,
     pub pagination: Option<super::history_views::Page>,
     /// Code rows keep a fixed gutter and pan independently of prose.
@@ -77,6 +90,7 @@ impl Document {
             commits: vec![],
             originals: vec![],
             disclosures: HashMap::new(),
+            disclosure_links: HashMap::new(),
             expanded: HashSet::new(),
             pagination: None,
             code_gutters: HashMap::new(),
@@ -84,8 +98,14 @@ impl Document {
     }
     pub fn disclosure(&mut self, id: String, title: &str, lines: Vec<Line<'static>>) {
         self.sources.push((self.lines.len(),Link::Disclosure(id.clone())));
-        self.text(format!("▶ {title}"),ACCENT);
+        self.text(format!("{}▶ {}",&title[..title.len()-title.trim_start().len()],title.trim_start()),ACCENT);
         self.disclosures.insert(id,(title.into(),lines,HashMap::new()));
+    }
+    /// Links use body-relative rows and exist only while this disclosure is open.
+    pub fn linked_disclosure(&mut self,id:String,title:&str,lines:Vec<Line<'static>>,links:Vec<(usize,Link)>){
+        assert!(links.iter().all(|(row,_)|*row<lines.len()));
+        self.disclosure(id.clone(),title,lines);
+        self.disclosure_links.insert(id,links);
     }
     /// Fold a newly rendered code block, preserving its fixed gutters on reopen.
     pub fn fold_code(&mut self,id:String,title:&str,start:usize,open:bool){
@@ -100,13 +120,15 @@ impl Document {
         let Some((title,body,gutters))=self.disclosures.get(id) else{return};
         let Some(at)=self.sources.iter().find_map(|(line,link)|(*link==Link::Disclosure(id.into())).then_some(*line)) else{return};
         let opening=!self.expanded.contains(id);
+        let selected=self.source_selection.and_then(|i|self.sources.get(i)).cloned();
         let count=body.len();let pivot=at+1;
         if opening {self.lines.splice(pivot..pivot,body.clone());self.expanded.insert(id.into());}
         else {
             self.lines.drain(pivot..pivot+count);self.expanded.remove(id);
             self.code_gutters.retain(|line,_|*line<pivot||*line>=pivot+count);
+            self.sources.retain(|(line,_)|*line<pivot||*line>=pivot+count);
         }
-        self.lines[at]=Line::styled(format!("{} {title}",if opening{"▼"}else{"▶"}),Style::default().fg(ACCENT));
+        self.lines[at]=Line::styled(format!("{}{} {}",&title[..title.len()-title.trim_start().len()],if opening{"▼"}else{"▶"},title.trim_start()),Style::default().fg(ACCENT));
         let shift=|line:usize|if line<pivot{line}else if opening{line+count}else{line.saturating_sub(count).max(at)};
         self.code_gutters=self.code_gutters.drain().map(|(line,width)|(shift(line),width)).collect();
         if opening{self.code_gutters.extend(gutters.iter().map(|(line,width)|(pivot+line,*width)));}
@@ -114,6 +136,15 @@ impl Document {
             *line=shift(*line);
             if let Link::Line(target)=link {*target=shift(*target);}
         }
+        if opening {
+            if let Some(links)=self.disclosure_links.get(id){self.sources.extend(links.iter().map(|(row,link)|(pivot+row,link.clone())));}
+        }
+        self.sources.sort_by_key(|(row,_)|*row);
+        self.source_selection=selected.and_then(|(row,mut link)|{
+            if !opening && (pivot..pivot+count).contains(&row){link=Link::Disclosure(id.into());}
+            if let Link::Line(target)=&mut link{*target=shift(*target);}
+            self.sources.iter().position(|(line,candidate)|*line==shift(row) && *candidate==link)
+        });
     }
     /// Inclusive logical-row bounds; Ratatui sizes panels to the current viewport.
     pub fn reader_panels(&self)->Vec<(usize,usize,bool)>{
@@ -136,10 +167,10 @@ impl Document {
         self.lines.push(Line::from(vec![Span::styled(gutter,Style::default().fg(color)),Span::styled(body.replace('\t',"    "),Style::default().fg(color))]));
     }
     pub fn code(&self) -> bool {
-        matches!(self.kind, View::Diff | View::SessionCode)
+        matches!(self.kind, View::Diff | View::SessionCode | View::SessionImplementation | View::SessionComparison)
     }
     pub fn historical(&self) -> bool {
-        matches!(self.kind, View::Commits | View::Commit | View::Original | View::Turn | View::Coverage | View::Sessions | View::Session | View::Timeline | View::Decisions | View::Export | View::Setup)
+        matches!(self.kind, View::SessionWork | View::SessionImplementation | View::SessionComparison | View::DecisionOverview | View::DecisionDetail | View::Commits | View::Commit | View::Original | View::Turn | View::Coverage | View::Sessions | View::Session | View::Timeline | View::Decisions | View::Export | View::Setup)
     }
     pub fn text(&mut self, text: impl AsRef<str>, color: Color) {
         self.lines.extend(
@@ -306,7 +337,7 @@ pub(super) fn is_recorded(artifact: &Value) -> bool {
     artifact["context"] == "recorded_session"
 }
 pub(super) fn citations(artifact: &Value) -> Vec<Value> {
-    if is_recorded(artifact) {
+    if is_recorded(artifact) || artifact["context"]=="decision_brief" {
         arr(&artifact["packet"]["evidence"]).to_vec()
     } else {
         presentation::citations(artifact)
@@ -435,7 +466,7 @@ pub(super) fn recorded(
     doc.artifact = Some(artifact);
     doc
 }
-/// Selecting this tab never starts a model request; only the explicit button does.
+/// Opening the explanation reader never starts a model request; only its button does.
 pub(super) fn explanation_prompt(target: Target) -> Document {
     let mut doc=Document::new(View::Explanation,target.label());
     doc.heading("Understand this change");
@@ -830,6 +861,17 @@ fn claim(doc: &mut Document, claim: &Value, cited: &[Value]) {
 pub(super) fn evidence(artifact: Arc<Value>, index: usize) -> Option<Document> {
     let cited = citations(&artifact);
     let e = cited.get(index)?;
+    if e["kind"]=="session_edit" {
+        let mut doc=Document::new(View::Evidence,s(&e["file"]));
+        doc.heading("As implemented · captured edit");
+        if e["state"]!="applied" {doc.text("Recorded input · execution unconfirmed",AMBER);}
+        super::session_views::captured_code(&mut doc,e);
+        if e["truncated"]==true {doc.text("Partial capture",AMBER);}
+        doc.gap();
+        doc.sources.push((doc.lines.len(),Link::CompareSessionEdit(e["edit_ref"].clone())));
+        doc.text("Compare with current code",ACCENT);
+        doc.artifact=Some(artifact);return Some(doc);
+    }
     let mut doc = Document::new(View::Evidence, format!("[{}] {}", index + 1, s(&e["file"])));
     doc.heading(format!("CAPTURED {}", s(&e["kind"]).to_uppercase()));
     if e["kind"] == "session" {
@@ -1009,16 +1051,27 @@ pub(super) fn commit_context(context: &Value) -> Document {
 }
 
 pub(super) fn help() -> Document {
-    let mut doc = Document::new(View::Help, "Conversation, changes and explanations");
+    let mut doc = Document::new(View::Help, "Decisions, evidence and original context");
     for (title, body) in [
         (
-            "Read a file",
-            "Select a file to read changes alongside nearby conversation.
-A numbered badge links captured context to matching recorded edits.
-Proximity and text overlap do not establish intent or authorship.
-Changes without a match say \"no matching edit record\".
-w  collapse nearby context to headlines, or expand it
-Enter  then ↑/↓ and Enter  open the recorded conversation turn",
+            "Start with decisions",
+            "d  decisions for the selected captured session
+The latest dated captured session is selected initially, not assumed active.
+↑/↓ and Enter  open a decision; read why, alternatives and trade-offs
+Code evidence comes next; original agent context is the final audit trail.
+Recorded / inferred / unknown rationale stays visible throughout.
+e  on the overview: explicitly request AI discovery (sends selected evidence)
+Opening wy or switching views never calls a model. r refreshes offline.
+Missing session edits stay missing; commits and today's edits do not replace them.",
+        ),
+        (
+            "Session work",
+            "t  open the selected session's requests and recorded edit sequence
+b or /sessions  choose a different captured session
+Open an edit to see As implemented; compare with current code on demand.
+Partial captures cannot establish a complete historical file.
+Original conversation stays behind its own link.
+/changes  today's changes, with session ownership left unknown",
         ),
         (
             "Conversation labels",
@@ -1032,24 +1085,23 @@ All message bodies use normal text contrast. Dates describe the source event.
 An Enriched answer is a NEW wy assessment, not the original conversation",
         ),
         (
-            "Ask for more",
-            "e  Enrich — ask the agent to explain the file's changes with cited sources
-i  ask a follow-up about the answer · R  request an updated answer
-p  last saved answer · 1–9  open a numbered source · s  select sources
-Keep browsing while it runs. Files show working, queued or ready.
-Esc  back · x  cancel running and queued requests",
+            "AI assessments",
+            "e / R  request decisions using only the selected session's captured edits
+No current code is sent as historical evidence. Requests can consume CLI usage.
+1–9  open a decision or numbered source · s  select links
+Keep browsing while it runs; a result never changes your selected session.
+Esc  back · x  cancel running and queued requests
+/why and /reason are separate, opt-in current-code explanation tools",
         ),
         (
             "Navigate",
-            "Tab  switch between the file tree and the reader · Shift+Tab  back to the tree
-Ctrl+←/→  cycle Changes / Explanation / History · o / v / t  jump directly
-Alt+←/→  previous / next history page · z  collapse / expand code
-↑/↓ or j/k  select files or scroll · ←/→ or h/l  expand the tree or pan
-Space  expand changed symbols · f  filter file paths
+            "Ctrl+←/→  cycle Decisions / Sessions · d / t  jump directly
+Tab  session work · b  session picker
+Alt+←/→  previous / next page · z  collapse / expand code
+↑/↓ or j/k  select links or scroll · ←/→ or h/l  pan code
 PageUp/PageDown  scroll · Home/End  start/end
-r  refresh changes · b  toggle the file tree · m  mark reviewed
+r  refresh captured sessions; preserve the selected session when available
 g  browse commits · /commit HASH  read saved conversations
-Drag the divider or [ / ] to resize the file tree · /layout reset
 q / Ctrl+Q / Ctrl+C  quit",
         ),
         (
@@ -1059,9 +1111,12 @@ q / Ctrl+Q / Ctrl+C  quit",
 /coverage — capture counts, exclusions, and linkage gaps
 /sessions — browse dated sessions across tools
 /timeline [FILE:SYMBOL] — chronological captured turns
-/decisions [FILE:SYMBOL] — requirements, rationale, tests, and gaps
+/decisions — selected-session decisions
+/changes — unassigned working-tree changes
+/decisions discover — explicitly request a prioritized AI brief
+/decisions FILE:SYMBOL — recorded file context, tests, and gaps
 /setup then /setup save — optional decision-record template
-/export then /export save — preview and save a review brief
+/export then /export save — export the working-tree review (not the session brief)
 /why FILE:SYMBOL QUESTION
 /ask QUESTION
 /reason QUESTION — question about all changes
