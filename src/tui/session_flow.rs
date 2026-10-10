@@ -1,4 +1,4 @@
-//! A flat, request-scoped conversation with optional supporting disclosures.
+//! Bordered, request-scoped conversation with optional supporting disclosures.
 use super::{
     document::{Document, Link, View},
     history_views::Page,
@@ -31,7 +31,6 @@ fn message_lines(messages: &[Value], kind: &str) -> Vec<Line<'static>> {
         .iter()
         .filter(|e| !s(&e["text"]).trim().is_empty())
         .filter(|e| match kind {
-            "response" => e["kind"] == "assistant" && !summary(e),
             "notes" => e["kind"] == "rationale",
             _ => summary(e),
         })
@@ -56,12 +55,6 @@ fn message_lines(messages: &[Value], kind: &str) -> Vec<Line<'static>> {
         if !lines.is_empty() {
             lines.push(Line::default());
         }
-        if kind == "response" && !history::provenance::original(e) {
-            lines.push(Line::styled(
-                "Unverified response",
-                Style::default().fg(AMBER),
-            ));
-        }
         lines.extend(
             s(&e["text"])
                 .lines()
@@ -80,28 +73,42 @@ fn request(doc: &mut Document, turn: &Value) {
     let r = &turn["request"];
     let original =
         r["kind"] == "user" && history::provenance::original(r) && !s(&r["text"]).trim().is_empty();
-    doc.heading("YOU");
-    doc.text(
-        if original {
-            s(&r["text"])
-        } else {
-            "Original request unavailable"
-        },
-        TEXT,
-    );
-    if r["truncated"] == true {
-        doc.text("[Request capture shortened]", AMBER);
-    }
+    let text = if original {
+        s(&r["text"])
+    } else {
+        "Original request unavailable"
+    };
+    doc.message_panel("YOU", true, |doc| {
+        super::markdown::render(doc, text);
+        if r["truncated"] == true {
+            doc.text("[Request capture shortened]", AMBER);
+        }
+    });
 }
 fn group(doc: &mut Document, work: &Value, index: usize) {
     let turn = &work["turns"][index];
     let id = format!("session-turn-{index}-0");
     request(doc, turn);
     let messages = arr(&turn["messages"]);
-    let response = message_lines(messages, "response");
-    if !response.is_empty() {
-        doc.heading("AGENT");
-        doc.lines.extend(response);
+    let responses: Vec<_> = messages
+        .iter()
+        .filter(|e| e["kind"] == "assistant" && !summary(e) && !s(&e["text"]).trim().is_empty())
+        .collect();
+    if !responses.is_empty() {
+        doc.message_panel("AGENT", false, |doc| {
+            for (index, event) in responses.iter().enumerate() {
+                if index > 0 {
+                    doc.gap();
+                }
+                if !history::provenance::original(event) {
+                    doc.text("Unverified response", AMBER);
+                }
+                super::markdown::render(doc, s(&event["text"]));
+                if event["truncated"] == true {
+                    doc.text("Partial excerpt · captured text may be incomplete", AMBER);
+                }
+            }
+        });
     }
     doc.gap();
 

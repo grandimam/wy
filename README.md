@@ -53,6 +53,10 @@ wy
 
 **Ctrl+Left/Right** switches sections · **s** selects links · **?** opens help.
 
+**Copy text:** drag over text in the main pane; releasing the mouse copies the
+selection. Scroll while dragging, or hold the pointer below the pane to select
+more. Navigation panes are excluded—no keyboard mode switch needed.
+
 ## Understand history and decisions
 
 | Command | What it shows |

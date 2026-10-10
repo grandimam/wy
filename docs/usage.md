@@ -39,6 +39,22 @@ session by tool and session ID when available. If the source filter or capture
 budget excludes it, wy selects another available session. No model runs on startup,
 refresh, section changes, or session selection.
 
+## Copy text
+
+Drag over text in the main pane to highlight it. Releasing the mouse copies the
+selection to the clipboard; no Ctrl+Y or Cmd+C is needed. Selection stays inside
+the main pane, excluding adjacent navigation. Use the wheel while holding the
+mouse button, or hold the pointer above/below the content to scroll and extend
+the selection. Click a link without dragging to open it.
+
+On macOS, copying uses `pbcopy`. Linux uses `wl-copy`, `xclip`, or `xsel` when
+available, otherwise wy sends an OSC 52 clipboard request (terminal support and
+permission required, including over SSH). Plain **Ctrl+C** still quits wy.
+
+**Ctrl+Y** remains an optional terminal-native copy mode: it isolates the main
+content and releases mouse capture. Use the terminal's copy shortcut in that
+mode, then **Esc** to return to the normal layout.
+
 ## Read decisions
 
 ### Choose the work to explain
@@ -123,8 +139,17 @@ at least 40 columns when all three panes are visible.
 The top-right **Explain with: codex** (or another agent) identifies the configured
 explanation agent, not the source of the selected historical session.
 
-Detail is a flat conversation: **YOU** and **AGENT** are visible by default,
-without a request box or another level of navigation. The header combines the
+Detail shows **YOU** and **AGENT** in separate, always-visible rounded cards,
+with role-colored titles, padding, and text wrapping to the pane width. Borders
+remain aligned while scrolling or resizing; neither message requires expansion.
+Fenced code blocks (backticks or tildes) inside either message show a language label
+and snippet-relative line numbers. Code preserves indentation and blank lines, stays
+unwrapped, and pans with Left/Right or h/l while the reader is focused; gutters stay
+fixed and surrounding prose still wraps. Tabs display as four spaces. Unknown languages
+use plain code styling; syntax highlighting is not yet applied. Unclosed fences run only
+to the end of that message and are labeled explicitly. These are conversation snippets,
+not verified file edits or executable actions.
+The header combines the
 request ID, agent, and session date. Changes, agent notes, and tool activity remain
 expandable; empty sections are omitted. Session-level capture warnings are available
 under **⚠ Capture warning**, collapsed by default. Edit execution uncertainty stays

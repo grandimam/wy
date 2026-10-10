@@ -24,6 +24,14 @@ impl Workspace {
             return;
         }
         let area = frame.area();
+        if self.text_selection {
+            // Terminal-native selection spans screen rows, not widget bounds.
+            // Isolate the reader so a multiline selection cannot include nav panes.
+            let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
+            self.draw_reader(frame, rows[0]);
+            self.draw_keys(frame, rows[1]);
+            return;
+        }
         let status_height = u16::from(self.job.is_some() || !self.status.is_empty());
         let rows = Layout::vertical([
             Constraint::Length(1),
@@ -605,7 +613,7 @@ impl Workspace {
             }
         }
         let panel_width = |request: bool| {
-            if request {
+            if request && self.document.kind != View::SessionWork {
                 content.width.min(100)
             } else {
                 content.width
@@ -813,6 +821,9 @@ impl Workspace {
                 );
             }
         }
+        if !self.text_selection {
+            self.selection.render(frame, content, self.document.scroll);
+        }
         if count > content.height as usize && content.height > 0 {
             let mut state = ScrollbarState::new(count)
                 .position(self.document.scroll as usize)
@@ -858,8 +869,18 @@ impl Workspace {
             area,
         );
     }
-    /// At most four keys, chosen for what is on screen.
+    /// Contextual keys plus the terminal-native selection toggle.
     fn draw_keys(&mut self, frame: &mut Frame, area: Rect) {
+        if self.text_selection {
+            frame.render_widget(
+                Paragraph::new(
+                    " Drag main content to select · terminal shortcut to copy · Ctrl+Y/Esc done",
+                )
+                .style(Style::default().fg(ACCENT)),
+                area,
+            );
+            return;
+        }
         let reader = self.focus == Focus::Reader;
         let reasons = if self.brief { "reasons" } else { "brief" };
         let keys: Vec<(&str, &str)> = if reader && self.document.kind == View::Commits {
@@ -918,7 +939,11 @@ impl Workspace {
                 ("?", "more"),
             ]
         };
-        let mut spans = vec![Span::raw(" ")];
+        let mut spans = vec![
+            Span::raw(" "),
+            Span::styled("Drag", Style::default().fg(ACCENT).bold()),
+            Span::styled(" to copy   ", Style::default().fg(MUTED)),
+        ];
         for (key, label) in keys {
             spans.push(Span::styled(key, Style::default().fg(ACCENT).bold()));
             spans.push(Span::styled(

@@ -20,6 +20,199 @@ fn review() -> Value {
 fn workspace() -> Workspace {
     Workspace::from_review(Path::new("/example/payments"), review())
 }
+#[test]
+fn text_selection_pauses_navigation_and_preserves_input() {
+    let mut app = workspace();
+    app.edit(Input::Question);
+    app.input = "draft question".into();
+    app.key(KeyCode::Char('y'), KeyModifiers::CONTROL).unwrap();
+    assert!(app.text_selection);
+    press(&mut app, KeyCode::Char('x'));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.input, "draft question");
+    assert!(app.editing.is_some());
+    app.dragging = Some(Divider::Files);
+    mouse_at(&mut app, MouseEventKind::Up(MouseButton::Left), 0, 0);
+    assert!(app.dragging.is_some()); // queued mouse events are ignored
+    app.key(KeyCode::Char('y'), KeyModifiers::CONTROL).unwrap();
+    assert!(!app.text_selection);
+    assert!(app.dragging.is_none());
+    press(&mut app, KeyCode::F(2));
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.text_selection);
+    assert_eq!(app.input, "draft question");
+    assert!(app.editing.is_some());
+}
+
+#[test]
+fn copy_mode_renders_only_the_reader_and_restores_navigation() {
+    let mut app = workspace();
+    app.document = Document::new(View::Help, "Main content only");
+    app.document.text("Copy this paragraph", TEXT);
+    for width in [60, 150] {
+        screen(&mut app, width, 30);
+        let reader_before = app.areas.reader;
+        app.key(KeyCode::Char('y'), KeyModifiers::CONTROL).unwrap();
+        let (text, _) = screen(&mut app, width, 30);
+        assert!(text.contains("Copy this paragraph"));
+        assert_eq!(app.areas.reader.x, 0);
+        assert_eq!(app.areas.reader.width, width);
+        assert_eq!(app.areas.sessions, Rect::default());
+        assert_eq!(app.areas.requests, Rect::default());
+        assert_eq!(app.areas.files, Rect::default());
+        assert!(app.areas.tabs.is_empty());
+        press(&mut app, KeyCode::Esc);
+        screen(&mut app, width, 30);
+        assert_eq!(app.areas.reader, reader_before);
+    }
+}
+
+#[test]
+fn drag_copies_only_reader_text_and_keeps_rows_while_scrolling() {
+    let mut app = workspace();
+    app.document = Document::new(View::Help, "Selection test");
+    for i in 0..100 {
+        app.document.text(format!("body row {i:02}"), TEXT);
+    }
+    screen(&mut app, 150, 20);
+    let area = app.selection.area;
+    mouse_at(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        area.x,
+        area.y,
+    );
+    mouse_at(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        area.x + 10,
+        area.y + 1,
+    );
+    let (_, terminal) = screen(&mut app, 150, 20);
+    assert_eq!(terminal.backend().buffer()[(area.x, area.y)].bg, ACCENT);
+    // Wheel scrolling extends the selection without including navigation panes.
+    for _ in 0..8 {
+        mouse_at(
+            &mut app,
+            MouseEventKind::ScrollDown,
+            area.x + 10,
+            area.bottom() - 1,
+        );
+        screen(&mut app, 150, 20);
+    }
+    assert!(app.document.scroll > 0);
+    let last = usize::from(app.document.scroll + area.height - 1);
+    mouse_at(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        area.x + 10,
+        area.bottom() - 1,
+    );
+    let expected = (0..=last)
+        .map(|i| format!("body row {i:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(app.selection.pending.take().unwrap(), expected);
+    assert!(!app.selection.active);
+    assert!(!app.text_selection);
+    assert_ne!(app.areas.sessions, Rect::default());
+}
+
+#[test]
+fn reverse_drag_clamps_to_reader_and_links_only_open_on_click() {
+    let mut app = workspace();
+    app.document = Document::new(View::Help, "Selection test");
+    app.document.text("hello world", TEXT);
+    app.document.text("second line", TEXT);
+    app.document.sources.push((0, Link::DecisionHome));
+    screen(&mut app, 150, 20);
+    let area = app.selection.area;
+    mouse_at(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        area.x + 10,
+        area.y + 1,
+    );
+    mouse_at(&mut app, MouseEventKind::Drag(MouseButton::Left), 0, area.y);
+    mouse_at(&mut app, MouseEventKind::Up(MouseButton::Left), 0, area.y);
+    assert_eq!(
+        app.selection.pending.take().as_deref(),
+        Some("hello world\nsecond line")
+    );
+    // A drag beginning on a link selects its text rather than opening it.
+    mouse_at(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        area.x,
+        area.y,
+    );
+    assert_eq!(app.document.kind, View::Help);
+    mouse_at(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        area.x + 4,
+        area.y,
+    );
+    mouse_at(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        area.x + 4,
+        area.y,
+    );
+    assert_eq!(app.selection.pending.take().as_deref(), Some("hello"));
+    assert_eq!(app.document.kind, View::Help);
+    click_at(&mut app, area.x, area.y);
+    assert_eq!(app.document.kind, View::DecisionOverview);
+}
+
+#[test]
+fn selection_autoscroll_and_unicode_are_pane_local() {
+    let mut app = workspace();
+    app.document = Document::new(View::Help, "Unicode selection");
+    app.document.text("你好 café", TEXT);
+    for _ in 0..50 {
+        app.document.text("more text", TEXT);
+    }
+    screen(&mut app, 150, 20);
+    let area = app.selection.area;
+    mouse_at(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        area.x,
+        area.y,
+    );
+    mouse_at(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        area.x + 8,
+        area.y,
+    );
+    mouse_at(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        area.x + 8,
+        area.y,
+    );
+    assert_eq!(app.selection.pending.take().as_deref(), Some("你好 café"));
+    mouse_at(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        area.x,
+        area.y,
+    );
+    mouse_at(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        area.x,
+        area.bottom(),
+    );
+    assert!(app.document.scroll > 0);
+    assert_eq!(app.selection.autoscroll().unwrap().1, 1);
+    // Resizing invalidates coordinates safely rather than copying other panes.
+    screen(&mut app, 120, 20);
+    assert!(!app.selection.active);
+}
+
 fn expand_details(doc: &mut Document) {
     let ids: Vec<_> = doc
         .sources
@@ -260,13 +453,7 @@ fn diff_and_why_toggle_reuses_the_answer_for_the_exact_change() {
         .find(|(_, link)| *link == Link::Explain)
         .unwrap()
         .0;
-    app.mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: why.x + 1,
-        row: why.y,
-        modifiers: KeyModifiers::NONE,
-    })
-    .unwrap();
+    click_at(&mut app, why.x + 1, why.y);
     assert_eq!(app.document.kind, View::Explanation);
     assert!(app.job.is_none());
     assert_eq!(app.answers.len(), 2);
@@ -721,13 +908,7 @@ fn explanation_shares_the_reader_and_sources_open_by_mouse_and_keyboard() {
     press(&mut app, KeyCode::Char('s'));
     screen(&mut app, 140, 38);
     let (source, _) = app.areas.sources[0];
-    app.mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: source.x + 1,
-        row: source.y,
-        modifiers: KeyModifiers::NONE,
-    })
-    .unwrap();
+    click_at(&mut app, source.x + 1, source.y);
     assert_eq!(app.document.kind, View::Evidence);
     assert!(app.code.is_some());
     press(&mut app, KeyCode::Esc);
@@ -921,13 +1102,7 @@ fn completion_does_not_interrupt_drafts_or_sources_and_ready_button_reuses_answe
         .find(|(_, link)| *link == Link::Explain)
         .unwrap()
         .0;
-    app.mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: button.x + 1,
-        row: button.y,
-        modifiers: KeyModifiers::NONE,
-    })
-    .unwrap();
+    click_at(&mut app, button.x + 1, button.y);
     assert_eq!(app.document.kind, View::Explanation);
     assert!(app.job.is_none());
 }
@@ -1036,6 +1211,11 @@ fn run_command(app: &mut Workspace, command: &str) -> Result<()> {
     app.input = command.into();
     app.command()
 }
+fn click_at(app: &mut Workspace, x: u16, y: u16) {
+    mouse_at(app, MouseEventKind::Down(MouseButton::Left), x, y);
+    mouse_at(app, MouseEventKind::Up(MouseButton::Left), x, y);
+}
+
 fn mouse_at(app: &mut Workspace, kind: MouseEventKind, x: u16, y: u16) {
     app.mouse(MouseEvent {
         kind,
@@ -1110,6 +1290,12 @@ fn interactive_commit_mouse_navigation_missing_history_and_explicit_linking() {
         source.x + 1,
         source.y,
     );
+    mouse_at(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        source.x + 1,
+        source.y,
+    );
     assert_eq!(app.document.kind, View::Commit);
     assert!(app.job.is_none());
     assert!(app.queue.is_empty());
@@ -1171,6 +1357,12 @@ fn compacted_commit_sources_open_pinned_originals_and_show_missing_turns() {
     mouse_at(
         &mut app,
         MouseEventKind::Down(MouseButton::Left),
+        source.x + 1,
+        source.y,
+    );
+    mouse_at(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
         source.x + 1,
         source.y,
     );
@@ -1724,6 +1916,12 @@ fn sections_are_visible_without_answers_and_inline_explanation_button_queues_the
     mouse_at(
         &mut app,
         MouseEventKind::Down(MouseButton::Left),
+        button.x + 1,
+        button.y,
+    );
+    mouse_at(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
         button.x + 1,
         button.y,
     );

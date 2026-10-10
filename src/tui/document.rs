@@ -75,6 +75,7 @@ pub(super) struct Document {
     pub originals: Vec<Value>,
     disclosures: HashMap<String, Disclosure>,
     disclosure_links: HashMap<String, Vec<(usize, Link)>>,
+    message_panels: Vec<(usize, usize, bool)>,
     pub expanded: HashSet<String>,
     pub pagination: Option<super::history_views::Page>,
     /// Code rows keep a fixed gutter and pan independently of prose.
@@ -98,6 +99,7 @@ impl Document {
             originals: vec![],
             disclosures: HashMap::new(),
             disclosure_links: HashMap::new(),
+            message_panels: vec![],
             expanded: HashSet::new(),
             pagination: None,
             code_gutters: HashMap::new(),
@@ -192,6 +194,10 @@ impl Document {
                 line.saturating_sub(count).max(at)
             }
         };
+        for (first, last, _) in &mut self.message_panels {
+            *first = shift(*first);
+            *last = shift(*last);
+        }
         self.code_gutters = self
             .code_gutters
             .drain()
@@ -224,6 +230,19 @@ impl Document {
                 .position(|(line, candidate)| *line == shift(row) && *candidate == link)
         });
     }
+    /// Always-visible conversation card. Borders are drawn at layout time so prose
+    /// wraps inside the current pane width, including while scrolling and resizing.
+    pub fn message_panel(&mut self, title: &str, request: bool, body: impl FnOnce(&mut Self)) {
+        self.gap();
+        let first = self.lines.len();
+        self.text(title, if request { ACCENT } else { GREEN });
+        self.lines.push(Line::default());
+        body(self);
+        self.lines.push(Line::default());
+        self.lines.push(Line::default());
+        self.message_panels
+            .push((first, self.lines.len() - 1, request));
+    }
     /// Inclusive logical-row bounds; Ratatui sizes panels to the current viewport.
     pub fn reader_panels(&self) -> Vec<(usize, usize, bool)> {
         self.sources
@@ -247,6 +266,7 @@ impl Document {
                     request,
                 ))
             })
+            .chain(self.message_panels.iter().copied())
             .collect()
     }
     pub fn explain_button(&mut self) {
@@ -1590,6 +1610,14 @@ No current code is sent as historical evidence. Requests can consume CLI usage.
 Keep browsing while it runs; a result never changes your selected session.
 Esc  back · x  cancel running and queued requests
 /why and /reason are separate, opt-in current-code explanation tools",
+        ),
+        (
+            "Copy text",
+            "Drag in the main pane to select; release to copy to the clipboard.
+Scroll while dragging, or hold above/below the content to extend selection.
+Only main-pane text is selected; navigation panes stay visible.
+Click links without dragging to open them.
+Ctrl+Y  optional terminal-native copy mode; Esc restores navigation.",
         ),
         (
             "Navigate",

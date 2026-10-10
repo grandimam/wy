@@ -507,7 +507,7 @@ fn startup_selects_latest_capture_and_refresh_preserves_explicit_selection() {
     assert!(app.job.is_none());
 }
 #[test]
-fn flat_detail_shows_request_and_response_with_optional_supporting_sections() {
+fn bordered_detail_shows_request_and_response_with_optional_supporting_sections() {
     let (_dir, mut app) = app();
     let mut work = app.decision_scope();
     work["turns"][0]["prior_request"] = work["turns"][0]["request"].clone();
@@ -541,7 +541,7 @@ fn flat_detail_shows_request_and_response_with_optional_supporting_sections() {
         assert!(!flat.contains("OTHER_TURN_NOTES"));
         assert!(!flat.contains("Implementation flow"));
         assert_eq!(flat.matches("Execution unconfirmed").count(), 1);
-        assert!(app.document.reader_panels().is_empty());
+        assert_eq!(app.document.reader_panels().len(), 2);
         assert!(
             !app.document
                 .sources
@@ -557,7 +557,7 @@ fn flat_detail_shows_request_and_response_with_optional_supporting_sections() {
             .iter()
             .map(|c| c.symbol())
             .collect::<String>();
-        assert!(!screen.contains('╭') && !screen.contains('╰'));
+        assert!(screen.contains('╭') && screen.contains('╰'));
         assert!(screen.contains("yes do it") && screen.contains("AGENT"));
         if let Some(path) = std::env::var_os("WY_TUI_PREVIEW_DIR") {
             std::fs::create_dir_all(&path).unwrap();
@@ -584,6 +584,13 @@ fn flat_detail_shows_request_and_response_with_optional_supporting_sections() {
             .0;
         app.mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
+            column: notes.x,
+            row: notes.y,
+            modifiers: KeyModifiers::NONE,
+        })
+        .unwrap();
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
             column: notes.x,
             row: notes.y,
             modifiers: KeyModifiers::NONE,
@@ -637,6 +644,135 @@ fn flat_detail_shows_request_and_response_with_optional_supporting_sections() {
 }
 
 #[test]
+fn conversation_code_fences_keep_gutters_fixed_and_prose_wrapped() {
+    let (_dir, mut app) = app();
+    let mut work = app.decision_scope();
+    work["turns"][0]["request"]["text"] =
+        json!("Try this:\n```sh\necho café\n```\nKeep the output.");
+    work["turns"][0]["messages"] = json!([
+        {"kind":"assistant","text":format!("Before the snippet.\n```rust\n    let value = \"{}中文\";\n\n    finish(value);\n```\nAfter the snippet.", "x".repeat(160)),"provenance":{"source_type":"original_turn"}},
+        {"kind":"assistant","text":"~~~unknown\nlast snippet", "truncated":true},
+        {"kind":"assistant","text":"A separate response is still prose.","provenance":{"source_type":"original_turn"}}
+    ]);
+    let work = Arc::new(work);
+    for width in [32, 40, 80, 140] {
+        app.open(session_views::flow(work.clone(), 0));
+        assert_eq!(app.document.code_gutters.len(), 5);
+        let flat = text(&app.document);
+        assert!(!flat.contains("```"));
+        assert!(flat.contains("rust · snippet lines") && flat.contains("Unclosed code fence"));
+        assert!(flat.contains("Unverified response") && flat.contains("Partial excerpt"));
+        let prose_row = app
+            .document
+            .lines
+            .iter()
+            .position(|l| l.to_string() == "A separate response is still prose.")
+            .unwrap();
+        assert!(!app.document.code_gutters.contains_key(&prose_row));
+        let mut terminal = Terminal::new(TestBackend::new(width, 70)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let screen = |terminal: &Terminal<TestBackend>| {
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(usize::from(width))
+                .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+        };
+        let before = screen(&terminal);
+        let code = before
+            .iter()
+            .position(|row| row.contains("1 │     let"))
+            .unwrap();
+        assert!(before[code].contains('›'));
+        assert!(before[code + 1].contains("2 │"), "Code must not soft-wrap");
+        assert!(before[code + 2].contains("3 │"));
+        let gutter = before[code].find("1 │").unwrap();
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let after = screen(&terminal);
+        assert_eq!(after[code].find("1 │"), Some(gutter));
+        assert_ne!(before[code], after[code]);
+        let prose = before
+            .iter()
+            .position(|row| row.contains("Before the snippet."))
+            .unwrap();
+        assert_eq!(before[prose], after[prose]);
+        assert!(app.job.is_none());
+        if let Some(path) = std::env::var_os("WY_TUI_PREVIEW_DIR") {
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(
+                Path::new(&path).join(format!("conversation-code-{width}.txt")),
+                before.join("\n"),
+            )
+            .unwrap();
+        }
+    }
+}
+
+#[test]
+fn conversation_borders_wrap_resize_and_scroll_without_covering_text() {
+    let (_dir, mut app) = app();
+    let mut work = app.decision_scope();
+    work["turns"][0]["request"]["text"] =
+        json!("Please preserve café and 中文 while wrapping this request across narrow panes.");
+    work["turns"][0]["messages"] = json!([{"kind":"assistant","text":"I will preserve the complete response and keep both borders aligned when the pane is resized.","provenance":{"source_type":"original_turn"}}]);
+    let work = Arc::new(work);
+    for width in [32, 40, 80, 140] {
+        app.open(session_views::flow(work.clone(), 0));
+        let mut terminal = Terminal::new(TestBackend::new(width, 50)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let corners: Vec<_> = buffer
+            .content
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.symbol() == "╭")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            corners.len(),
+            2,
+            "Expected You and Agent cards at width {width}"
+        );
+        for first in corners {
+            let right = (first..buffer.content.len())
+                .find(|i| buffer.content[*i].symbol() == "╮")
+                .unwrap();
+            let last = (right..buffer.content.len())
+                .find(|i| buffer.content[*i].symbol() == "╯")
+                .unwrap();
+            let width = usize::from(width);
+            assert_eq!(right % width, last % width);
+            for row in first / width + 1..last / width {
+                assert_eq!(buffer.content[row * width + first % width].symbol(), "│");
+                assert_eq!(buffer.content[row * width + right % width].symbol(), "│");
+            }
+        }
+    }
+    let mut long = (*work).clone();
+    long["turns"][0]["request"]["text"] = json!("Long request body\n".repeat(100));
+    app.open(session_views::flow(Arc::new(long), 0));
+    app.document.scroll = 10;
+    app.document.source_selection = None;
+    let mut terminal = Terminal::new(TestBackend::new(40, 15)).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(screen.contains("Long request body") && screen.contains('│'));
+    assert!(
+        !screen.contains('╭') && !screen.contains('╰'),
+        "Scrolling inside a message must not invent border edges"
+    );
+}
+
+#[test]
 fn detail_hides_empty_sections_and_keeps_capture_warnings_collapsed() {
     let (_dir, mut app) = app();
     let mut work = app.decision_scope();
@@ -664,7 +800,7 @@ fn detail_hides_empty_sections_and_keeps_capture_warnings_collapsed() {
         );
     }
     assert!(detail.contains("⚠ Capture warning"));
-    assert!(app.document.reader_panels().is_empty());
+    assert_eq!(app.document.reader_panels().len(), 1);
     app.follow(Link::Disclosure("session-capture-warning".into()))
         .unwrap();
     assert!(text(&app.document).contains("CAPTURE_LIMIT_WARNING"));

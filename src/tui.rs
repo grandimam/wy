@@ -7,8 +7,10 @@ mod document;
 mod explorer;
 mod history_views;
 mod layout;
+mod markdown;
 mod navigation;
 mod render;
+mod selection;
 mod session_flow;
 mod session_views;
 use crate::{agent::Cancel, arr, n, presentation, reasoning, s, security, service};
@@ -170,6 +172,9 @@ struct Workspace {
     brief: bool,
     pane_sizes: PaneSizes,
     dragging: Option<Divider>,
+    /// Release mouse capture and freeze the screen for terminal-native copying.
+    text_selection: bool,
+    selection: selection::Selection,
     status: String,
     error: bool,
     job: Option<Job>,
@@ -255,6 +260,8 @@ impl Workspace {
             brief: false,
             pane_sizes: PaneSizes::default(),
             dragging: None,
+            text_selection: false,
+            selection: selection::Selection::default(),
             status: String::new(),
             error: false,
             job: None,
@@ -763,6 +770,7 @@ impl Workspace {
         self.error = true;
     }
     fn open(&mut self, mut document: Document) {
+        self.selection.clear();
         self.remember_view();
         self.check_freshness(&mut document);
         if document.kind == View::Explanation
@@ -1754,6 +1762,9 @@ impl Workspace {
         Ok(())
     }
     fn scroll(&mut self, delta: isize) {
+        if !self.selection.active {
+            self.selection.clear();
+        }
         let max = self.scroll_max;
         let doc = self.active_document();
         doc.source_selection = None;
@@ -1779,11 +1790,25 @@ impl Workspace {
         self.focus = Focus::Reader;
     }
     fn key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
+        self.selection.clear();
         if modifiers.contains(KeyModifiers::CONTROL)
             && matches!(code, KeyCode::Char('q') | KeyCode::Char('c'))
         {
             self.cancel();
             return Ok(true);
+        }
+        if code == KeyCode::F(2)
+            || (code == KeyCode::Char('y') && modifiers.contains(KeyModifiers::CONTROL))
+        {
+            self.text_selection = !self.text_selection;
+            self.dragging = None;
+            return Ok(false);
+        }
+        if self.text_selection {
+            if code == KeyCode::Esc {
+                self.text_selection = false;
+            }
+            return Ok(false);
         }
         if self.editing.is_some() {
             match code {
@@ -2255,11 +2280,12 @@ impl Workspace {
     }
     fn mouse(&mut self, event: MouseEvent) -> Result<()> {
         let point = Position::new(event.column, event.row);
-        if self.editing.is_some() {
+        if self.editing.is_some() || self.text_selection {
             return Ok(());
         }
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                self.selection.clear();
                 self.session_nav_focus = false;
                 self.request_nav_focus = false;
                 if self.areas.sessions.contains(point) {
@@ -2287,7 +2313,15 @@ impl Workspace {
                     .iter()
                     .find(|(area, _)| area.contains(point))
                 {
-                    self.follow(link.clone())?;
+                    let link = link.clone();
+                    if self.areas.reader.contains(point)
+                        && self.selection.start(point, self.document.scroll)
+                    {
+                        self.focus = Focus::Reader;
+                        self.selection.link = Some(link);
+                    } else {
+                        self.follow(link)?;
+                    }
                 } else if let Some((_, view, focus)) = self
                     .areas
                     .tabs
@@ -2315,6 +2349,8 @@ impl Workspace {
                     }
                 } else if self.areas.reader.contains(point) {
                     self.focus = Focus::Reader;
+                    self.document.source_selection = None;
+                    self.selection.start(point, self.document.scroll);
                 } else if self.areas.input.contains(point) {
                     self.focus = Focus::Reader;
                     self.edit(Input::Question);
@@ -2323,9 +2359,16 @@ impl Workspace {
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(divider) = self.dragging {
                     self.resize_pane(divider, event.column);
+                } else if self.selection.active {
+                    self.scroll(self.selection.edge_scroll(point));
+                    self.selection.extend(point, self.document.scroll);
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(link) = self.selection.finish(point, self.document.scroll) {
+                    self.selection.clear();
+                    self.follow(link)?;
+                }
                 if let Some(divider) = self.dragging.take() {
                     self.resize_pane(divider, event.column);
                     self.save_layout()?;
@@ -2337,7 +2380,10 @@ impl Workspace {
                 } else {
                     -3
                 };
-                if self.areas.sessions.contains(point) {
+                if self.selection.active {
+                    self.scroll(delta);
+                    self.selection.extend(point, self.document.scroll);
+                } else if self.areas.sessions.contains(point) {
                     self.request_nav_focus = false;
                     self.session_nav_focus = true;
                     self.step_session_navigation(delta);
@@ -2390,16 +2436,20 @@ pub fn run(root: &Path) -> Result<()> {
         let mut dirty = true;
         loop {
             let was_running = app.job.is_some();
-            app.poll();
-            if dirty || was_running {
+            if !app.text_selection && !app.selection.active {
+                app.poll();
+            }
+            if dirty || (was_running && !app.text_selection) {
                 terminal.draw(|frame| app.draw(frame))?;
                 dirty = false;
             }
-            if event::poll(Duration::from_millis(if app.job.is_some() {
-                100
-            } else {
-                250
-            }))? {
+            if event::poll(Duration::from_millis(
+                if app.job.is_some() || app.selection.active {
+                    100
+                } else {
+                    250
+                },
+            ))? {
                 let event = event::read()?;
                 if matches!(
                     event,
@@ -2413,13 +2463,15 @@ pub fn run(root: &Path) -> Result<()> {
                 ) {
                     continue;
                 }
-                dirty = true;
+                let was_selecting = app.text_selection;
+                dirty = !was_selecting;
+                let resized = matches!(event, Event::Resize(..));
                 let result = match event {
                     Event::Key(key) if key.kind != KeyEventKind::Release => {
                         app.key(key.code, key.modifiers)
                     }
                     Event::Mouse(mouse) => app.mouse(mouse).map(|_| false),
-                    Event::Paste(text) if app.editing.is_some() => {
+                    Event::Paste(text) if app.editing.is_some() && !app.text_selection => {
                         app.input
                             .extend(text.chars().map(|c| if c.is_control() { ' ' } else { c }));
                         app.filter_input();
@@ -2427,11 +2479,29 @@ pub fn run(root: &Path) -> Result<()> {
                     }
                     _ => Ok(false),
                 };
+                if app.text_selection != was_selecting {
+                    if app.text_selection {
+                        execute!(io::stdout(), DisableMouseCapture)?;
+                    } else {
+                        execute!(io::stdout(), EnableMouseCapture)?;
+                    }
+                    dirty = true;
+                }
+                dirty |= resized;
+                if let Some(text) = app.selection.pending.take() {
+                    if let Err(error) = selection::copy(&text) {
+                        app.fail(format!("Could not copy selection: {error}"));
+                    }
+                }
                 match result {
                     Ok(true) => break,
                     Ok(false) => {}
                     Err(error) => app.fail(format!("{error:#}")),
                 }
+            } else if let Some((point, delta)) = app.selection.autoscroll() {
+                app.scroll(delta);
+                app.selection.extend(point, app.document.scroll);
+                dirty = true;
             }
         }
         Ok(())
