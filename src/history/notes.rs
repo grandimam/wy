@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, path::Path};
 
 fn visible(event: &Value) -> bool {
-    ["user", "assistant", "summary"].contains(&s(&event["kind"]))
+    ["user", "assistant", "summary", "rationale"].contains(&s(&event["kind"]))
         && ![
             "<environment_context>",
             "<permissions",
@@ -128,12 +128,12 @@ pub fn notes(
             }
             if let Some(i) = (start.unwrap_or(0)..at)
                 .rev()
-                .find(|&i| events[i]["kind"] == "assistant" && visible(&events[i]))
+                .find(|&i| ["assistant", "rationale"].contains(&s(&events[i]["kind"])) && visible(&events[i]))
             {
                 selected.insert(i);
             }
             if let Some(i) =
-                ((at + 1)..end).find(|&i| events[i]["kind"] == "assistant" && visible(&events[i]))
+                ((at + 1)..end).find(|&i| ["assistant", "rationale"].contains(&s(&events[i]["kind"])) && visible(&events[i]))
             {
                 selected.insert(i);
             }

@@ -243,7 +243,9 @@
               {
                 "enum": [
                   "codex",
-                  "claude"
+                  "claude",
+                  "pi",
+                  "opencode"
                 ],
                 "type": "string"
               },
@@ -557,7 +559,9 @@
           "agent": {
             "enum": [
               "codex",
-              "claude"
+              "claude",
+              "pi",
+              "opencode"
             ],
             "title": "Agent",
             "type": "string"
@@ -710,12 +714,34 @@
         "default": null,
         "title": "Comparison Base"
       },
+      "coverage": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "agent": {"enum": ["codex", "claude", "pi", "opencode"]},
+            "enabled": {"type": "boolean"},
+            "discovered": {"type": "integer", "minimum": 0},
+            "captured": {"type": "integer", "minimum": 0},
+            "skipped_budget": {"type": "integer", "minimum": 0},
+            "skipped_unreadable": {"type": "integer", "minimum": 0},
+            "skipped_scope": {"type": "integer", "minimum": 0},
+            "duplicates": {"type": "integer", "minimum": 0},
+            "issues": {"type": "array", "items": {"type": "string"}}
+          },
+          "required": ["agent", "enabled", "discovered", "captured", "skipped_budget", "skipped_unreadable", "skipped_scope", "duplicates", "issues"]
+        }
+      },
       "history_source": {
         "anyOf": [
           {
             "enum": [
               "codex",
               "claude",
+              "pi",
+              "opencode",
+              "all",
               "both",
               "none",
               "selected"
@@ -840,6 +866,7 @@
               "tool_output",
               "change",
               "test",
+              "rationale",
               "summary"
             ],
             "title": "Kind",
@@ -1058,6 +1085,7 @@
         "default": null,
         "title": "Cwd"
       },
+      "started_at": {"type": ["string", "null"]},
       "format": {
         "default": "codex-rollout",
         "title": "Format",
@@ -1081,7 +1109,9 @@
         "default": "codex",
         "enum": [
           "codex",
-          "claude"
+          "claude",
+          "pi",
+          "opencode"
         ],
         "title": "Agent",
         "type": "string"

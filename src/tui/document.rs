@@ -2,7 +2,7 @@ use super::{Target, theme::*};
 use crate::{arr, history::attribution, n, presentation, s};
 use ratatui::prelude::*;
 use serde_json::Value;
-use std::sync::Arc;
+use std::{sync::Arc, collections::{HashMap, HashSet}};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum View {
@@ -17,10 +17,20 @@ pub(super) enum View {
     Original,
     Turn,
     Help,
+    Coverage,
+    Sessions,
+    Session,
+    Timeline,
+    Decisions,
+    Export,
+    Setup,
 }
 /// What a clickable or selectable line opens.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Link {
+    Explain,
+    Disclosure(String),
+    Session(String),
     /// A numbered source of the current document.
     Source(usize),
     /// The conversation turn that recorded an edit.
@@ -43,6 +53,8 @@ pub(super) struct Document {
     pub notice: Option<(String, Color)>,
     pub commits: Vec<String>,
     pub originals: Vec<Value>,
+    disclosures: HashMap<String, (String, Vec<Line<'static>>)>,
+    pub expanded: HashSet<String>,
 }
 impl Document {
     pub fn new(kind: View, title: impl Into<String>) -> Self {
@@ -60,13 +72,40 @@ impl Document {
             notice: None,
             commits: vec![],
             originals: vec![],
+            disclosures: HashMap::new(),
+            expanded: HashSet::new(),
         }
+    }
+    pub fn disclosure(&mut self, id: String, title: &str, lines: Vec<Line<'static>>) {
+        self.sources.push((self.lines.len(),Link::Disclosure(id.clone())));
+        self.text(format!("▶ {title}"),ACCENT);
+        self.disclosures.insert(id,(title.into(),lines));
+    }
+    pub fn toggle_disclosure(&mut self, id: &str) {
+        let Some((title,body))=self.disclosures.get(id) else{return};
+        let Some(at)=self.sources.iter().find_map(|(line,link)|(*link==Link::Disclosure(id.into())).then_some(*line)) else{return};
+        let opening=!self.expanded.contains(id);
+        let count=body.len();let pivot=at+1;
+        if opening {self.lines.splice(pivot..pivot,body.clone());self.expanded.insert(id.into());}
+        else {self.lines.drain(pivot..pivot+count);self.expanded.remove(id);}
+        self.lines[at]=Line::styled(format!("{} {title}",if opening{"▼"}else{"▶"}),Style::default().fg(ACCENT));
+        let shift=|line:usize|if line<pivot{line}else if opening{line+count}else{line.saturating_sub(count).max(at)};
+        for (line,link) in &mut self.sources {
+            *line=shift(*line);
+            if let Link::Line(target)=link {*target=shift(*target);}
+        }
+    }
+    pub fn explain_button(&mut self) {
+        self.gap();
+        self.sources.push((self.lines.len(),Link::Explain));
+        self.lines.push(Line::styled("  Ask AI to explain this change  ",Style::default().fg(ACCENT).add_modifier(Modifier::REVERSED|Modifier::BOLD)));
+        self.text("Click or select and press Enter · e is the shortcut",TEXT);
     }
     pub fn code(&self) -> bool {
         matches!(self.kind, View::Diff | View::SessionCode)
     }
     pub fn historical(&self) -> bool {
-        matches!(self.kind, View::Commits | View::Commit | View::Original | View::Turn)
+        matches!(self.kind, View::Commits | View::Commit | View::Original | View::Turn | View::Coverage | View::Sessions | View::Session | View::Timeline | View::Decisions | View::Export | View::Setup)
     }
     pub fn text(&mut self, text: impl AsRef<str>, color: Color) {
         self.lines.extend(
@@ -77,18 +116,6 @@ impl Document {
     }
     pub fn gap(&mut self) {
         self.lines.push(Line::default());
-    }
-    /// Speaker line: role, then the agent name as a tag.
-    pub fn speaker_line(&mut self, who: &str, agent: &str) {
-        let mut spans = vec![Span::styled(
-            who.to_owned(),
-            Style::default().fg(TEXT).bold(),
-        )];
-        if !agent.is_empty() {
-            spans.push(Span::raw("  "));
-            spans.push(Span::styled(agent.to_owned(), Style::default().fg(MUTED)));
-        }
-        self.lines.push(Line::from(spans));
     }
     pub fn heading(&mut self, text: impl Into<String>) {
         if self.lines.last().is_some_and(|line| !line.spans.is_empty()) {
@@ -104,6 +131,8 @@ impl Document {
 
 pub(super) fn empty(review: &Value) -> Document {
     let mut doc = Document::new(View::Empty, "Changes");
+    doc.text(format!("Captured: {}",crate::insights::when(&review["created_at"])),MUTED);
+    doc.text("/coverage explains missing history · /sessions browses dated captures",MUTED);
     if super::explorer::files(review).is_empty() {
         doc.heading("No changed files");
         doc.text("No working-tree diff or recent session code. After your agent edits code, press r to refresh.", MUTED);
@@ -139,10 +168,7 @@ pub(super) fn session_code(review: &Value, target: Target) -> Option<Document> {
 }
 pub(super) fn recorded_code(edit: &Value) -> Document {
     let mut doc = Document::new(View::SessionCode, s(&edit["file"]));
-    let date = edit["timestamp"]
-        .as_str()
-        .map(|t| t.replace('T', " "))
-        .unwrap_or_else(|| "date unavailable".into());
+    let date = crate::insights::when(&edit["timestamp"]);
     doc.text(format!("{} · {date}", s(&edit["agent"])), ACCENT);
     doc.text(
         format!(
@@ -299,6 +325,8 @@ pub(super) fn recorded(
             "evidence":notes["evidence"],"note_refs":notes["note_refs"],"gaps":notes["gaps"]}}),
     );
     let mut doc = Document::new(View::Recorded, target.label());
+    doc.text(format!("History refreshed {} · r refreshes",crate::insights::capture_age(&review["created_at"])),MUTED);
+    doc.gap();
     doc.target = Some(target.clone());
     doc.session_edit = code.session_edit.clone();
     let root = std::path::Path::new(s(&review["root"]));
@@ -322,20 +350,7 @@ pub(super) fn recorded(
     let hunks = arr(&found["hunks"]);
     // Without a matching edit, fall back to conversation that mentions this file.
     let evidence = arr(&notes["evidence"]);
-    if reasons.is_empty() && !evidence.is_empty() {
-        doc.heading("Related conversation");
-        doc.text("Matched by file mentions, not by a recorded edit.", MUTED);
-        doc.gap();
-        related(&mut doc, evidence);
-        doc.heading("Changes");
-        doc.gap();
-    }
-    if reasons.is_empty() {
-        for gap in arr(&notes["gaps"]) {
-            doc.text(s(gap), AMBER);
-            doc.gap();
-        }
-    }
+    if reasons.is_empty() {doc.heading("CODE CHANGES");}
     let mut first_lines = vec![0; reasons.len()];
     let mut compactions_seen = 0;
     for hunk in hunks {
@@ -347,9 +362,9 @@ pub(super) fn recorded(
                     doc.gap();
                     doc.lines.push(Line::from(vec![
                         Span::styled(" ⚠ CONTEXT COMPACTED ", Style::default().fg(AMBER).add_modifier(Modifier::BOLD | Modifier::REVERSED)),
-                        Span::styled("  the agent's memory was cut here", Style::default().fg(AMBER).add_modifier(Modifier::BOLD)),
+                        Span::styled("  earlier context was summarized", Style::default().fg(AMBER).add_modifier(Modifier::BOLD)),
                     ]));
-                    doc.text("It no longer saw the messages above when it wrote the reasons below; check that they still match.", AMBER);
+                    doc.text("Some earlier context may have been replaced by a summary. Summary text is secondary evidence, not proof of original intent.", AMBER);
                     doc.gap();
                 }
                 compactions_seen = compactions_seen.max(compactions);
@@ -360,7 +375,7 @@ pub(super) fn recorded(
                 doc.lines.push(Line::from(vec![
                     Span::styled("↑ ", Style::default().fg(ACCENT)),
                     badge(index + 1),
-                    Span::styled(" same reason as above", Style::default().fg(MUTED)),
+                    Span::styled(" same message as above", Style::default().fg(MUTED)),
                 ]));
             }
         }
@@ -369,12 +384,27 @@ pub(super) fn recorded(
     if hunks.is_empty() {
         doc.text("No changes recorded for this file.", MUTED);
     }
+    if reasons.is_empty() {
+        doc.text("No explanation directly linked to this edit.",TEXT);
+        if !evidence.is_empty(){related(&mut doc,evidence);}
+        let mut details=vec![];
+        for gap in arr(&notes["gaps"]){details.push(Line::styled(s(gap).to_owned(),Style::default().fg(TEXT)));}
+        if !details.is_empty(){doc.disclosure("capture-gaps".into(),"About missing context",details);}
+    }
+    doc.explain_button();
     doc.artifact = Some(artifact);
     doc
 }
-/// The model that wrote a message, falling back to the agent CLI name.
-fn who_wrote<'a>(event: &'a Value, agent: &'a str) -> &'a str {
-    event["model"].as_str().filter(|m| !m.is_empty()).unwrap_or(agent)
+/// Selecting this tab never starts a model request; only the explicit button does.
+pub(super) fn explanation_prompt(target: Target) -> Document {
+    let mut doc=Document::new(View::Explanation,target.label());
+    doc.heading("Understand this change");
+    doc.text("Ask AI to assess the code and captured history. This creates a new explanation; it does not recover the coding agent's original intent.",TEXT);
+    doc.explain_button();
+    doc.text("Uses your configured explanation CLI and may consume account usage.",TEXT);
+    doc.target=Some(target);
+    doc.source_selection=Some(0);
+    doc
 }
 fn change_diff<'a>(review: &'a Value, file: &str) -> Option<&'a str> {
     arr(&review["changes"])
@@ -391,81 +421,128 @@ fn badge(number: usize) -> Span<'static> {
             .add_modifier(Modifier::REVERSED | Modifier::BOLD),
     )
 }
-/// One reason block: a numbered badge and the headline, then (unless brief)
-/// the rest of its message and the request that led to it.
+/// Minimal Markdown cleanup for prose display; code is never rendered this way.
+fn plain(text: &str) -> String {
+    let mut out=String::new();
+    for line in text.lines() {
+        let trimmed=line.trim_start();
+        let line=trimmed.strip_prefix("### ").or_else(||trimmed.strip_prefix("## ")).or_else(||trimmed.strip_prefix("# ")).unwrap_or(line);
+        let line=line.replace("**","");
+        out.push_str(&line);out.push('\n');
+    }
+    out.trim_end().to_owned()
+}
+fn quoted(lines:&mut Vec<Line<'static>>, text:&str, limit:usize, color:Color){
+    let short=crate::security::short(&plain(text),limit);
+    for line in short.lines(){lines.push(Line::from(vec![Span::styled("  │ ",Style::default().fg(color)),Span::styled(line.to_owned(),Style::default().fg(TEXT))]));}
+    if plain(text).chars().count()>limit {lines.push(Line::styled("  [shortened · open the conversation for the full text]",Style::default().fg(AMBER)));}
+}
+/// One context block: the complete agent message first, with supporting material
+/// behind disclosures. `brief` shows only the headline.
 fn why(doc: &mut Document, number: usize, reason: &Value, brief: bool) {
     let message = &reason["message"];
-    let agent = reason["model"].as_str().unwrap_or(s(&reason["agent"]));
-    let text = s(&message["text"]);
-    let (title, rest) = if text.is_empty() {
-        ("No message before this change".to_owned(), String::new())
-    } else {
-        attribution::headline(text)
-    };
-    let bar = Span::styled("┃ ", Style::default().fg(ACCENT));
-    doc.lines.push(Line::from(vec![
-        badge(number),
-        Span::raw(" "),
-        Span::styled(title, Style::default().fg(ACCENT).bold()),
-        Span::styled(format!("  {agent}"), Style::default().fg(MUTED)),
-    ]));
-    if message.is_object() && !crate::history::provenance::original(message) {
-        doc.lines.push(Line::from(vec![
-            bar.clone(),
-            Span::styled(crate::history::provenance::label(message), Style::default().fg(AMBER)),
-        ]));
+    let text = plain(s(&message["text"]));
+    let decision=crate::insights::decision(message);
+    let original=message.is_object()&&crate::history::provenance::original(message);
+    let (label,color)=if decision.is_some(){("RECORDED DECISION",GREEN)}else if text.is_empty(){("NO AGENT MESSAGE BEFORE THIS EDIT",AMBER)}else if original{("AGENT MESSAGE",GREEN)}else{("UNVERIFIED CONTEXT",AMBER)};
+    doc.lines.push(Line::from(vec![badge(number),Span::raw(" "),Span::styled(label,Style::default().fg(color).bold())]));
+    if text.is_empty(){doc.text("  No explicit explanation was recorded for this edit.",AMBER);}
+    else if brief {doc.text(format!("  {}",attribution::headline(&text).0),TEXT);}
+    else {quoted(&mut doc.lines,&text,16000,color);}
+    doc.text(format!("  {}",crate::insights::local_date(&reason["edit"]["timestamp"])),TEXT);
+    if brief {doc.gap();return;}
+    let id=|name:&str|format!("reason-{number}-{name}");
+    if let Some(rationale)=reason["rationale"]["text"].as_str(){
+        let mut lines=vec![Line::styled("  These notes may include ideas the agent did not use.",Style::default().fg(AMBER))];
+        quoted(&mut lines,rationale,1200,AMBER);
+        doc.disclosure(id("rationale"),"Recorded reasoning",lines);
     }
-    if !brief {
-        if !rest.is_empty() {
-            for line in crate::security::short(&rest, 900).lines() {
-                doc.lines.push(Line::from(vec![
-                    bar.clone(),
-                    Span::styled(line.to_owned(), Style::default().fg(TEXT)),
-                ]));
-            }
+    if let Some(request)=reason["request"]["text"].as_str(){
+        let mut lines=vec![];
+        if let Some(prior)=reason["prior_request"]["text"].as_str(){
+            lines.push(Line::styled("  Earlier request in this session:",Style::default().fg(TEXT)));
+            quoted(&mut lines,prior,600,ACCENT);
         }
-        if let Some(request) = reason["request"]["text"].as_str() {
-            doc.lines.push(Line::from(vec![
-                bar.clone(),
-                Span::styled(
-                    format!("You asked: “{}”", crate::security::short(request.trim(), 240)),
-                    Style::default().fg(MUTED),
-                ),
-            ]));
-        }
+        lines.push(Line::styled("  Request that started this turn:",Style::default().fg(TEXT)));
+        quoted(&mut lines,request,600,ACCENT);
+        doc.disclosure(id("request"),"Your request",lines);
+    }
+    let lines=vec![
+        Line::styled(format!("  Coding tool: {}",s(&reason["agent"])),Style::default().fg(TEXT)),
+        Line::styled(format!("  Model: {}",reason["model"].as_str().unwrap_or("unknown")),Style::default().fg(TEXT)),
+        Line::styled(format!("  Session: {}",s(&reason["session_id"])),Style::default().fg(TEXT)),
+        Line::styled(if decision.is_some(){"  This decision is the agent's own explanation, not independent verification."}else if original{"  Message linked through a matching recorded edit."}else{"  Source could not be verified as an original message."},Style::default().fg(TEXT)),
+        Line::styled(format!("  Edit recorded {}",crate::insights::when(&reason["edit"]["timestamp"])),Style::default().fg(TEXT)),
+        Line::styled("  Matching text links the message to this edit; it does not establish intent.",Style::default().fg(TEXT)),
+        Line::styled("  Open conversation shows the saved turn, not a new explanation.",Style::default().fg(TEXT)),
+    ];
+    doc.disclosure(id("details"),"Session details",lines);
+    doc.heading("CODE CHANGES");
+    doc.gap();
+}
+/// Stable, literal labels: colour is supplemental, never the only distinction.
+pub(super) fn conversation_role(event: &Value) -> (&'static str, Color, &'static str) {
+    let kind=event["role"].as_str().unwrap_or(s(&event["kind"]));
+    match kind {
+        "rationale" => ("AGENT NOTES", TEXT, "These notes may include ideas the agent did not use."),
+        "summary" => ("SESSION SUMMARY", TEXT, "A condensed account of earlier work, not the original messages."),
+        "tool_output" => ("TOOL RESULT", TEXT, "Recorded output · not an agent explanation"),
+        "read"|"search"|"tool_call"|"change"|"test" => ("TOOL ACTION", TEXT, "Recorded operation · execution may need confirmation"),
+        "user" if crate::history::provenance::original(event) => ("YOUR REQUEST", ACCENT, "User instruction recorded in this session"),
+        "assistant" if crate::history::provenance::original(event) => ("AGENT MESSAGE", GREEN, "A saved response from the coding session, not a new wy explanation."),
+        _ => ("UNVERIFIED CONTEXT", AMBER, "Source not verified · do not treat as original intent"),
+    }
+}
+fn event_details(event:&Value,agent:&str)->Vec<Line<'static>> {
+    let mut lines=vec![Line::styled(format!("  {}",conversation_role(event).2),Style::default().fg(TEXT))];
+    for (name,value) in [("Coding tool",agent),("Model",s(&event["model"])),("Session",s(&event["session_id"])),("Event",event["event_id"].as_str().unwrap_or(s(&event["id"])))] {
+        if !value.is_empty(){lines.push(Line::styled(format!("  {name}: {value}"),Style::default().fg(TEXT)));}
+    }
+    if let Some(message)=event["provenance"]["message_id"].as_str(){lines.push(Line::styled(format!("  Message: {message}"),Style::default().fg(TEXT)));}
+    lines.push(Line::styled(format!("  Recorded: {}",crate::insights::when(&event["timestamp"])),Style::default().fg(TEXT)));
+    if let Some(status)=crate::history::origins::status(event){lines.push(Line::styled(format!("  {status}"),Style::default().fg(TEXT)));}
+    lines
+}
+fn event_body(event:&Value,limit:usize)->Vec<Line<'static>> {
+    let mut lines=vec![];
+    let (label,color,_)=conversation_role(event);
+    if ["TOOL ACTION","TOOL RESULT"].contains(&label) {
+        // Preserve literal tool/code content; Markdown cleanup is only for prose.
+        for line in crate::security::short(s(&event["text"]),limit).lines(){lines.push(Line::styled(format!("  {line}"),Style::default().fg(TEXT)));}
+    } else {quoted(&mut lines,s(&event["text"]),limit,color);}
+    if event["truncated"]==true || (["TOOL ACTION","TOOL RESULT"].contains(&label)&&s(&event["text"]).chars().count()>limit){lines.push(Line::styled("  [Excerpt shortened]",Style::default().fg(AMBER)));}
+    lines
+}
+/// The same disclosure-first presentation in every history view.
+pub(super) fn conversation(doc: &mut Document, event: &Value, agent: &str, limit: usize) {
+    let (label,color,_)=conversation_role(event);
+    let id=format!("event-{}",doc.disclosures.len());
+    let details=event_details(event,agent);
+    doc.gap();
+    let kind=event["role"].as_str().unwrap_or(s(&event["kind"]));
+    let collapsed=!["user","assistant"].contains(&kind)||!crate::history::provenance::original(event);
+    if collapsed {
+        let title=match label {"AGENT NOTES"=>"Agent notes","SESSION SUMMARY"=>"Session summary","TOOL ACTION"=>"Tool activity","TOOL RESULT"=>"Tool result",_=>"Unverified source"};
+        let mut body=event_body(event,limit);body.push(Line::default());body.extend(details);
+        doc.disclosure(id,&format!("{title} · {}{}",crate::insights::local_date(&event["timestamp"]),if event["failed"]==true{" · failed"}else{""}),body);
+    } else {
+        doc.lines.push(Line::styled(format!("▎ {label}"),Style::default().fg(color).bold()));
+        doc.lines.extend(event_body(event,limit));
+        doc.text(format!("  {}",crate::insights::local_date(&event["timestamp"])),TEXT);
+        doc.disclosure(id,"Session details",details);
     }
     doc.gap();
 }
-/// The latest request and up to three agent messages that mention the file.
+/// File mentions are supporting context, never a replacement for the code diff.
 fn related(doc: &mut Document, evidence: &[Value]) {
-    let last_user = evidence.iter().rposition(|e| e["role"] == "user");
-    let assistants: Vec<_> = evidence
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| e["role"] == "assistant")
-        .map(|(i, _)| i)
-        .collect();
-    let recent = &assistants[assistants.len().saturating_sub(3)..];
-    for (i, event) in evidence.iter().enumerate() {
-        if Some(i) != last_user && !recent.contains(&i) && event["role"] != "summary" {
-            continue;
-        }
-        let original = crate::history::provenance::original(event);
-        let user = event["role"] == "user";
-        let who = if !original { "Captured context" } else if user { "You" } else { "Agent" };
-        doc.speaker_line(who, if user { "" } else { who_wrote(event, s(&event["agent"])) });
-        if !original {
-            doc.text(crate::history::provenance::label(event), AMBER);
-        }
-        if let Some(status) = crate::history::origins::status(event) {
-            doc.text(status, AMBER);
-        }
-        let full = s(&event["text"]);
-        let excerpt = crate::security::short(full, if user { 500 } else { 1400 });
-        let more = if excerpt.len() < full.len() { "…" } else { "" };
-        doc.text(format!("“{excerpt}{more}”"), if user { MUTED } else { TEXT });
-        doc.gap();
+    let mut lines=vec![Line::styled("These excerpts mention the file, but are not linked to a captured edit.",Style::default().fg(TEXT))];
+    for event in evidence {
+        lines.push(Line::default());
+        lines.push(Line::styled(format!("{} · {}",conversation_role(event).0,crate::insights::local_date(&event["timestamp"])),Style::default().fg(TEXT).bold()));
+        lines.extend(event_body(event,1400));
+        lines.extend(event_details(event,s(&event["agent"])));
     }
+    doc.disclosure("related-conversation".into(),if evidence.iter().all(|e|e["role"]=="rationale"){"Agent notes mentioning this file"}else{"Conversation mentioning this file"},lines);
 }
 /// One hunk: `@@ line 10 · fn get()  +2 −1`, a status when needed, then its lines.
 /// The header opens the turn that made the change when a recorded edit matched.
@@ -479,12 +556,12 @@ fn change(doc: &mut Document, hunk: &Value, reason: Option<&Value>) {
         ),
     ];
     match s(&hunk["status"]) {
-        "partial" => spans.push(Span::styled("  · edited after", Style::default().fg(AMBER))),
-        "none" => spans.push(Span::styled("  · no recorded reason", Style::default().fg(MUTED))),
+        "partial" => spans.push(Span::styled("  · partial text overlap", Style::default().fg(AMBER))),
+        "none" => spans.push(Span::styled("  · no recorded agent edit", Style::default().fg(MUTED))),
         _ => {}
     }
     if let Some(edit) = reason.map(|r| &r["edit"]).filter(|e| e.is_object()) {
-        spans.push(Span::styled("  turn ›", Style::default().fg(MUTED)));
+        spans.push(Span::styled("  open conversation ›", Style::default().fg(ACCENT)));
         doc.sources.push((doc.lines.len(), Link::Turn(edit.clone())));
     }
     doc.lines.push(Line::from(spans));
@@ -519,7 +596,12 @@ fn diff_header(diff: &str) -> usize {
 /// The conversation around one recorded edit, with the edit itself in place.
 pub(super) fn turn(session: &Value, edit: &Value) -> Document {
     let mut doc = Document::new(View::Turn, format!("Turn · {}", s(&edit["file"])));
-    doc.notice = Some(("Recorded conversation · Esc goes back".into(), MUTED));
+    doc.notice = Some(("Historical conversation · Esc goes back".into(), MUTED));
+    let (start,last)=crate::insights::session_dates(session);
+    doc.text(format!("{} · session {}",s(&session["agent"]),s(&session["id"])),MUTED);
+    doc.text(format!("Session started / earliest captured: {}",crate::insights::when(&start)),MUTED);
+    doc.text(format!("Last captured event: {}",crate::insights::when(&last)),MUTED);
+    doc.text(format!("Selected edit recorded: {}",crate::insights::when(&edit["timestamp"])),AMBER);
     for event in attribution::turn(session, &edit["event_id"]) {
         if event["id"] == edit["event_id"] {
             let (added, removed) = attribution::edit_size(edit);
@@ -541,18 +623,7 @@ pub(super) fn turn(session: &Value, edit: &Value) -> Document {
             doc.gap();
             continue;
         }
-        let original = crate::history::provenance::original(&event);
-        let user = event["kind"] == "user";
-        let who = if !original { "Captured context" } else if user { "You" } else { "Agent" };
-        doc.speaker_line(who, if user { "" } else { who_wrote(&event, s(&session["agent"])) });
-        if !original {
-            doc.text(crate::history::provenance::label(&event), AMBER);
-        }
-        doc.text(
-            crate::security::short(s(&event["text"]), 4000),
-            if user { MUTED } else { TEXT },
-        );
-        doc.gap();
+        conversation(&mut doc,&event,s(&session["agent"]),4000);
     }
     if doc.lines.is_empty() {
         doc.text("This turn is no longer in the saved conversation.", AMBER);
@@ -586,6 +657,9 @@ pub(super) fn explanation(artifact: Arc<Value>) -> Document {
         .map(Target::label)
         .unwrap_or_else(|| "All changes".into());
     let mut doc = Document::new(View::Explanation, title);
+    doc.text(format!("AI explanation · generated {}",crate::insights::local_date(&artifact["created_at"])),TEXT);
+    doc.text("A new assessment of the evidence, not the original coding conversation.",TEXT);
+    doc.gap();
     if let Some(warning) = artifact["provenance_warning"].as_str() {
         doc.text(warning, AMBER);
         doc.gap();
@@ -753,11 +827,6 @@ pub(super) fn evidence(artifact: Arc<Value>, index: usize) -> Option<Document> {
         "Saved with this explanation. This excerpt may differ from current source.",
         MUTED,
     );
-    for key in ["agent", "model", "role", "session_id", "event_id"] {
-        if let Some(value) = e[key].as_str() {
-            doc.text(format!("{key}: {value}"), MUTED);
-        }
-    }
     doc.gap();
     let text = e["text"]
         .as_str()
@@ -770,6 +839,8 @@ pub(super) fn evidence(artifact: Arc<Value>, index: usize) -> Option<Document> {
                 TEXT,
             );
         }
+    } else if e["kind"] == "session" {
+        conversation(&mut doc,e,s(&e["agent"]),16000);
     } else {
         doc.text(text, TEXT);
     }
@@ -796,17 +867,7 @@ pub(super) fn evidence(artifact: Arc<Value>, index: usize) -> Option<Document> {
     Some(doc)
 }
 fn provenance(doc: &mut Document, evidence: &Value, links: bool) {
-    doc.text(
-        crate::history::provenance::label(evidence),
-        if crate::history::provenance::original(evidence) {
-            MUTED
-        } else {
-            AMBER
-        },
-    );
-    if let Some(status) = crate::history::origins::status(evidence) {
-        doc.text(status, AMBER);
-    }
+    // Verification notes live inside event details, not repeated above the content.
     if links {
         for reference in arr(&evidence["originals"]) {
             let index = doc.originals.len();
@@ -833,22 +894,13 @@ pub(super) fn original(evidence: &Value) -> Document {
     let mut doc = Document::new(View::Original, "Captured original message");
     doc.notice = Some(("Original source · Esc returns to the summary".into(), MUTED));
     provenance(&mut doc, evidence, false);
-    doc.text(
-        format!(
-            "{}:{} · {} · {}",
-            s(&evidence["agent"]),
-            s(&evidence["session_id"]),
-            s(&evidence["provenance"]["turn_id"]),
-            s(&evidence["provenance"]["message_id"])
-        ),
-        MUTED,
-    );
+
     doc.text(
         format!("{}:{}", s(&evidence["file"]), n(&evidence["start_line"])),
         MUTED,
     );
     doc.gap();
-    doc.text(s(&evidence["text"]), TEXT);
+    conversation(&mut doc,evidence,s(&evidence["agent"]),16000);
     if evidence["truncated"] == true {
         doc.text(
             "Original excerpt shortened by the capture limit; surrounding context may be missing.",
@@ -921,13 +973,12 @@ pub(super) fn commit_context(context: &Value) -> Document {
             MUTED,
         );
         for event in arr(&session["events"]) {
-            doc.heading(format!("{} · {}", s(&event["kind"]), s(&event["id"])));
             provenance(&mut doc, event, true);
             doc.text(
                 format!("{}:{}", s(&session["path"]), n(&event["source_line"])),
                 MUTED,
             );
-            doc.text(s(&event["text"]), TEXT);
+            conversation(&mut doc,event,s(&session["agent"]),16000);
         }
         if arr(&session["events"]).is_empty() {
             doc.text("No observable events in this saved capture.", MUTED);
@@ -937,17 +988,27 @@ pub(super) fn commit_context(context: &Value) -> Document {
 }
 
 pub(super) fn help() -> Document {
-    let mut doc = Document::new(View::Help, "Reasons, changes and optional enrichment");
+    let mut doc = Document::new(View::Help, "Conversation, changes and explanations");
     for (title, body) in [
         (
             "Read a file",
-            "Select a file to read its changes in order, with the agent's reason above each one.
-A numbered badge starts each reason: the first sentence the agent wrote just before
-the edit, the rest of that message, and the request from you that led to it.
-Changes with no matching recorded edit say \"no recorded reason\". Nothing is invented.
-\"same reason as above\" marks later changes made by the same message.
-w  collapse every reason to its headline, or expand them again
-Enter  then ↑/↓ and Enter  open the conversation turn that made a change",
+            "Select a file to read changes alongside nearby conversation.
+A numbered badge links captured context to matching recorded edits.
+Proximity and text overlap do not establish intent or authorship.
+Changes without a match say \"no matching edit record\".
+w  collapse nearby context to headlines, or expand it
+Enter  then ↑/↓ and Enter  open the recorded conversation turn",
+        ),
+        (
+            "Conversation labels",
+            "YOUR REQUEST — the user's instruction saved in this session
+AGENT MESSAGE — the coding agent's recorded response
+AGENT NOTES — saved working notes; expand to read
+SESSION SUMMARY — condensed history, not original speech
+TOOL ACTION / TOOL RESULT — recorded operations and outputs
+UNVERIFIED CONTEXT — source cannot be confirmed
+All message bodies use normal text contrast. Dates describe the source event.
+An Enriched answer is a NEW wy assessment, not the original conversation",
         ),
         (
             "Ask for more",
@@ -971,7 +1032,13 @@ q / Ctrl+Q / Ctrl+C  quit",
         (
             "Settings & commands",
             "/agent codex|claude
-/source both|codex|claude|none
+/source all|codex|claude|pi|opencode|none (both = all)
+/coverage — capture counts, exclusions, and linkage gaps
+/sessions — browse dated sessions across tools
+/timeline [FILE:SYMBOL] — chronological captured turns
+/decisions [FILE:SYMBOL] — requirements, rationale, tests, and gaps
+/setup then /setup save — optional decision-record template
+/export then /export save — preview and save a review brief
 /why FILE:SYMBOL QUESTION
 /ask QUESTION
 /reason QUESTION — question about all changes

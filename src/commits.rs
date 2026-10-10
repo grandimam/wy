@@ -125,7 +125,7 @@ pub fn lookup(path: &Path, revision: &str, source: &str) -> Result<Value> {
         let id = s(&link["review_id"]);
         let review = review(&store, &root, id)?;
         for (key, mut session) in sessions(&store, &root, &review)? {
-            if source != "both" && session["agent"] != source {
+            if !history::source_matches(source, s(&session["agent"])) {
                 continue;
             }
             if let Some(&index) = positions.get(&key) {

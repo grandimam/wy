@@ -39,6 +39,7 @@ impl Target {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Kind {
+    Section,
     Folder,
     File,
     Symbol,
@@ -78,12 +79,13 @@ impl<'a> Folder<'a> {
     fn count(&self) -> usize {
         self.files.len() + self.folders.values().map(Self::count).sum::<usize>()
     }
-    fn flatten(&self, prefix: &str, depth: usize, explorer: &mut Explorer) {
+    fn flatten(&self, prefix: &str, depth: usize, explorer: &mut Explorer, historical: bool) {
         for (name, folder) in &self.folders {
             let path = format!("{prefix}{name}/");
-            let expanded = !explorer.filter.is_empty() || !explorer.closed.contains(&path);
+            let folder_key=if historical{format!("history:{path}")}else{path.clone()};
+            let expanded = !explorer.filter.is_empty() || !explorer.closed.contains(&folder_key);
             explorer.rows.push(Row {
-                key: path.clone(),
+                key: folder_key,
                 label: name.clone(),
                 depth,
                 kind: Kind::Folder,
@@ -97,7 +99,7 @@ impl<'a> Folder<'a> {
                 diff: false,
             });
             if expanded {
-                folder.flatten(&path, depth + 1, explorer);
+                folder.flatten(&path, depth + 1, explorer, historical);
             }
         }
         for (name, change) in &self.files {
@@ -186,6 +188,9 @@ pub(super) struct Explorer {
     open_files: HashSet<String>,
 }
 impl Explorer {
+    fn section(&mut self,key:&str,label:&str,count:usize){
+        self.rows.push(Row{key:key.into(),label:label.into(),depth:0,kind:Kind::Section,target:None,expandable:false,expanded:false,count,added:0,removed:0,session:false,diff:false});
+    }
     pub fn selected(&self) -> Option<&Row> {
         self.state.selected().and_then(|i| self.rows.get(i))
     }
@@ -195,14 +200,23 @@ impl Explorer {
     pub fn rebuild(&mut self, review: &Value) {
         let key = self.selected().map(|r| r.key.clone());
         let mut tree = Folder::default();
+        let mut historical=Folder::default();
         let query = self.filter.to_lowercase();
         for change in files(review) {
             if s(&change["file"]).to_lowercase().contains(&query) {
-                tree.insert(s(&change["file"]), change);
+                if arr(&review["changes"]).iter().any(|c|c["file"]==change["file"]){tree.insert(s(&change["file"]),change);}
+                else{historical.insert(s(&change["file"]),change);}
             }
         }
         self.rows.clear();
-        tree.flatten("", 0, self);
+        if historical.count()>0 {
+            if tree.count()>0 {
+                self.section("@changes","Current changes",tree.count());
+                tree.flatten("",1,self,false);
+            }
+            self.section("@history","Historical edits",historical.count());
+            historical.flatten("",1,self,true);
+        } else {tree.flatten("",0,self,false);}
         for row in &mut self.rows {
             if row.kind == Kind::File {
                 row.session = arr(&review["recent_code"])
@@ -225,12 +239,17 @@ impl Explorer {
         if self.rows.is_empty() {
             return;
         }
-        let next = self
+        let mut next = self
             .state
             .selected()
             .unwrap_or(0)
             .saturating_add_signed(delta)
             .min(self.rows.len() - 1);
+        while self.rows[next].kind==Kind::Section {
+            let candidate=next.saturating_add_signed(if delta<0{-1}else{1}).min(self.rows.len()-1);
+            if candidate==next{return;}
+            next=candidate;
+        }
         self.state.select(Some(next));
     }
     pub fn toggle(&mut self, review: &Value) {
@@ -251,7 +270,7 @@ impl Explorer {
                     self.open_files.insert(row.key);
                 }
             }
-            Kind::Symbol => {}
+            Kind::Symbol | Kind::Section => {}
         }
         self.rebuild(review);
     }

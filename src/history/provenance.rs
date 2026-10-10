@@ -44,7 +44,9 @@ pub fn classify(row: &Value, kind: &str, text: &str, turn: &str) -> Value {
         || row["item"]["phase"] == "summary"
         || row["type"] == "compacted"
         || kind == "summary";
-    let source = if summary {
+    let source = if kind == "rationale" {
+        "unknown"
+    } else if summary {
         "compaction_summary"
     } else if suspected_summary(text) {
         "unknown"
@@ -75,7 +77,7 @@ pub fn classify(row: &Value, kind: &str, text: &str, turn: &str) -> Value {
             refs.push(json!({"session_id":r["session_id"],"turn_id":r["turn_id"],"message_id":r["message_id"],"relation":"source"}));
         }
     }
-    json!({"source_type":source,"basis":if summary {"provider_compaction_marker"} else if source=="unknown" {"suspected_summary"} else {"native_event"},
+    json!({"source_type":source,"basis":if kind=="rationale" {"provider_exposed_rationale_not_verified_decision"} else if summary {"provider_compaction_marker"} else if source=="unknown" {"suspected_summary"} else {"native_event"},
         "turn_id":if turn_id.is_empty(){Value::Null}else{json!(turn_id)},"message_id":message,
         "parent_message_id":row["parentUuid"],"original_refs":refs,"references_truncated":references.len()>32})
 }
@@ -173,6 +175,7 @@ pub fn compaction(row: &Value, session: &Value, line: usize, turn: &str) -> Vec<
 }
 
 pub fn label(event: &Value) -> String {
+    if event["kind"]=="rationale" || event["role"]=="rationale" {return "Available rationale · tentative, not a verified reason for this edit".into();}
     match s(&event["provenance"]["source_type"]) {
         "original_turn" => "Original turn · captured message".into(),
         "tool_record" => "Captured tool record".into(),

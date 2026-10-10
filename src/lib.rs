@@ -7,6 +7,7 @@ pub mod repository;
 pub mod security;
 pub mod service;
 pub mod source;
+pub mod insights;
 pub mod storage;
 pub mod tui;
 

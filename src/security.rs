@@ -16,7 +16,7 @@ pub fn allowed(file: &str) -> bool {
     let path=Path::new(file);
     let name=path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
     let suffix=path.extension().unwrap_or_default().to_string_lossy().to_lowercase();
-    safe_relative(file) && !path.components().any(|c| matches!(c.as_os_str().to_str(),Some(".git"|".wy"|".codex"|".claude"|"node_modules"|"dist"|"build"|"target"|"vendor")))
+    safe_relative(file) && !path.components().any(|c| matches!(c.as_os_str().to_str(),Some(".git"|".wy"|".codex"|".claude"|".pi"|".opencode"|"node_modules"|"dist"|"build"|"target"|"vendor")))
         && ![".env","credential","secret","id_rsa","id_ed25519","auth.json"].iter().any(|w|name.contains(w))
         && ["ts","tsx","js","jsx","json","toml","yaml","yml","sql","md","txt","ini","cfg","go","rs","java"].contains(&suffix.as_str())
 }

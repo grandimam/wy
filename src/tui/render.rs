@@ -91,7 +91,7 @@ impl Workspace {
         // The filter line appears only while a filter is being typed or applied.
         let filtering = self.editing == Some(Input::Filter) || !self.explorer.filter.is_empty();
         let sections = Layout::vertical([
-            Constraint::Length(u16::from(filtering)),
+            Constraint::Length(1),
             Constraint::Min(1),
         ])
         .split(area);
@@ -102,6 +102,9 @@ impl Workspace {
                 sections[0],
             );
         }
+        if !filtering {
+            frame.render_widget(Paragraph::new(if self.explorer.rows.iter().any(|r|r.kind==Kind::Section){" Files · f filters"}else{" Current changes · f filters"}).style(Style::default().fg(TEXT).bold()),sections[0]);
+        }
         self.areas.files = sections[1];
         let available = sections[1].width.saturating_sub(3) as usize;
         let items: Vec<_> = self
@@ -109,6 +112,7 @@ impl Workspace {
             .rows
             .iter()
             .map(|row| {
+                if row.kind==Kind::Section{return ListItem::new(Line::styled(format!("{} · {}",row.label,row.count),Style::default().fg(TEXT).bold()));}
                 let icon = if row.expandable {
                     if row.expanded { "▾" } else { "▸" }
                 } else if row.kind == Kind::Symbol {
@@ -127,13 +131,9 @@ impl Workspace {
                     row.label,
                     if row.kind == Kind::Folder { "/" } else { "" }
                 );
-                let state = row
-                    .target
-                    .as_ref()
-                    .filter(|_| row.kind == Kind::File)
-                    .and_then(|t| self.file_state(&t.file));
+                let state:Option<(&str,Color)>=None;
                 let suffix = match row.kind {
-                    Kind::File if state.is_some() => format!(" · {}", state.unwrap().0),
+                    Kind::Section => String::new(),
                     Kind::Folder => format!(" {}", row.count),
                     Kind::File if reviewed => " ✓".into(),
                     Kind::File if row.diff => format!(" +{} −{}", row.added, row.removed),
@@ -150,6 +150,7 @@ impl Workspace {
                         .max(4),
                 );
                 let color = match row.kind {
+                    Kind::Section => TEXT,
                     Kind::Folder => ACCENT,
                     Kind::File if reviewed => GREEN,
                     Kind::File => TEXT,
@@ -191,32 +192,21 @@ impl Workspace {
             );
         }
     }
-    /// Title on the left; an Enriched tab on the right when a saved answer exists.
     fn draw_title(&mut self, frame: &mut Frame, area: Rect) {
-        let mut x = area.right();
-        let enriched = self.code.is_some()
-            && self
-                .current_key()
-                .is_some_and(|k| self.answer_for(&k).is_some());
-        if enriched && area.width > 30 {
-            let label = "Enriched";
-            let width = label.len() as u16 + 2;
-            x -= width;
-            let rect = Rect::new(x, area.y, width, 1);
-            let style = if self.document.kind == View::Explanation {
-                Style::default().fg(ACCENT).bold()
-            } else {
-                Style::default().fg(MUTED)
-            };
-            frame.render_widget(Paragraph::new(Span::styled(label, style)), rect);
-            self.areas.tabs.push((rect, View::Explanation, Focus::Reader));
+        let state=self.document.target.as_ref().and_then(|t|self.file_state(&t.file));
+        let suffix=state.map(|(s,_)|format!(" · explanation {s}")).unwrap_or_default();
+        frame.render_widget(Paragraph::new(fit(&format!("{}{}",self.document.title,suffix),area.width as usize)).style(Style::default().fg(TEXT).bold()),area);
+    }
+    fn draw_reader_tabs(&mut self,frame:&mut Frame,area:Rect){
+        if self.document.target.is_none(){return;}
+        let tabs=Layout::horizontal([Constraint::Ratio(1,3);3]).split(area);
+        for ((label,short,view,key),rect) in [("Changes","Code",View::Recorded,"o"),("Explanation","AI",View::Explanation,"v"),("History","History",View::Timeline,"t")].into_iter().zip(tabs.iter().copied()) {
+            let label=if rect.width>=18{format!(" {label} [{key}] ")}else if rect.width>=label.len() as u16+2{format!(" {label} ")}else{short.into()};
+            let selected=self.document.kind==view;
+            let style=if selected{Style::default().fg(ACCENT).bold().add_modifier(Modifier::REVERSED)}else{Style::default().fg(TEXT)};
+            frame.render_widget(Paragraph::new(Span::styled(label,style)).centered(),rect);
+            self.areas.tabs.push((rect,view,Focus::Reader));
         }
-        let title_width = x.saturating_sub(area.x).saturating_sub(1);
-        frame.render_widget(
-            Paragraph::new(fit(&self.document.title, title_width as usize))
-                .style(Style::default().fg(TEXT).bold()),
-            Rect::new(area.x, area.y, title_width, 1),
-        );
     }
     fn draw_reader(&mut self, frame: &mut Frame, area: Rect) {
         self.areas.reader = area;
@@ -239,6 +229,7 @@ impl Workspace {
         ])
         .split(area);
         self.draw_title(frame, rows[0]);
+        self.draw_reader_tabs(frame,rows[2]);
         if let Some((text, color)) = &self.document.notice {
             frame.render_widget(
                 Paragraph::new(text.as_str())
@@ -250,18 +241,16 @@ impl Workspace {
         let content = Rect::new(rows[3].x, rows[3].y, rows[3].width.saturating_sub(1), rows[3].height);
         let mut lines = self.document.lines.clone();
         let mut source_positions = vec![];
+        // Compute wrapped offsets once. Re-laying out every preceding line for
+        // each clickable row made long history views quadratic to redraw.
+        let mut offsets=Vec::with_capacity(lines.len()+1);offsets.push(0usize);
+        for line in &lines {
+            let height=if self.document.code(){1}else{Paragraph::new(line.clone()).wrap(Wrap{trim:false}).line_count(content.width).max(1)};
+            offsets.push(offsets.last().unwrap()+height);
+        }
         for (position, (line, link)) in self.document.sources.iter().enumerate() {
-            let offset = if *line == 0 {
-                0
-            } else {
-                Paragraph::new(lines[..*line].to_vec())
-                    .wrap(Wrap { trim: false })
-                    .line_count(content.width)
-            };
-            let height = Paragraph::new(lines[*line].clone())
-                .wrap(Wrap { trim: false })
-                .line_count(content.width)
-                .max(1);
+            let offset=offsets[*line];
+            let height=offsets[*line+1]-offset;
             if self.document.source_selection == Some(position) {
                 lines[*line] = lines[*line].clone().style(Style::default().add_modifier(Modifier::REVERSED));
                 let scroll = usize::from(self.document.scroll);
@@ -373,7 +362,7 @@ impl Workspace {
         } else if reader && self.document.kind == View::Explanation {
             vec![("i", "ask"), ("s", "sources"), ("Esc", "back"), ("?", "more")]
         } else if reader && self.document.kind == View::Recorded {
-            vec![("Enter", "open turn"), ("w", reasons), ("e", "explain"), ("?", "more")]
+            vec![("Enter", "select action"), ("w", reasons), ("e", "explain"), ("?", "more")]
         } else if self.focus == Focus::Files {
             vec![("↑↓", "files"), ("Tab", "read"), ("e", "explain"), ("?", "more")]
         } else {

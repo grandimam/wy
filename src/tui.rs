@@ -1,5 +1,6 @@
 //! Read-only review workspace. Agent requests run only after explicit input.
 mod document;
+mod history_views;
 mod explorer;
 mod layout;
 mod navigation;
@@ -40,11 +41,12 @@ use std::{
 };
 
 /// The terminal's own palette: wy adds no backgrounds, so it follows the user's theme
-/// and works on light terminals. Hierarchy comes from bold and dim before colour.
+/// and works on light terminals. Hierarchy comes from labels, spacing and weight;
+/// meaningful content never depends on low-contrast terminal dark gray.
 mod theme {
     use ratatui::style::Color;
     pub const TEXT: Color = Color::Reset;
-    pub const MUTED: Color = Color::DarkGray;
+    pub const MUTED: Color = Color::Reset;
     pub const BORDER: Color = Color::DarkGray;
     pub const ACCENT: Color = Color::Cyan;
     pub const GREEN: Color = Color::Green;
@@ -134,6 +136,7 @@ struct Workspace {
     code: Option<Document>,
     answers: Vec<Arc<Value>>,
     sessions: Vec<Value>,
+    history_tabs: std::collections::HashMap<String,Document>,
     views: Vec<ReadingState>,
     queue: VecDeque<reasoning::Options>,
     focus: Focus,
@@ -201,6 +204,7 @@ impl Workspace {
             code: None,
             answers: vec![],
             sessions: vec![],
+            history_tabs: std::collections::HashMap::new(),
             views: vec![],
             queue: VecDeque::new(),
             focus: Focus::Files,
@@ -285,6 +289,10 @@ impl Workspace {
         let Some(artifact) = &document.artifact else {
             return;
         };
+        if document.kind==View::Export {
+            document.notice=Some(("Export of a dated snapshot, not a live review · preview sensitive content before saving".into(),AMBER));
+            return;
+        }
         if document::is_recorded(artifact) {
             return;
         }
@@ -657,6 +665,33 @@ impl Workspace {
         let (name, rest) = input.split_once(' ').unwrap_or((&input, ""));
         let rest = rest.trim();
         match name {
+            "/coverage" => self.open(history_views::coverage(&self.review,&self.sessions)),
+            "/sessions" => self.open(history_views::sessions(&self.review,&self.sessions)),
+            "/timeline" | "/decisions" => {
+                let target=if rest.is_empty(){self.document.target.clone().or_else(||self.explorer.target()).ok_or_else(||anyhow::anyhow!("Select a file or use /timeline FILE[:SYMBOL]"))?}else{
+                    let (file,symbol)=rest.split_once(':').map(|(f,s)|(f,Some(s.to_owned()))).unwrap_or((rest,None));
+                    ensure!(security::allowed(file),"Choose an eligible repository-relative file");
+                    Target{file:file.into(),symbol,line:1}
+                };
+                self.open(history_views::context(&self.review,&self.sessions,target,name=="/decisions"));
+            }
+            "/setup" => {
+                if rest=="save"{
+                    ensure!(self.document.kind==View::Setup,"Preview /setup before saving the optional instructions");
+                    let path=crate::insights::save_private(&self.root,"decision-instructions.md",crate::insights::DECISION_INSTRUCTIONS)?;
+                    self.message(format!("Saved {} · agent configuration was NOT modified",path.display()));
+                }else{ensure!(rest.is_empty(),"Use /setup, then /setup save");self.open(history_views::setup());}
+            }
+            "/export" => {
+                if rest=="save"{
+                    ensure!(self.document.kind==View::Export,"Preview /export before saving");
+                    let artifact=self.document.artifact.as_ref().ok_or_else(||anyhow::anyhow!("Export preview unavailable"))?;
+                    ensure!(artifact["review_id"]==self.review["id"],"Capture changed; preview /export again");
+                    let name=format!("review-brief-{}.md",&security::digest(s(&artifact["export_text"]))[..16]);
+                    let path=crate::insights::save_private(&self.root,&name,s(&artifact["export_text"]))?;
+                    self.message(format!("Saved {} · nothing uploaded; review before sharing",path.display()));
+                }else{ensure!(rest.is_empty(),"Use /export, then /export save");self.open(history_views::export(&self.review,&self.sessions));}
+            }
             "/commits" => self.open_commits()?,
             "/commit" => {
                 ensure!(!rest.is_empty(), "Use /commit HASH or /commits to browse");
@@ -768,6 +803,19 @@ impl Workspace {
     }
     fn follow(&mut self, link: Link) -> Result<()> {
         match link {
+            Link::Explain => {self.why_change(false);Ok(())}
+            Link::Disclosure(id) => {
+                let selection=self.document.source_selection;
+                self.document.toggle_disclosure(&id);
+                self.document.source_selection=selection;
+                Ok(())
+            }
+            Link::Session(key) => {
+                let session=crate::storage::Store::open(&self.root)?.get("session",&key)?;
+                crate::validate("Session",&session)?;
+                ensure!(crate::history::belongs(s(&session["cwd"]),&self.root),"Session is not scoped to this repository");
+                self.open(history_views::session(&session));Ok(())
+            }
             Link::Source(index) => self.open_evidence(index),
             Link::Turn(edit) => {
                 let (_, session) = crate::history::saved_edit(&self.root, &crate::history::edit_ref(&edit))?;
@@ -788,7 +836,9 @@ impl Workspace {
             return;
         }
         let (scroll, selection) = (self.document.scroll, self.document.source_selection);
+        let expanded = self.document.expanded.clone();
         self.document = self.local_notes(&code);
+        for id in expanded { self.document.toggle_disclosure(&id); }
         self.document.scroll = scroll;
         self.document.source_selection =
             selection.filter(|&i| i < self.document.sources.len());
@@ -836,9 +886,35 @@ impl Workspace {
         }
     }
     fn change_view(&mut self, view: View) -> Result<()> {
+        if self.document.kind==view {self.focus=Focus::Reader;return Ok(());}
+        if self.document.kind==View::Timeline {
+            if let Some(target)=&self.document.target {
+                if self.history_tabs.len()>=8{self.history_tabs.clear();}
+                self.history_tabs.insert(target.label(),self.document.clone());
+            }
+        }
+        let target=self.document.target.clone().or_else(||self.explorer.target());
         match view {
-            View::Diff | View::Recorded => self.show_notes(),
-            View::Explanation => self.show_enriched(),
+            View::Diff | View::Recorded => {
+                if let Some(target)=target {self.code=Some(document::preview(&self.review,target));self.show_notes();}
+            }
+            View::Explanation => {
+                if let Some(target)=target {
+                    let code=document::preview(&self.review,target.clone());
+                    let key=navigation::code_key(&code);
+                    if let Some(answer)=self.answer_for(&key){self.open(document::explanation(answer));}
+                    else{self.open(document::explanation_prompt(target));}
+                    self.code=Some(code);
+                }
+            }
+            View::Timeline => {
+                if let Some(target)=target {
+                    let code=document::preview(&self.review,target.clone());
+                    let doc=self.history_tabs.get(&target.label()).cloned().unwrap_or_else(||history_views::context(&self.review,&self.sessions,target,false));
+                    self.open(doc);
+                    self.code=Some(code);
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -872,6 +948,7 @@ impl Workspace {
             },
         )?;
         self.sessions = crate::history::saved(&review)?;
+        self.history_tabs.clear();
         self.explorer.refresh(&self.review, &review);
         self.review = review;
         // Reading history belongs to the previous snapshot.
@@ -944,6 +1021,12 @@ impl Workspace {
                 _ => {}
             }
             return Ok(false);
+        }
+        if modifiers.contains(KeyModifiers::CONTROL) && matches!(code,KeyCode::Left|KeyCode::Right) {
+            let tabs=[View::Recorded,View::Explanation,View::Timeline];
+            let current=tabs.iter().position(|v|*v==self.document.kind).unwrap_or(0);
+            let next=if code==KeyCode::Right{(current+1)%3}else{(current+2)%3};
+            self.change_view(tabs[next])?;return Ok(false);
         }
         let selection_before = self.explorer.selected().map(|r| r.key.clone());
         match code {
@@ -1052,8 +1135,9 @@ impl Workspace {
                 self.brief = !self.brief;
                 self.rebuild_reader();
             }
-            KeyCode::Char('o') => self.show_notes(),
-            KeyCode::Char('v') => self.show_enriched(),
+            KeyCode::Char('o') => self.change_view(View::Recorded)?,
+            KeyCode::Char('v') => self.change_view(View::Explanation)?,
+            KeyCode::Char('t') => self.change_view(View::Timeline)?,
             KeyCode::Char('x') => self.cancel(),
             KeyCode::Char('s') if !self.document.sources.is_empty() => self.select_source(0),
             KeyCode::Char('R') => self.why_change(true),
@@ -1075,7 +1159,7 @@ impl Workspace {
                     let link = self.document.sources[self.document.source_selection.unwrap()].1.clone();
                     self.follow(link)?;
                 } else if self.focus == Focus::Reader
-                    && self.document.kind == View::Recorded
+                    && matches!(self.document.kind,View::Recorded|View::Explanation|View::Sessions|View::Timeline|View::Decisions|View::Session|View::Turn|View::Evidence|View::Original|View::Commit)
                     && !self.document.sources.is_empty()
                 {
                     self.select_source(0);

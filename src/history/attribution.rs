@@ -152,7 +152,7 @@ pub fn turn(session: &Value, event_id: &Value) -> Vec<Value> {
     let Some(at) = events.iter().position(|e| e["id"] == *event_id) else {
         return vec![];
     };
-    let message = |e: &Value| ["user", "assistant", "summary"].contains(&s(&e["kind"]));
+    let message = |e: &Value| ["user", "assistant", "summary", "rationale"].contains(&s(&e["kind"]));
     let start = events[..at]
         .iter()
         .rposition(|e| e["kind"] == "user")
@@ -257,7 +257,7 @@ pub fn reasons(root: &Path, sessions: &[Value], file: &str, diff: Option<&str>) 
     for (edit, mut change) in pairs {
         let session = edit
             .as_ref()
-            .and_then(|e| sessions.iter().find(|x| x["id"] == e["session_id"]));
+            .and_then(|e| sessions.iter().find(|x| x["id"] == e["session_id"] && x["agent"] == e["agent"]));
         let (Some(edit), Some(session)) = (edit, session) else {
             change["reason"] = Value::Null;
             change["first"] = json!(false);
@@ -271,12 +271,18 @@ pub fn reasons(root: &Path, sessions: &[Value], file: &str, diff: Option<&str>) 
             .unwrap_or(turn.len());
         let message = turn[..at].iter().rev().find(|e| e["kind"] == "assistant");
         let request = turn[..at].iter().find(|e| e["kind"] == "user");
+        // A short confirmation ("yes do it") needs the substantive request before it.
+        let events = arr(&session["events"]);
+        let prior = request
+            .filter(|r| s(&r["text"]).trim().chars().count() < 40)
+            .and_then(|r| events.iter().position(|e| e["id"] == r["id"]))
+            .and_then(|i| events[..i].iter().rev().find(|e| e["kind"] == "user" && s(&e["text"]).trim().chars().count() >= 40));
         let after = turn[at..].iter().find(|e| e["kind"] == "assistant");
         let anchor = message
             .or(request)
             .map(|e| s(&e["id"]))
             .unwrap_or(s(&edit["event_id"]));
-        let key = format!("{}:{anchor}", s(&session["id"]));
+        let key = format!("{}:{}:{anchor}", s(&session["agent"]), s(&session["id"]));
         let index = match groups.iter().position(|g| g["key"] == key) {
             Some(index) => index,
             None => {
@@ -296,7 +302,7 @@ pub fn reasons(root: &Path, sessions: &[Value], file: &str, diff: Option<&str>) 
                     .filter(|e| e["provenance"]["source_type"] == "compaction_summary")
                     .count();
                 groups.push(json!({"key":key,"agent":session["agent"],"model":model,"session_id":session["id"],
-                    "message":message,"request":request,"after":after,"edit":edit,"compactions":compactions}));
+                    "message":message,"rationale":turn[..at].iter().rev().find(|e|e["kind"]=="rationale"),"request":request,"prior_request":prior,"after":after,"edit":edit,"compactions":compactions}));
                 groups.len() - 1
             }
         };

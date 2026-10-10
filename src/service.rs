@@ -1,9 +1,13 @@
 use anyhow::{Result,ensure};
 use serde_json::{Value,json};
-use std::{path::{Path,PathBuf},collections::HashSet};
+use std::{path::Path,collections::HashSet};
 use crate::{arr,s,now,id,repository::{self,Texts},security::{digest,redact},storage::Store,history};
-#[derive(Default,Clone)]
+#[derive(Clone)]
 pub struct ReviewOptions {pub source:String}
+impl Default for ReviewOptions {fn default()->Self{Self{source:"all".into()}}}
+fn increment(coverage:&mut [Value],agent:&str,key:&str){
+    if let Some(row)=coverage.iter_mut().find(|r|r["agent"]==agent){row[key]=json!(row[key].as_u64().unwrap_or(0)+1);}
+}
 /// Compare HEAD with the working tree and capture repository-scoped agent history.
 pub fn review(path:&Path,opts:&ReviewOptions)->Result<Value>{
     let root=repository::root(path)?;
@@ -13,26 +17,43 @@ pub fn review(path:&Path,opts:&ReviewOptions)->Result<Value>{
     let before=if let Some(rev)=&head{repository::committed(&root,rev)?}else{Texts::new()};
     let changes=repository::compare(&before,&sources.texts);
     warnings.push("Changes since HEAD may include edits made before the agent session; attribution is unknown.".into());
-    let mut paths=vec![];
-    if opts.source!="none"{
-        let entries=history::discover(&root,&opts.source,None,None)?;
-        let queues:Vec<Vec<_>>=["codex","claude"].iter().map(|a|entries.iter().filter(|e|s(&e["agent"])==*a).collect()).collect();
-        for i in 0..queues.iter().map(Vec::len).max().unwrap_or(0){for queue in &queues{if let Some(e)=queue.get(i){paths.push(PathBuf::from(s(&e["path"])));}}}
+    let mut coverage=vec![];let mut queues=vec![];
+    for agent in history::AGENTS {
+        let enabled=history::source_matches(&opts.source,agent);
+        let (entries,issues)=if enabled{match history::discover_report(&root,agent,None,None){
+            Ok(report)=>report,Err(e)=>(vec![],vec![format!("Discovery failed: {}",redact(&e.to_string()))])
+        }}else{(vec![],vec![])};
+        warnings.extend(issues.iter().map(|w|format!("{agent}: {w}")));
+        coverage.push(json!({"agent":agent,"enabled":enabled,"discovered":entries.len(),"captured":0,
+            "skipped_budget":0,"skipped_unreadable":0,"skipped_scope":0,"duplicates":0,"issues":issues}));
+        queues.push(entries);
     }
+    let mut entries=vec![];
+    for i in 0..queues.iter().map(Vec::len).max().unwrap_or(0){for queue in &queues{if let Some(e)=queue.get(i){entries.push(e.clone());}}}
     let mut sessions=vec![];let mut refs=vec![];let mut seen=HashSet::new();let mut total=0;
-    for path in paths{
-        let Ok(meta)=path.metadata() else {warnings.push(format!("Skipped unavailable session: {}",path.display()));continue;};
-        let size=meta.len();
-        if sessions.len()>=20||total+size>40_000_000||size>20_000_000{warnings.push(format!("Skipped session due to history budget (20 sessions / 40 MB total): {}",path.display()));continue;}
-        let session=match history::collect(&path){Ok(v)=>v,Err(e)=>{warnings.push(format!("Skipped unreadable session {}: {}",path.display(),redact(&e.to_string())));continue;}};
-        if !history::belongs(s(&session["cwd"]),&root){continue;}
-        if !seen.insert(format!("{}:{}",s(&session["agent"]),s(&session["id"]))){continue;}
-        total+=size;warnings.extend(arr(&session["warnings"]).iter().map(|w|format!("{}:{}: {}",s(&session["agent"]),s(&session["id"]),s(w))));
-        let key=format!("{}:{}:{}",s(&session["agent"]),s(&session["id"]),&digest(&session.to_string())[..12]);store.put("session",&key,&session)?;
+    for entry in entries{
+        let agent=s(&entry["agent"]);let path=Path::new(s(&entry["path"]));
+        let Ok(meta)=path.metadata() else {increment(&mut coverage,agent,"skipped_unreadable");warnings.push(format!("Skipped unavailable {agent} session"));continue;};
+        let size=if agent=="opencode"{0}else{meta.len()};
+        if sessions.len()>=20||total+size>40_000_000||size>20_000_000{increment(&mut coverage,agent,"skipped_budget");continue;}
+        let session=match history::collect_entry(&entry){Ok(v)=>v,Err(e)=>{
+            increment(&mut coverage,agent,"skipped_unreadable");warnings.push(format!("Skipped unreadable {agent} session: {}",redact(&e.to_string())));continue;
+        }};
+        if !history::belongs(s(&session["cwd"]),&root)||session["agent"]!=entry["agent"]||session["id"]!=entry["id"]{
+            increment(&mut coverage,agent,"skipped_scope");warnings.push(format!("Skipped {agent} session: repository or identity changed during capture"));continue;
+        }
+        let identity=format!("{}:{}",s(&session["agent"]),s(&session["id"]));
+        if seen.contains(&identity){increment(&mut coverage,agent,"duplicates");continue;}
+        let size=if agent=="opencode"{session.to_string().len() as u64}else{size};
+        if total+size>40_000_000{increment(&mut coverage,agent,"skipped_budget");continue;}
+        seen.insert(identity);total+=size;increment(&mut coverage,agent,"captured");
+        warnings.extend(arr(&session["warnings"]).iter().map(|w|format!("{}:{}: {}",agent,s(&session["id"]),s(w))));
+        let key=format!("{}:{}:{}",agent,s(&session["id"]),&digest(&session.to_string())[..12]);store.put("session",&key,&session)?;
         refs.push(json!({"id":session["id"],"agent":session["agent"],"path":session["path"],"cwd":session["cwd"],"storage_key":key}));sessions.push(session);
     }
-    if sessions.is_empty(){warnings.push("No agent history supplied; explanations use repository evidence only.".into());}
-    let result=json!({"schema_version":1,"id":id("review"),"root":root,"created_at":now(),"head":head,"baseline_id":null,"session_id":if sessions.len()==1{sessions[0]["id"].clone()}else{Value::Null},"sessions":refs,"recent_code":history::recent_code(&root,&sessions),"decisions":[],"changes":changes.iter().map(|c|repository::changed_file(c,sources.texts.get(&c.file).map(String::as_str).unwrap_or(""))).collect::<Vec<_>>(),"warnings":warnings,"file_hashes":sources.hashes,"input_tokens":0,"output_tokens":0,"provider":"offline","comparison_base":head,"history_source":opts.source});
+    if coverage.iter().any(|r|r["skipped_budget"].as_u64().unwrap_or(0)>0){warnings.push("Some sessions were excluded by the capture budget (20 sessions / 40 MB total / 20 MB per transcript). Use /coverage for counts and /source to narrow capture.".into());}
+    if sessions.is_empty(){warnings.push("No agent history captured; explanations use repository evidence only. Use /coverage to inspect discovery.".into());}
+    let result=json!({"schema_version":1,"id":id("review"),"root":root,"created_at":now(),"head":head,"baseline_id":null,"session_id":if sessions.len()==1{sessions[0]["id"].clone()}else{Value::Null},"sessions":refs,"coverage":coverage,"recent_code":history::recent_code(&root,&sessions),"decisions":[],"changes":changes.iter().map(|c|repository::changed_file(c,sources.texts.get(&c.file).map(String::as_str).unwrap_or(""))).collect::<Vec<_>>(),"warnings":warnings,"file_hashes":sources.hashes,"input_tokens":0,"output_tokens":0,"provider":"offline","comparison_base":head,"history_source":opts.source});
     store.save_review(&result)?;Ok(result)
 }
 pub fn load(path:&Path)->Result<Value>{

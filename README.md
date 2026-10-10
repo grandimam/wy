@@ -4,20 +4,26 @@
 
 # wy
 
-### See why your AI agent made each change.
+### Understand agent-generated changes—with the evidence beside the code.
 
 [![Experimental](https://img.shields.io/badge/Status-Experimental-E7B66D?style=flat-square&labelColor=182335)](#status)
-[![Codex + Claude Code](https://img.shields.io/badge/Works_with-Codex_%2B_Claude_Code-78DCCE?style=flat-square&labelColor=182335)](#how-it-works)
-[![Offline by default](https://img.shields.io/badge/Offline-by_default-78DCCE?style=flat-square&labelColor=182335)](#what-is-true-and-what-is-not)
+[![History support](https://img.shields.io/badge/History-Codex_%2B_Claude_%2B_pi_%2B_OpenCode-78DCCE?style=flat-square&labelColor=182335)](#how-it-works)
+[![Offline by default](https://img.shields.io/badge/Offline-by_default-78DCCE?style=flat-square&labelColor=182335)](#what-the-evidence-means)
 [![MIT License](https://img.shields.io/badge/License-MIT-A9A1FF?style=flat-square&labelColor=182335)](LICENSE)
 
 </div>
 
-Your agent changed 40 files. You can read the diff, but the reason for each change is somewhere in a transcript you will never scroll back through.
+Your agent changed 40 files. The diff tells you what changed; the context is buried
+in conversations, tool results, and earlier attempts. wy brings those together so
+you can understand the implementation and decide what still needs checking.
 
-wy reads your saved Codex and Claude Code sessions, matches each diff hunk to the edit that produced it, and shows what the agent said right before it made that edit. Above the code. Nothing invented.
+It imports existing local **Codex, Claude Code, pi, and OpenCode** history. No
+recorder has to be running first. Missing evidence stays missing—wy does not turn
+a nearby message into a proven reason for a change.
 
-![wy terminal UI: the file tree on the left; on the right, the agent's numbered reason above the diff hunks it produced](docs/assets/terminal-preview.png)
+![wy terminal UI: files beside captured conversation and diff hunks](docs/assets/terminal-preview.png)
+
+*The screenshot illustrates the reader layout; labels may differ in current builds.*
 
 ## Get started
 
@@ -29,35 +35,80 @@ cd /path/to/your/repo
 wy
 ```
 
-Then:
+- **Pick a file:** inspect its diff alongside matching edit records and nearby conversation.
+- **Enter on a linked change:** open the captured turn, with tool, session and dates.
+- **Explanation tab:** click **Ask AI to explain this change** for a new, cited assessment through your signed-in Codex or Claude CLI. `e` is the shortcut; opening the tab alone never calls a model.
+- **r:** capture current changes and history again.
 
-- **Pick a file.** Its changes appear in order, each under the reason the agent gave and the model that wrote it.
-- **Press Enter on a change** to read the whole conversation turn that made it.
-- **Press e** for a fuller explanation with cited sources, written by your Codex or Claude CLI.
+**Changes / Explanation / History** tabs keep code, new assessments, and historical context separate (`o` / `v` / `t`). The sidebar separates current changes from historical edits. Supporting notes and session metadata stay collapsed until opened.
 
-**Tab** switches between the tree and the reader · **w** collapses reasons to one line · **?** shows every key.
+**Tab** switches panes · **w** collapses nearby context · **?** opens help.
+
+## Understand history and decisions
+
+| Command | What it shows |
+|---|---|
+| `/coverage` | Per-tool discovery/capture counts, exclusions, warnings, and unmatched hunks |
+| `/sessions` | Separate sessions across tools, start/last-event dates, and models; Enter opens one |
+| `/timeline [FILE:SYMBOL]` | Chronological turns associated with a file or explicitly mentioned symbol |
+| `/decisions [FILE:SYMBOL]` | Structured decisions, requirements, available rationale, captured tests, and review gaps |
+| `/source all` | Include all four tools; `both` remains a compatibility alias |
+| `/source pi` | Select one history tool; press **r** to refresh |
+| `/setup` then `/setup save` | Preview and save optional decision-record instructions; does not modify agent configuration |
+| `/export` then `/export save` | Preview and save the exact offline review brief locally; nothing uploaded |
+
+Omitting `FILE:SYMBOL` uses the selected file/symbol. Symbol filtering is based on
+explicit text/record matches, not semantic causality. A timeline preserves tool and
+session boundaries; later edits are flagged as potentially making earlier context
+inapplicable, not automatically declared to supersede it.
+
+Dates distinguish **when the agent recorded an event** from **when wy captured
+history**. Absolute UTC dates and relative ages are shown; missing dates are marked
+unknown rather than inferred from transcript file modification times.
 
 ## How it works
 
-1. wy finds local Codex and Claude Code logs whose working directory is your repository. No recorder to start first.
-2. It reads the Git diff and the edit records in those logs (Codex patches; Claude Write, Edit and MultiEdit), and compares the changed lines exactly.
-3. A hunk that matches an edit gets the message the agent wrote just before it, plus your request that started the turn. One message that led to several hunks appears once.
+1. Discover supported local histories whose recorded working directory belongs to this Git repository.
+2. Capture up to 20 sessions / 40 MB, alternating between tools; `/coverage` explains exclusions.
+3. Compare changed-line text against recorded edits. An overlap establishes a recorded edit candidate, not authorship or intent.
+4. Surface original requests/statements, available rationale, and summaries with distinct labels.
+5. Optionally capture structured `WY_DECISION` statements during future coding, or request a **new retrospective assessment** through a reasoning CLI.
 
-## What is true, and what is not
+Recent-code browsing keeps the latest recorded edit per file from up to three
+recent sessions (seven-day window for known timestamps, at most 50 files). The
+session/timeline views inspect the broader **captured** history, not every session
+that may exist on disk. Tool invocation still supports Codex and Claude only.
 
-- A reason is what the agent **wrote**, not its hidden thinking.
-- A match means the transcript **recorded** that edit, not who typed the final text.
-- Shell commands, formatters and hand edits leave no edit record, so those hunks say **no recorded reason**. wy never fills the gap.
-- Everything above works offline. **e** is the only step that calls a model, through your own signed-in CLI.
+## What the evidence means
+
+- **Recorded decision:** a self-reported structured explanation, not independently verified truth.
+- **Nearby conversation:** captured context; proximity does not prove causation.
+- **Available rationale:** readable provider-exposed thinking or reasoning summaries; tentative, not a verified justification.
+- **Compaction summary:** secondary context, not original speech.
+- **Inferred explanation:** a new model assessment, separate from historical intent.
+- **Unknown:** evidence was not captured or cannot establish the claim.
+
+Encrypted/redacted hidden reasoning cannot be recovered. Shell commands, formatters,
+and manual changes often have no supported edit records. A missing record does
+not mean the agent had no reason or that tests were never run.
+
+Offline views never call a model. Requesting an explanation sends selected evidence
+to your configured reasoning CLI. Exports exclude raw tool outputs and tentative
+rationale, apply best-effort redaction, and require a preview before saving—**inspect
+for sensitive content before sharing**.
 
 ## Status
 
-**Experimental (0.2.0).** The interface and saved formats are still changing. Treat explanations as a starting point and check them against the cited code and conversation.
+**Experimental (0.2.0).** Useful for reviewing substantial local agent changes and
+returning to unfamiliar code. Not a replacement for code review or a guarantee of
+original intent. Older OpenCode JSON storage is detected but not imported. Some
+provider formats and shell-driven edits remain unsupported.
+
+Automated tests establish implementation behavior, not explanation accuracy or
+user value. See the [evaluation protocol](docs/evaluation.md) for measuring those.
 
 ## Learn more
 
-[Usage guide](docs/usage.md) · [Commit lookup](docs/usage.md#find-conversations-by-commit) · [Summaries and original turns](docs/usage.md#summaries-and-original-turns) · [Architecture](docs/architecture.md) · [Security](docs/security.md) · [Codex format support](docs/codex-formats.md) · [Releasing](docs/releasing.md)
+[Usage](docs/usage.md) · [Decision records](docs/decision-records.md) · [Architecture](docs/architecture.md) · [Security](docs/security.md) · [Codex formats](docs/codex-formats.md) · [Releasing](docs/releasing.md)
 
-Development: `cargo test --locked`. See [evaluation](docs/evaluation.md) for what the tests do and do not cover.
-
-Licensed under [MIT](LICENSE).
+Development: `cargo test --locked`. Licensed under [MIT](LICENSE).

@@ -44,7 +44,7 @@ fn captures(
             .into_iter()
             .find(|e| e["id"] == id)
         {
-            let session = super::collect(Path::new(s(&entry["path"])))?;
+            let session = super::collect_entry(&entry)?;
             ensure!(
                 super::belongs(s(&session["cwd"]), root)
                     && session["id"] == id
@@ -62,6 +62,10 @@ fn captures(
 }
 
 pub fn enrich(root: &Path, evidence: &mut Value) -> Result<()> {
+    if evidence["kind"]=="rationale" || evidence["role"]=="rationale" {
+        if let Some(object)=evidence.as_object_mut(){object.remove("origin_status");object.remove("origin_reason");object.remove("originals");}
+        return Ok(());
+    }
     let source = s(&evidence["provenance"]["source_type"]).to_owned();
     if ["original_turn", "tool_record"].contains(&source.as_str()) {
         return Ok(());
@@ -259,6 +263,7 @@ pub fn open(root: &Path, reference: &Value) -> Result<Value> {
 }
 
 pub fn status(evidence: &Value) -> Option<String> {
+    if evidence["kind"]=="rationale" || evidence["role"]=="rationale" {return None;}
     if ["original_turn", "tool_record"].contains(&s(&evidence["provenance"]["source_type"])) {
         return None;
     }

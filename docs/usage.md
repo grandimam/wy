@@ -31,9 +31,21 @@ The screen has two areas: the file tree on the left and one reader on the right.
 
 The tree combines working-tree changes with recent recorded edits, including files already committed. Each file shows its line counts, or **· recorded** when it has no current diff. Coverage includes the latest edit per file from up to three coding sessions in the last seven days, capped at 50 files. Press `f` to filter paths, Space to expand a file's changed symbols, and `m` to mark a file reviewed for this session.
 
+### Main-screen navigation
+
+The reader has three always-visible tabs for a selected file:
+
+- **Changes** (`o`): current diff and linked agent messages. Unmatched changes show code first; file-mention conversation is collapsed below it.
+- **Explanation** (`v`): a saved AI assessment, or an **Ask AI to explain this change** button. Opening the tab never makes a model call. Click the button, or select it and press Enter; `e` performs the same action. A request can consume your configured CLI account's usage.
+- **History** (`t`): dated turns for this file. Click a tab to switch, or use its keyboard shortcut.
+
+The file tree separates **Current changes** from **Historical edits** when both exist. Explanation status (working, queued, ready) belongs to the selected file's reader title, not to every file row.
+
+All history surfaces—including turns, sessions, timelines, commit conversations, and cited sources—use the same presentation: original messages remain readable; **Agent notes**, summaries, tool activity, and metadata are collapsed. Expand a row by clicking it or selecting it and pressing Enter. Tool/model names, identifiers, and verification details belong inside details, not above every message. Captured working notes do not imply a missing transcript and do not require re-import merely because they cannot prove intent.
+
 ### The reader
 
-Select a file to read its changes in file order, each with the agent's reason above it:
+Select a file to read its changes in file order, with nearby captured conversation above matching edits. Historical edit dates and the review capture date are shown separately:
 
 ```
  1  I'll keep responses in memory.  gpt-5.4
@@ -47,23 +59,23 @@ Select a file to read its changes in file order, each with the agent's reason ab
 +        .unwrap_or_else(fetch)
  }
 
-@@ line 42 · fn refresh()  +1 −0  · no recorded reason
+@@ line 42 · fn refresh()  +1 −0  · no matching edit record
 +    log::debug!("hit");
 ```
 
-- **A reason** starts with a numbered badge and the first sentence the agent wrote just before the edit, with the model that wrote it. Below are the rest of that message and the request from you that started the turn. Press `w` to collapse every reason to its headline, and again to expand.
-- **Reasons come from exact matching.** wy compares the changed lines of each hunk with the lines in the edits the agent recorded (Codex patches; Claude Write, Edit and MultiEdit). Lines made only of punctuation are ignored. One message that led to several hunks appears once; later hunks show **same reason as above** with the badge, and selecting that line jumps back to it.
-- **No recorded reason** marks a hunk that matches no recorded edit, such as changes made through shell commands, formatters, or by hand. **edited after** marks a hunk where only some lines match the agent's edit. wy does not invent reasons for either.
+- **Nearby conversation** starts with a numbered badge and the message preceding a recorded edit, with tool, model, session and date. It is not automatically a verified explanation. Press `w` to collapse these blocks.
+- **Matching is textual, not causal.** wy compares changed-line text with supported recorded edits, ignoring punctuation-only lines. Several hunks can share the same nearby context. A match is not proof of authorship or intent.
+- **No matching edit record** means no captured edit candidate overlaps that hunk. **Partial text overlap** means only some text matches; it does not prove who changed the rest or when. Use `/coverage` for capture gaps.
 - **turn ›** marks a hunk whose turn can be opened. Press Enter, move with ↑/↓, and press Enter again (or click the header) to read the whole turn: your request, the agent's messages and the edit itself. Esc returns.
 - Files with no current Git diff show their recorded edit instead, with a note that it may differ from the file now. Long edits show their first 40 lines; Enter on the header opens the whole edit.
-- A yellow **CONTEXT COMPACTED** banner marks the point between two reasons where the agent's context was compacted. Codex and Claude keep the earlier rows in the log, so the reasons above the line are still real; the agent itself no longer saw them when it wrote the ones below.
+- A yellow **CONTEXT COMPACTED** banner indicates earlier context may have been replaced by a summary. The exact retained context varies; summaries are secondary evidence, not proof of original intent.
 - When no hunk matches any edit but the conversation mentions the file, a **Related conversation** block appears first, labelled as matched by file mentions rather than by an edit.
 
-A reason is the agent's visible message, not hidden reasoning. A match shows the transcript recorded that edit; it does not prove who typed the final text.
+Readable rationale is shown separately as tentative context. Hidden/encrypted reasoning is not recoverable. A structured decision record is a self-reported explanation, not independent verification.
 
 ### Enrichment
 
-Press **e** to connect the code and reasons with a new, cited assessment from your Codex or Claude CLI. Keep navigating while it runs. Files show **working**, **queued**, or **ready**; return to a file to read its answer. Completed answers are restored when wy restarts. Once an answer exists, an **Enriched** tab appears at the top right of the reader; `v` opens it and `o` returns to the reasons. `p` reopens the last saved answer. `R` requests an updated one.
+Press **e** to connect the code and reasons with a new, cited assessment from your Codex or Claude CLI. Keep navigating while it runs. Files show **working**, **queued**, or **ready**; return to a file to read its answer. Completed answers are restored when wy restarts. The **Explanation** tab is always present; `v` opens it and `o` returns to **Changes**. `p` reopens the last saved answer. `R` requests an updated one.
 
 | Key | Action |
 | --- | --- |
@@ -72,7 +84,7 @@ Press **e** to connect the code and reasons with a new, cited assessment from yo
 | Enter | In the tree: read the file. In the reader: select changes; Enter again opens the turn |
 | `w` | Collapse reasons to headlines, or expand them |
 | `e` | Enrich the selected file; reuse a completed answer when available |
-| `o` / `v` | Reasons and changes / saved enrichment |
+| `o` / `v` / `t` | Changes / Explanation / History |
 | `s`, then Up/Down and Enter | Select and open a source of an answer; Escape returns to reading |
 | `1`–`9` | Open a numbered source of an answer |
 | `i` | Ask a follow-up about the displayed answer |
@@ -97,7 +109,7 @@ Press **g** to browse recent commits. Select a commit and press Enter, or click 
 
 **Enrich makes new model calls**: one selects relevant context and another writes a cited explanation. Captured reasons are included as evidence; inferred reasons are a new assessment. Requests may consume your signed-in account's usage. Explicit requests for other files queue in the background (up to eight waiting requests). Follow-ups retain the original file, function or captured edit, including while reading a source about another file. Browsing, filtering and source navigation stay offline.
 
-Use `/agent codex|claude` to choose the answering agent and `/source both|codex|claude|none` for the conversation history. Additional commands are `/why FILE:SYMBOL QUESTION`, `/ask QUESTION`, `/reason QUESTION` (all changes), `/evidence NUMBER`, `/commits`, `/commit HASH`, `/link HASH [REVIEW-ID]`, `/layout reset` and `/cancel`.
+Use `/agent codex|claude` to choose the answering agent and `/source all|codex|claude|pi|opencode|none` for the conversation history (`both` is an alias for all). Additional commands are `/why FILE:SYMBOL QUESTION`, `/ask QUESTION`, `/reason QUESTION` (all changes), `/evidence NUMBER`, `/commits`, `/commit HASH`, `/link HASH [REVIEW-ID]`, `/layout reset` and `/cancel`.
 
 ## Everything happens in the app
 
@@ -109,9 +121,20 @@ Startup compares HEAD with the current working tree, including staged and non-ig
 
 ## Project history
 
-History discovery uses `$CODEX_HOME/sessions` and `archived_sessions` (default `~/.codex`) and `$CLAUDE_CONFIG_DIR/projects` (default `~/.claude`), plus equivalent repository-local layouts. Only sessions whose recorded working directory belongs to this Git repository are accepted. Use `/source both|codex|claude|none` to choose which history is read.
+History discovery uses `$CODEX_HOME/sessions` and `archived_sessions` (default `~/.codex`) and `$CLAUDE_CONFIG_DIR/projects` (default `~/.claude`), plus equivalent repository-local layouts. Only sessions whose recorded working directory belongs to this Git repository are accepted. Use `/source all|codex|claude|pi|opencode|none` to choose which history is read (`both` remains an alias for all four). pi and OpenCode discovery, available rationale capture, and a decision-record instruction template are described in [Decision records](decision-records.md).
 
-Observable text, tool calls and results are retained; private reasoning and system records are omitted. History is bounded to 20 sessions and 40 MB total, with a 20 MB per-transcript limit. Saved session excerpts are contextual evidence, not authenticated authorship.
+Observable text, tool calls/results, readable Claude/pi thinking, OpenCode reasoning and Codex reasoning summaries are retained. Rationale is tentative; signatures, encrypted/redacted payloads, system records and Codex analysis-channel messages are omitted. History is bounded to 20 sessions and 40 MB total, with a 20 MB per-transcript limit. Saved session excerpts are contextual evidence, not authenticated authorship.
+
+### Coverage, dated sessions, and decisions
+
+- `/coverage` shows per-agent discovery/capture counts, budget exclusions, unreadable sources, scope/identity mismatches, and current hunks without matching edits. Invalid candidates with unknown scope are reported separately; one inaccessible database does not stop other agents from being captured.
+- `/sessions` lists separate captured sessions with tool, model(s), start/earliest-event date, and last captured event date. Enter opens the selected session. The transcript view is limited to the last 500 events and reports omissions.
+- `/timeline [FILE:SYMBOL]` displays related user-bounded turns across tools, oldest first. `/decisions [FILE:SYMBOL]` adds parsed decision records, requirements, captured test outcomes and proposed reviewer checks. Omit the argument to use the selected file. Symbol matching is explicit text/record matching, not semantic causality. Views show up to 40 recent turns / 60 events per turn and label omissions.
+- Dates use absolute UTC plus relative age. Unknown dates stay unknown. The review capture timestamp describes when wy read history, not when an old edit happened. Later file edits are flagged as possibly making earlier explanations inapplicable, not automatically treated as a confirmed reversal.
+- `/setup` previews optional public decision-record instructions. `/setup save` writes `.wy/decision-instructions.md` without changing `AGENTS.md` or any agent configuration. Review and copy the instructions yourself. Existing files are not overwritten.
+- `/export` previews a bounded offline review brief; `/export save` writes that exact preview to a new private `.wy/review-brief-<digest>.md` file. Nothing is uploaded. The brief excludes raw transcripts/tool outputs and tentative rationale, and uses best-effort redaction. Review for sensitive content before sharing. It describes the dated capture, not a live review. Repeated saves of the same brief do not overwrite existing files.
+
+See [Decision records](decision-records.md) for the structured format and limitations.
 
 ## Find conversations by commit
 

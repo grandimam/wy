@@ -20,6 +20,10 @@ fn review() -> Value {
 fn workspace() -> Workspace {
     Workspace::from_review(Path::new("/example/payments"), review())
 }
+fn expand_details(doc:&mut Document) {
+    let ids:Vec<_>=doc.sources.iter().filter_map(|(_,link)|if let Link::Disclosure(id)=link{Some(id.clone())}else{None}).collect();
+    for id in ids {if !doc.expanded.contains(&id){doc.toggle_disclosure(&id);}}
+}
 fn press(app: &mut Workspace, key: KeyCode) {
     app.key(key, KeyModifiers::NONE).unwrap();
 }
@@ -184,7 +188,8 @@ fn selection_previews_the_diff_without_requests_or_history_noise() {
         press(&mut app, KeyCode::Char(key));
     }
     assert!(app.job.is_none());
-    assert_eq!(app.document.kind, View::Recorded);
+    assert_eq!(app.document.kind, View::Explanation);
+    assert!(app.document.sources.iter().any(|(_,link)|*link==Link::Explain));
 }
 #[test]
 fn why_requests_use_the_selected_change_and_refresh_the_original_scope() {
@@ -270,7 +275,7 @@ fn recorded_reason_leads_with_the_original_quote_and_openable_reference() {
     );
     assert!(!text.contains("No explicit reason"));
     let source = document::evidence(answer, 0).unwrap();
-    assert!(source.lines.iter().any(|line| line.to_string() == quote));
+    assert!(source.lines.iter().flat_map(|line| &line.spans).any(|span| span.content == quote));
     let mut app = workspace();
     app.open(doc);
     preview("recorded-reason", &screen(&mut app, 120, 34).1);
@@ -673,7 +678,7 @@ fn explanation_shares_the_reader_and_sources_open_by_mouse_and_keyboard() {
     app.open(document::explanation(artifact(Some("src/cache.rs"))));
     let (text, terminal) = screen(&mut app, 140, 38);
     assert!(text.contains("Repeated requests can reuse"));
-    assert!(text.contains("Enriched"));
+    assert!(text.contains("Explanation"));
     preview("code-and-explanation", &terminal);
     // Tab moves between the tree and the reader; the answer stays open.
     press(&mut app, KeyCode::Tab);
@@ -764,6 +769,11 @@ fn mock_job(app: &mut Workspace, file: &str) -> mpsc::Sender<Update> {
 #[test]
 fn automatic_notes_are_offline_cited_and_offer_enrichment() {
     let mut app = with_notes();
+    let (collapsed, _) = screen(&mut app, 140, 38);
+    assert!(collapsed.contains("Conversation mentioning this file"));
+    assert!(!collapsed.contains("because repeated reads"));
+    assert!(app.document.sources.iter().any(|(_,link)|*link==Link::Explain));
+    app.follow(Link::Disclosure("related-conversation".into())).unwrap();
     let (text, terminal) = screen(&mut app, 140, 38);
     assert!(text.contains("because"));
     assert!(
@@ -857,7 +867,7 @@ fn completion_does_not_interrupt_drafts_or_sources_and_ready_button_reuses_answe
     assert_eq!(app.document.kind, View::Evidence);
     press(&mut app, KeyCode::Char('o'));
     let (text, _) = screen(&mut app, 140, 38);
-    assert!(text.contains("Enriched"));
+    assert!(text.contains("Explanation"));
     let button = app
         .areas
         .tabs
@@ -889,7 +899,7 @@ fn requests_queue_once_per_scope_and_cancel_clears_the_queue() {
     assert_eq!(app.queue.len(), 1);
     assert_eq!(app.file_state("README.md").unwrap().0, "queued");
     let (text, terminal) = screen(&mut app, 140, 38);
-    assert!(text.contains("README.md · queued"));
+    assert!(text.contains("README.md · explanation queued"));
     assert!(text.contains("1 queued"));
     preview("background-queued", &terminal);
     press(&mut app, KeyCode::Esc);
@@ -1067,14 +1077,18 @@ fn compacted_commit_sources_open_pinned_originals_and_show_missing_turns() {
     let (_dir, mut app, _, hash) = commit_workspace_with_rows(&extra);
     run_command(&mut app, &format!("/commit {hash}")).unwrap();
     let (text, terminal) = screen(&mut app, 140, 42);
-    assert!(text.contains("Secondary evidence · Compacted summary"));
-    assert!(text.contains("Original turn unavailable"));
+    assert!(text.contains("Session summary"));
+    assert!(!text.contains("Original turn unavailable"));
+    expand_details(&mut app.document);
+    let details=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    assert!(details.contains("Original turn unavailable"));
     assert_eq!(app.document.originals.len(), 1);
     preview("commit-provenance", &terminal);
-    press(&mut app, KeyCode::Char('s'));
+    app.document.source_selection=app.document.sources.iter().position(|(_,link)|*link==Link::Source(0));
     assert!(screen(&mut app, 140, 42).0.contains("Enter open"));
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.document.kind, View::Original);
+    expand_details(&mut app.document);
     let (text, terminal) = screen(&mut app, 140, 32);
     assert!(text.contains("agreed API value"));
     assert!(text.contains("original-message"));
@@ -1084,8 +1098,9 @@ fn compacted_commit_sources_open_pinned_originals_and_show_missing_turns() {
     assert!(app.job.is_none());
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.document.kind, View::Commit);
+    app.document.source_selection=app.document.sources.iter().position(|(_,link)|*link==Link::Source(0));
     screen(&mut app, 140, 42);
-    let source = app.areas.sources[0].0;
+    let source = app.areas.sources.iter().find(|(_,link)|*link==Link::Source(0)).unwrap().0;
     mouse_at(
         &mut app,
         MouseEventKind::Down(MouseButton::Left),
@@ -1116,8 +1131,10 @@ fn explanation_summary_sources_preserve_back_navigation_and_legacy_warning() {
     app.open(document::explanation(answer.clone()));
     assert!(screen(&mut app, 150, 42).0.contains("Earlier assessment"));
     app.open(document::evidence(answer, 0).unwrap());
+    let (text, _) = screen(&mut app, 150, 42);
+    assert!(text.contains("Session summary"));
+    expand_details(&mut app.document);
     let (text, terminal) = screen(&mut app, 150, 42);
-    assert!(text.contains("Secondary evidence"));
     assert!(text.contains("Original turns available"));
     preview("summary-evidence", &terminal);
     press(&mut app, KeyCode::Char('s'));
@@ -1224,6 +1241,185 @@ fn keyboard_resizes_active_dividers_preserves_typing_and_can_reset() {
     press(&mut app, KeyCode::Char(']'));
     assert_eq!(app.pane_sizes.files, None);
     assert!(app.status.contains("Widen"));
+}
+
+#[test]
+fn history_views_expose_source_dates_coverage_and_safe_preview_actions() {
+    let dir=tempfile::tempdir().unwrap();
+    let mut app=workspace();app.root=dir.path().into();
+    app.review["root"]=json!(dir.path());app.review["id"]=json!("review-test");
+    app.review["created_at"]=json!("2026-10-10T10:00:00Z");
+    app.review["coverage"]=json!([{"agent":"pi","enabled":true,"discovered":3,"captured":1,"skipped_budget":2,"skipped_unreadable":0,"skipped_scope":0,"duplicates":0,"issues":[]}]);
+    app.sessions=vec![json!({"id":"old-session","agent":"pi","started_at":"2024-01-01T00:00:00Z","events":[{"id":"u","kind":"user","text":"Change src/cache.rs","timestamp":"2024-01-02T00:00:00Z"}]})];
+    run_command(&mut app,"/coverage").unwrap();
+    assert_eq!(app.document.kind,View::Coverage);
+    let text=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("2026-10-10"));assert!(text.contains("Budget exclusions 2"));
+    run_command(&mut app,"/sessions").unwrap();
+    let text=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("2024-01-01"));assert!(text.contains("2024-01-02"));assert!(text.contains("old-session"));
+    run_command(&mut app,"/timeline src/cache.rs").unwrap();assert_eq!(app.document.kind,View::Timeline);
+    run_command(&mut app,"/decisions src/cache.rs").unwrap();assert_eq!(app.document.kind,View::Decisions);
+    assert!(run_command(&mut app,"/export save").is_err());
+    run_command(&mut app,"/export").unwrap();assert_eq!(app.document.kind,View::Export);
+    let text=s(&app.document.artifact.as_ref().unwrap()["export_text"]).to_owned();
+    run_command(&mut app,"/export save").unwrap();
+    let path=dir.path().join(".wy").join(format!("review-brief-{}.md",&security::digest(&text)[..16]));
+    assert_eq!(std::fs::read_to_string(path).unwrap(),text);
+    run_command(&mut app,"/setup").unwrap();run_command(&mut app,"/setup save").unwrap();
+    assert!(dir.path().join(".wy/decision-instructions.md").exists());
+    assert!(!dir.path().join("AGENTS.md").exists());
+    screen(&mut app,50,18);
+    assert!(app.job.is_none());
+}
+
+#[test]
+fn recorded_view_labels_nearby_context_and_old_edit_dates() {
+    let message=json!({"kind":"assistant","text":"I will create a cache.","provenance":{"source_type":"original_turn"}});
+    let mut doc=Document::new(View::Recorded,"Cache");
+    // Exercise through the public-to-TUI history session view as well as the turn.
+    let session=json!({"id":"old","agent":"pi","started_at":"2024-01-01T00:00:00Z","events":[message,{"id":"edit","kind":"change","timestamp":"2024-01-02T00:00:00Z"}]});
+    doc.lines.extend(history_views::session(&session).lines);
+    let text=doc.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("AGENT MESSAGE"));assert!(text.contains("2024-01-01"));
+    assert!(!text.contains("not proof of causation"));
+    let turn=document::turn(&session,&json!({"event_id":"edit","timestamp":"2024-01-02T00:00:00Z","file":"src/cache.rs"}));
+    let text=turn.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("Selected edit recorded: 2024-01-02"));
+}
+
+#[test]
+fn reader_leads_with_the_whole_message_and_collapses_supporting_material() {
+    let dir=tempfile::tempdir().unwrap();
+    let root=dir.path().canonicalize().unwrap();
+    assert!(std::process::Command::new("git").args(["init","-q"]).arg(&root).status().unwrap().success());
+    let session=json!({"id":"s1","agent":"pi","path":"pi.jsonl","cwd":root,"events":[
+        {"id":"u0","kind":"user","text":"Please cache repeated reads so startup stops refetching the same file.","timestamp":"2026-10-10T08:00:00Z","provenance":{"source_type":"original_turn"}},
+        {"id":"u1","kind":"user","text":"yes do it","timestamp":"2026-10-10T08:01:00Z","provenance":{"source_type":"original_turn"}},
+        {"id":"r","kind":"rationale","text":"Maybe a HashMap. **Bold idea**","timestamp":"2026-10-10T08:01:30Z","provenance":{"source_type":"unknown"}},
+        {"id":"a","kind":"assistant","text":"I'll keep responses in memory. Repeated reads then reuse a response.","timestamp":"2026-10-10T08:02:00Z","model":"m1","provenance":{"source_type":"original_turn"}},
+        {"id":"e","kind":"change","tool":"Write","text":"","call_id":"c","timestamp":"2026-10-10T08:03:00Z","files":["src/cache.rs"],"code_edits":[{"file":"src/cache.rs","format":"code","operation":"write","text":"cache.get(key)"}],"provenance":{"source_type":"tool_record"}}
+    ]});
+    let mut app=workspace();app.root=root.clone();app.review["root"]=json!(root);app.sessions=vec![session];
+    let code=document::preview(&app.review,Target{file:"src/cache.rs".into(),symbol:None,line:1});
+    let doc=document::recorded(&app.review,&app.sessions,&code,false);
+    let text=doc.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("AGENT MESSAGE"));
+    assert!(text.contains("I'll keep responses in memory. Repeated reads then reuse a response."));
+    assert!(!text.contains("not a verified"));
+    assert!(!text.contains("Maybe a HashMap"));
+    assert!(!text.contains("s1"));
+    assert!(!text.contains("m1"));
+    assert!(!text.contains("Linked by"));
+    assert!(!text.contains("Coding tool:"));
+    assert!(text.contains("▶ Recorded reasoning"));
+    assert!(text.contains("▶ Your request"));
+    app.document=doc;app.focus=Focus::Reader;
+    let rationale=app.document.sources.iter().position(|(_,l)|*l==Link::Disclosure("reason-1-rationale".into())).unwrap();
+    app.document.source_selection=Some(rationale);
+    press(&mut app,KeyCode::Enter);
+    let text=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("Maybe a HashMap. Bold idea"));assert!(!text.contains("**"));
+    let request=app.document.sources.iter().position(|(_,l)|*l==Link::Disclosure("reason-1-request".into())).unwrap();
+    app.document.source_selection=Some(request);
+    press(&mut app,KeyCode::Enter);
+    let text=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("Please cache repeated reads"));assert!(text.contains("yes do it"));
+    let turn=app.document.sources.iter().find(|(_,l)|matches!(l,Link::Turn(_))).unwrap().0;
+    assert!(app.document.lines[turn].to_string().contains("open conversation"));
+    app.document.source_selection=Some(rationale);
+    press(&mut app,KeyCode::Enter);
+    let text=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    assert!(!text.contains("Maybe a HashMap"));assert!(text.contains("Please cache repeated reads"));
+    let turn_after=app.document.sources.iter().find(|(_,l)|matches!(l,Link::Turn(_))).unwrap().0;
+    assert!(app.document.lines[turn_after].to_string().contains("open conversation"));
+    app.follow(Link::Disclosure("reason-1-details".into())).unwrap();
+    let text=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("Coding tool: pi"));
+    assert!(text.contains("Model: m1"));
+    assert!(text.contains("Session: s1"));
+    screen(&mut app,100,30);
+}
+
+#[test]
+fn conversation_roles_are_explicit_and_user_text_is_not_dimmed() {
+    let mut doc=Document::new(View::Turn,"Conversation");
+    for (kind,label) in [("user","YOUR REQUEST"),("assistant","AGENT MESSAGE"),("rationale","AGENT NOTES"),("summary","SESSION SUMMARY"),("tool_call","TOOL ACTION"),("tool_output","TOOL RESULT")] {
+        let event=json!({"kind":kind,"text":format!("Readable {kind} body"),"timestamp":"2026-10-10T10:00:00Z","provenance":{"source_type":if ["user","assistant"].contains(&kind){"original_turn"}else{"unknown"}}});
+        assert_eq!(document::conversation_role(&event).0,label);
+        document::conversation(&mut doc,&event,"pi",1400);
+    }
+    assert_eq!(document::conversation_role(&json!({"kind":"assistant"})).0,"UNVERIFIED CONTEXT");
+    assert_eq!(document::conversation_role(&json!({"kind":"session","role":"user","provenance":{"source_type":"original_turn"}})).0,"YOUR REQUEST");
+    let text=doc.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    assert!(!text.contains("Captured context"));
+    for line in &doc.lines {for span in &line.spans {
+        if span.content.starts_with("Readable ") {
+            assert_eq!(span.style.fg,Some(TEXT));
+            assert!(!span.style.add_modifier.contains(Modifier::DIM));
+        }
+    }}
+    let mut app=workspace();app.document=doc;app.focus=Focus::Reader;app.sidebar=false;
+    let (text,terminal)=screen(&mut app,100,32);
+    assert!(text.contains("YOUR REQUEST"));assert!(text.contains("Readable user body"));
+    preview("readable-conversation",&terminal);
+    let (text,_)=screen(&mut app,50,22);
+    assert!(text.contains("YOUR REQUEST"));assert!(text.contains("Readable user body"));
+}
+
+#[test]
+fn main_tabs_are_visible_without_answers_and_button_queues_the_selected_file() {
+    let mut app=workspace();select(&mut app,"src/cache.rs");app.preview_selection();app.focus=Focus::Reader;
+    let (text,_)=screen(&mut app,120,32);
+    assert!(text.contains("Changes"));assert!(text.contains("Explanation"));assert!(text.contains("History"));
+    let history=app.areas.tabs.iter().find(|(_,view,_)|*view==View::Timeline).unwrap().0;
+    mouse_at(&mut app,MouseEventKind::Down(MouseButton::Left),history.x+1,history.y);
+    assert_eq!(app.document.kind,View::Timeline);assert!(app.job.is_none());
+    press(&mut app,KeyCode::Char('v'));assert_eq!(app.document.kind,View::Explanation);assert!(app.job.is_none());
+    assert_eq!(app.document.target.as_ref().unwrap().file,"src/cache.rs");
+    let (text,_)=screen(&mut app,100,30);assert!(text.contains("Ask AI to explain this change"));
+    let sender=mock_job(&mut app,"README.md");
+    let button=app.areas.sources.iter().find(|(_,link)|*link==Link::Explain).unwrap().0;
+    mouse_at(&mut app,MouseEventKind::Down(MouseButton::Left),button.x+1,button.y);
+    assert_eq!(app.queue.len(),1);assert_eq!(app.queue[0].file.as_deref(),Some("src/cache.rs"));
+    app.queue.clear();app.document.source_selection=Some(0);press(&mut app,KeyCode::Enter);
+    assert_eq!(app.queue.len(),1);
+    press(&mut app,KeyCode::Char('o'));assert_eq!(app.document.kind,View::Recorded);
+    screen(&mut app,50,22);
+    app.cancel();drop(sender);
+}
+
+#[test]
+fn historical_files_have_a_separate_section_and_collapsed_notes_follow_code() {
+    let mut review=review();review["recent_code"]=json!([{"file":"src/old.rs","session_key":"old","text":"old","format":"code"}]);
+    let mut explorer=Explorer::default();explorer.rebuild(&review);
+    let current=explorer.rows.iter().position(|r|r.key=="@changes").unwrap();
+    let history=explorer.rows.iter().position(|r|r.key=="@history").unwrap();
+    assert!(current<history);assert!(explorer.rows[..history].iter().any(|r|r.key=="src/cache.rs"));
+    assert!(explorer.rows[history..].iter().any(|r|r.key=="src/old.rs"));
+    assert!(explorer.rows.iter().any(|r|r.key=="history:src/"));
+    let mut app=with_notes();app.preview_selection();
+    let text=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    assert!(text.find("cache.get(key)").unwrap()<text.find("Conversation mentioning this file").unwrap());
+    assert!(!text.contains("Tentative reasoning"));assert!(!text.contains("provenance was not classified"));
+}
+
+#[test]
+fn all_history_renderers_collapse_agent_notes_and_keep_metadata_in_details() {
+    let note=json!({"id":"n","kind":"rationale","text":"UNIQUE_WORKING_NOTES about src/cache.rs","timestamp":"2026-10-10T10:00:00Z","model":"MODEL_DETAIL","provenance":{"source_type":"unknown"}});
+    let edit=json!({"id":"e","kind":"change","text":"edit","timestamp":"2026-10-10T10:01:00Z"});
+    let session=json!({"id":"session","agent":"pi","path":"session.jsonl","events":[note,edit]});
+    let mut evidence=note.clone();evidence["id"]=json!("code-1");evidence["kind"]=json!("session");evidence["role"]=json!("rationale");
+    evidence["agent"]=json!("pi");evidence["file"]=json!("session.jsonl");
+    let mut answer=(*artifact(Some("src/cache.rs"))).clone();answer["packet"]["evidence"]=json!([evidence]);
+    let mut views=vec![history_views::session(&session),document::turn(&session,&json!({"event_id":"e","file":"src/cache.rs"})),document::original(&evidence),document::evidence(Arc::new(answer),0).unwrap(),document::commit_context(&json!({"commit":"abc","sessions":[session]}))];
+    for doc in &mut views {
+        let text=doc.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("Agent notes"));assert!(!text.contains("UNIQUE_WORKING_NOTES"));assert!(!text.contains("MODEL_DETAIL"));assert!(!text.contains("re-import"));assert!(!text.contains("Tentative reasoning"));
+        expand_details(doc);
+        let text=doc.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("UNIQUE_WORKING_NOTES"));assert!(text.contains("MODEL_DETAIL"));assert!(!text.contains("re-import"));
+    }
 }
 
 fn preview(name: &str, terminal: &Terminal<TestBackend>) {

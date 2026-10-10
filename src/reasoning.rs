@@ -25,7 +25,7 @@ pub fn ensure_current(root:&Path,source:&str)->Result<Value>{
     let review=match service::load(root){Ok(r)=>r,Err(e) if e.to_string()=="No review named latest"||e.to_string().starts_with("Cached session is not verifiably scoped")=>return service::review(root,&ReviewOptions{source:source.into()}),Err(e)=>return Err(e)};
     let root=Path::new(s(&review["root"]));let hashes=repository::sources(root)?.hashes;
     let sessions=history::saved(&review)?;
-    let mismatch=sessions.iter().any(|s|source=="none"||(["codex","claude"].contains(&source)&&s["agent"]!=source));
+    let mismatch=sessions.iter().any(|s|!history::source_matches(source,crate::s(&s["agent"])));
     if review["head"]!=json!(repository::head(root))||review["file_hashes"]!=json!(hashes)||review["history_source"]!=source||arr(&review["changes"]).iter().any(|c|c["diff"].is_null())||mismatch||review["recent_code"].is_null(){
         return service::review(root,&ReviewOptions{source:source.into()});
     }Ok(review)
@@ -126,7 +126,7 @@ fn packet_with_notes(review:&Value,question:&str,file:Option<&str>,targets:&[Val
         for(i,e)in eligible.iter().enumerate(){let text=s(&e["text"]).to_lowercase();let hits=terms.iter().filter(|t|text.contains(t.as_str())).count();if hits>0{scores.insert(i,hits+if symbol_terms.iter().any(|t|text.contains(t)){12}else{0}+if e["kind"]=="assistant"{4}else{0});}}
         let mut best:Vec<_>=scores.iter().map(|(a,b)|(*a,*b)).collect();best.sort_by_key(|(i,score)|(std::cmp::Reverse(*score),*i));
         for(i,score)in best.into_iter().take(6){
-            for(j,e)in eligible.iter().enumerate().take((i+3).min(eligible.len())).skip(i.saturating_sub(2)){if ["user","assistant"].contains(&s(&e["kind"])){scores.entry(j).and_modify(|v|*v=(*v).max(score.saturating_sub(1))).or_insert(score.saturating_sub(1));}}
+            for(j,e)in eligible.iter().enumerate().take((i+3).min(eligible.len())).skip(i.saturating_sub(2)){if ["user","assistant","rationale","summary"].contains(&s(&e["kind"])){scores.entry(j).and_modify(|v|*v=(*v).max(score.saturating_sub(1))).or_insert(score.saturating_sub(1));}}
             if let Some(j)=(0..i).rev().find(|j|eligible[*j]["kind"]=="user"){scores.entry(j).and_modify(|v|*v=(*v).max(score.saturating_sub(2))).or_insert(score.saturating_sub(2));}
         }
         for(i,e)in eligible.iter().enumerate(){if let Some(score)=scores.get(&i){ranked_events.push((*score,session,*e));}}
@@ -174,10 +174,10 @@ pub fn run(root:&Path,opts:&Options,cancel:&Cancel,progress:impl Fn(&str))->Resu
     let mut notes=vec![];let mut note_refs=vec![];
     for reference in opts.note_refs.iter().filter(|_| opts.source!="none").take(8) {
         let note=history::note_evidence(root,reference)?;
-        if opts.source=="both"||note["agent"]==opts.source {notes.push(note);note_refs.push(reference.clone());}
+        if history::source_matches(&opts.source,s(&note["agent"])) {notes.push(note);note_refs.push(reference.clone());}
     }
     let recorded=opts.session_edit.as_ref().map(|e|history::saved_edit(root,e)).transpose()?;
-    if let Some((edit,_))=&recorded {ensure!(opts.source=="both"||edit["agent"]==opts.source,"Choose /source both or the recorded edit's agent to explain session code");}
+    if let Some((edit,_))=&recorded {ensure!(history::source_matches(&opts.source,s(&edit["agent"])),"Choose /source both or the recorded edit's agent to explain session code");}
     let focus=if recorded.is_some(){None}else{opts.target.as_ref().map(|t|resolve_target(root,t)).transpose()?};
     let file=recorded.as_ref().map(|(e,_)|s(&e["file"])).or_else(||focus.as_ref().map(|f|s(&f["file"]))).or(opts.file.as_deref());
     let question=if let Some((edit,_))=&recorded{format!("Explain the selected recorded session edit to {} ({}). Its code may differ from current source; distinguish them.\n{}",s(&edit["file"]),s(&edit["event_id"]),opts.question)}else if let Some(t)=&opts.target{format!("Target: {t}\n{}",opts.question)}else{opts.question.clone()};

@@ -126,8 +126,9 @@ fn claude_summary_flags_are_secondary_and_parent_message_ids_are_preserved() {
         session["events"][0]["provenance"]["parent_message_id"],
         "u1"
     );
-    assert_eq!(session["events"][1]["kind"], "summary");
-    assert!(!session.to_string().contains("PRIVATE"));
+    assert_eq!(session["events"][1]["kind"], "rationale");
+    assert!(!history::provenance::original(&session["events"][1]));
+    assert_eq!(session["events"][2]["kind"], "summary");
 }
 
 #[test]

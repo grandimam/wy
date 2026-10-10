@@ -132,11 +132,6 @@ impl Workspace {
             self.focus = Focus::Reader;
         }
     }
-    pub(super) fn show_enriched(&mut self) {
-        if let Some(answer) = self.current_key().and_then(|k| self.answer_for(&k)) {
-            self.open(document::explanation(answer));
-        }
-    }
     pub(super) fn file_state(&self, file: &str) -> Option<(&'static str, Color)> {
         if self
             .job
