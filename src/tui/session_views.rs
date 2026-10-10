@@ -18,10 +18,27 @@ pub(super) fn picker(review: &Value, sessions: &[Value], selected: Option<&Value
     if review["lazy_sessions"] == true {
         for reference in arr(&review["sessions"]) {
             let key = s(&reference["storage_key"]);
-            let marker = if selected.is_some_and(|w| w["session"]["storage_key"] == key) { "Selected · " } else { "" };
-            link(&mut doc, format!("{marker}{} · {}", s(&reference["agent"]), s(&reference["id"])), Link::Session(key.into()));
+            let marker = if selected.is_some_and(|w| w["session"]["storage_key"] == key) {
+                "Selected · "
+            } else {
+                ""
+            };
+            link(
+                &mut doc,
+                format!(
+                    "{marker}{} · {}",
+                    s(&reference["agent"]),
+                    s(&reference["id"])
+                ),
+                Link::Session(key.into()),
+            );
         }
-        if doc.sources.is_empty() { doc.text("No discovered sessions. /coverage shows discovery issues.", AMBER); }
+        if doc.sources.is_empty() {
+            doc.text(
+                "No discovered sessions. /coverage shows discovery issues.",
+                AMBER,
+            );
+        }
         doc.source_selection = (!doc.sources.is_empty()).then_some(0);
         return doc;
     }

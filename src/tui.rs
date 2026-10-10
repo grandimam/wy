@@ -1,16 +1,16 @@
 //! Read-only review workspace. Agent requests run only after explicit input.
-mod document;
-mod decision_views;
-mod session_views;
-mod session_flow;
+mod code_view;
 #[cfg(test)]
 mod decision_tests;
-mod code_view;
-mod history_views;
+mod decision_views;
+mod document;
 mod explorer;
+mod history_views;
 mod layout;
 mod navigation;
 mod render;
+mod session_flow;
+mod session_views;
 use crate::{agent::Cancel, arr, n, presentation, reasoning, s, security, service};
 use anyhow::{Result, ensure};
 use crossterm::{
@@ -27,10 +27,7 @@ use layout::{Divider, PaneSizes};
 use navigation::{ReadingState, artifact_key, options_key};
 use ratatui::{
     prelude::*,
-    widgets::{
-        List, ListItem, Paragraph, Scrollbar,
-        ScrollbarOrientation, ScrollbarState, Wrap,
-    },
+    widgets::{List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
 };
 use serde_json::Value;
 use std::{
@@ -148,6 +145,9 @@ struct Workspace {
     answers: Vec<Arc<Value>>,
     decision_brief: Option<Arc<Value>>,
     selected_work: Option<Value>,
+    /// Resolved request scope, bound to its immutable snapshot.
+    selected_decision_work: Option<Value>,
+    decision_errors: std::collections::HashMap<String, String>,
     sessions: Vec<Value>,
     session_nav: ratatui::widgets::ListState,
     session_page: usize,
@@ -155,7 +155,7 @@ struct Workspace {
     session_nav_focus: bool,
     request_nav_focus: bool,
     request_nav: ratatui::widgets::ListState,
-    history_tabs: std::collections::HashMap<String,Document>,
+    history_tabs: std::collections::HashMap<String, Document>,
     session_positions: std::collections::HashMap<String, (usize, u16)>,
     views: Vec<ReadingState>,
     queue: VecDeque<reasoning::Options>,
@@ -183,12 +183,13 @@ impl Workspace {
             root,
             &service::ReviewOptions {
                 source: "both".into(),
-                ..Default::default()
             },
         )?;
         let mut app = Self::from_review(root, review);
         app.pane_sizes = PaneSizes::load(root)?;
-        if let Err(error) = app.load_catalog_selection() { app.fail(error); }
+        if let Err(error) = app.load_catalog_selection() {
+            app.fail(error);
+        }
         for answer in crate::storage::Store::open(root)?
             .recent("reasoning", 40)?
             .into_iter()
@@ -205,7 +206,8 @@ impl Workspace {
         app.select_latest_work();
         app.decision_brief = crate::decisions::saved(root, &app.decision_scope())?.map(Arc::new);
         // The secondary current-file browser must not mix in earlier sessions.
-        app.review["recent_code"]=serde_json::json!([]);app.explorer.rebuild(&app.review);
+        app.review["recent_code"] = serde_json::json!([]);
+        app.explorer.rebuild(&app.review);
         app.decision_home();
         app.back.clear();
         Ok(app)
@@ -230,6 +232,8 @@ impl Workspace {
             answers: vec![],
             decision_brief: None,
             selected_work: None,
+            selected_decision_work: None,
+            decision_errors: std::collections::HashMap::new(),
             sessions: vec![],
             session_nav: ratatui::widgets::ListState::default(),
             session_page: 0,
@@ -263,25 +267,70 @@ impl Workspace {
     }
     /// Primary section, retained when opening a decision's cited evidence.
     fn section(&self) -> View {
-        if matches!(self.document.kind,View::DecisionOverview|View::DecisionDetail) || self.document.artifact.as_ref().is_some_and(|a|a["context"]=="decision_brief") {
+        if matches!(
+            self.document.kind,
+            View::DecisionOverview | View::DecisionDetail
+        ) || self
+            .document
+            .artifact
+            .as_ref()
+            .is_some_and(|a| a["context"] == "decision_brief")
+        {
             View::DecisionOverview
         } else if self.document.historical() {
             View::Sessions
-        } else {View::Recorded}
+        } else {
+            View::Recorded
+        }
     }
-    fn session_context(&self)->bool {
-        self.document.artifact.as_ref().is_some_and(|a|a["scope_kind"]=="session" || a["context"]=="session_work")
+    fn session_context(&self) -> bool {
+        self.document
+            .artifact
+            .as_ref()
+            .is_some_and(|a| a["scope_kind"] == "session" || a["context"] == "session_work")
     }
-    fn decision_scope(&self)->Value {
-        self.selected_work.clone().unwrap_or_else(||crate::session_work::empty(&self.review))
+    fn decision_scope(&self) -> Value {
+        self.selected_decision_work
+            .as_ref()
+            .filter(|work| {
+                self.selected_work.as_ref().is_some_and(|selected| {
+                    selected["session"]["storage_key"] == work["session"]["storage_key"]
+                })
+            })
+            .cloned()
+            .or_else(|| self.selected_work.clone())
+            .unwrap_or_else(|| crate::session_work::empty(&self.review))
+    }
+    fn select_decision_requests(&mut self, ordinals: Option<Vec<usize>>) -> Result<()> {
+        let work = self
+            .selected_work
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No selected session"))?;
+        let session = crate::session_work::load(&self.root, work)?;
+        let selection = ordinals
+            .map(|ordinals| crate::session_work::WorkSelection::Requests { ordinals })
+            .unwrap_or_default();
+        let scoped = crate::session_work::scoped(work, &session, selection)?;
+        self.decision_brief = crate::decisions::saved(&self.root, &scoped)?.map(Arc::new);
+        self.selected_decision_work = Some(scoped);
+        self.decision_home();
+        Ok(())
     }
     fn resolve_session(&mut self, key: &str) -> Result<Value> {
-        let reference = arr(&self.review["sessions"]).iter().position(|r| r["storage_key"] == key);
-        let entry = reference.and_then(|i| self.review["sessions"][i].get("source_entry")).cloned();
+        let reference = arr(&self.review["sessions"])
+            .iter()
+            .position(|r| r["storage_key"] == key);
+        let entry = reference
+            .and_then(|i| self.review["sessions"][i].get("source_entry"))
+            .cloned();
         if let Some(entry) = entry {
             let session = crate::history::collect_entry(&entry)?;
-            ensure!(crate::history::belongs(s(&session["cwd"]), &self.root) && session["id"] == entry["id"] && session["agent"] == entry["agent"],
-                "Session identity or repository changed during import");
+            ensure!(
+                crate::history::belongs(s(&session["cwd"]), &self.root)
+                    && session["id"] == entry["id"]
+                    && session["agent"] == entry["agent"],
+                "Session identity or repository changed during import"
+            );
             crate::validate("Session", &session)?;
             let snapshot = crate::session_work::snapshot_key(&session);
             crate::storage::Store::open(&self.root)?.put("session", &snapshot, &session)?;
@@ -300,41 +349,69 @@ impl Workspace {
         } else {
             let session = crate::storage::Store::open(&self.root)?.get("session", key)?;
             crate::validate("Session", &session)?;
-            ensure!(crate::history::belongs(s(&session["cwd"]), &self.root) && crate::session_work::snapshot_key(&session) == key,
-                "Session snapshot is not verifiably scoped to this repository");
+            ensure!(
+                crate::history::belongs(s(&session["cwd"]), &self.root)
+                    && crate::session_work::snapshot_key(&session) == key,
+                "Session snapshot is not verifiably scoped to this repository"
+            );
             Ok(session)
         }
     }
     fn load_catalog_selection(&mut self) -> Result<()> {
         let refs = arr(&self.review["sessions"]);
-        let selected = self.selected_work.as_ref().and_then(|work| refs.iter().find(|r|
-            r["id"] == work["session"]["id"] && r["agent"] == work["session"]["agent"]))
-            .or_else(|| refs.first()).map(|r| s(&r["storage_key"]).to_owned());
+        let selected = self
+            .selected_work
+            .as_ref()
+            .and_then(|work| {
+                refs.iter().find(|r| {
+                    r["id"] == work["session"]["id"] && r["agent"] == work["session"]["agent"]
+                })
+            })
+            .or_else(|| refs.first())
+            .map(|r| s(&r["storage_key"]).to_owned());
         self.sessions.clear();
-        if let Some(key) = selected { self.sessions = vec![self.resolve_session(&key)?]; }
+        if let Some(key) = selected {
+            self.sessions = vec![self.resolve_session(&key)?];
+        }
         Ok(())
     }
     fn select_latest_work(&mut self) {
         self.rebuild_session_navigation();
-        let previous=self.selected_work.as_ref();
-        let selected=previous.and_then(|w|self.sessions.iter().find(|s|s["id"]==w["session"]["id"] && s["agent"]==w["session"]["agent"]))
-            .or_else(||crate::session_work::latest(&self.sessions));
-        self.selected_work=selected.map(|s|crate::session_work::build(&self.review,s));
+        let previous = self.selected_work.as_ref();
+        let selected = previous
+            .and_then(|w| {
+                self.sessions
+                    .iter()
+                    .find(|s| s["id"] == w["session"]["id"] && s["agent"] == w["session"]["agent"])
+            })
+            .or_else(|| crate::session_work::latest(&self.sessions));
+        self.selected_work = selected.map(|s| crate::session_work::build(&self.review, s));
         self.session_nav.select(None);
         self.step_session_navigation(0);
     }
     fn session_flow(&mut self) {
         self.remember_section();
-        if self.selected_work.is_none(){self.select_latest_work();}
-        let work=Arc::new(self.decision_scope());
-        let key=format!("session-flow:{}",s(&work["session"]["storage_key"]));
+        if self.selected_work.is_none() {
+            self.select_latest_work();
+        }
+        // The reader index always describes the complete snapshot, not the decision subset.
+        let work = Arc::new(
+            self.selected_work
+                .clone()
+                .unwrap_or_else(|| crate::session_work::empty(&self.review)),
+        );
+        let key = format!("session-flow:{}", s(&work["session"]["storage_key"]));
         let doc = if let Some(doc) = self.history_tabs.get(&key) {
             doc.clone()
         } else if work["session"].is_null() {
             session_views::flow(work, 0)
         } else {
             let snapshot = s(&work["session"]["storage_key"]);
-            let (selected, scroll) = self.session_positions.get(&key).copied().unwrap_or_default();
+            let (selected, scroll) = self
+                .session_positions
+                .get(&key)
+                .copied()
+                .unwrap_or_default();
             let result = crate::session_reader::index(&self.root, &work)
                 .and_then(|_| crate::session_reader::page(&self.root, snapshot, selected));
             match result {
@@ -342,28 +419,58 @@ impl Workspace {
                     let mut doc = session_views::flow(Arc::new(page), selected);
                     doc.scroll = scroll;
                     doc
-                },
-                Err(error) => { self.fail(error); return; }
+                }
+                Err(error) => {
+                    self.fail(error);
+                    return;
+                }
             }
         };
-        self.open(doc);self.sidebar=false;self.code=None;
+        self.open(doc);
+        self.sidebar = false;
+        self.code = None;
         self.request_nav = ratatui::widgets::ListState::default();
         self.request_nav_focus = false;
     }
     /// Rebuild only when history changes, never while drawing or moving the cursor.
     fn rebuild_session_navigation(&mut self) {
-        let dates: std::collections::HashMap<_, _> = self.sessions.iter().map(|session| {
-            ((s(&session["agent"]), s(&session["id"])),
-             chrono::DateTime::parse_from_rfc3339(s(&crate::insights::session_dates(session).1)).ok())
-        }).collect();
-        let mut entries: Vec<_> = arr(&self.review["sessions"]).iter()
+        let dates: std::collections::HashMap<_, _> = self
+            .sessions
+            .iter()
+            .map(|session| {
+                (
+                    (s(&session["agent"]), s(&session["id"])),
+                    chrono::DateTime::parse_from_rfc3339(s(&crate::insights::session_dates(
+                        session,
+                    )
+                    .1))
+                    .ok(),
+                )
+            })
+            .collect();
+        let mut entries: Vec<_> = arr(&self.review["sessions"])
+            .iter()
             .filter(|reference| !s(&reference["storage_key"]).is_empty())
             .map(|reference| {
-                let date = dates.get(&(s(&reference["agent"]), s(&reference["id"]))).copied().flatten()
-                    .or_else(|| chrono::DateTime::parse_from_rfc3339(s(&reference["last_event"])).ok())
-                    .or_else(|| chrono::DateTime::parse_from_rfc3339(s(&reference["source_timestamp"])).ok());
-                (date, (s(&reference["storage_key"]).to_owned(), s(&reference["id"]).to_owned()))
-            }).collect();
+                let date = dates
+                    .get(&(s(&reference["agent"]), s(&reference["id"])))
+                    .copied()
+                    .flatten()
+                    .or_else(|| {
+                        chrono::DateTime::parse_from_rfc3339(s(&reference["last_event"])).ok()
+                    })
+                    .or_else(|| {
+                        chrono::DateTime::parse_from_rfc3339(s(&reference["source_timestamp"])).ok()
+                    });
+                (
+                    date,
+                    (
+                        s(&reference["storage_key"]).to_owned(),
+                        s(&reference["id"]).to_owned(),
+                    ),
+                )
+            })
+            .collect();
         entries.sort_by_key(|(date, _)| std::cmp::Reverse(*date));
         self.session_entries = entries.into_iter().map(|(_, entry)| entry).collect();
     }
@@ -372,128 +479,278 @@ impl Workspace {
     }
     fn step_session_navigation(&mut self, delta: isize) {
         let entries = self.navigation_sessions();
-        if entries.is_empty() { return; }
+        if entries.is_empty() {
+            return;
+        }
         let count = entries.len();
         if self.session_nav.selected().is_none() {
-            let selected = entries.iter().position(|(key, _)|
-                self.selected_work.as_ref().is_some_and(|w| w["session"]["storage_key"] == *key)).unwrap_or(0);
+            let selected = entries
+                .iter()
+                .position(|(key, _)| {
+                    self.selected_work
+                        .as_ref()
+                        .is_some_and(|w| w["session"]["storage_key"] == *key)
+                })
+                .unwrap_or(0);
             self.session_page = selected / session_views::SESSIONS_PER_PAGE;
-            self.session_nav.select(Some(selected % session_views::SESSIONS_PER_PAGE));
+            self.session_nav
+                .select(Some(selected % session_views::SESSIONS_PER_PAGE));
         }
-        let len = count.saturating_sub(self.session_page * session_views::SESSIONS_PER_PAGE).min(session_views::SESSIONS_PER_PAGE);
+        let len = count
+            .saturating_sub(self.session_page * session_views::SESSIONS_PER_PAGE)
+            .min(session_views::SESSIONS_PER_PAGE);
         let current = self.session_nav.selected().unwrap_or(0);
-        self.session_nav.select(Some(current.saturating_add_signed(delta).min(len.saturating_sub(1))));
+        self.session_nav.select(Some(
+            current
+                .saturating_add_signed(delta)
+                .min(len.saturating_sub(1)),
+        ));
     }
     fn change_session_page(&mut self, page: usize) {
-        self.session_page = page.min(self.session_entries.len().saturating_sub(1) / session_views::SESSIONS_PER_PAGE);
+        self.session_page = page
+            .min(self.session_entries.len().saturating_sub(1) / session_views::SESSIONS_PER_PAGE);
         self.session_nav = ratatui::widgets::ListState::default();
-        if !self.session_entries.is_empty() { self.session_nav.select(Some(0)); }
+        if !self.session_entries.is_empty() {
+            self.session_nav.select(Some(0));
+        }
         self.session_nav_focus = true;
         self.request_nav_focus = false;
     }
     fn request_position(&self) -> Option<(usize, usize)> {
         match self.document.pagination.as_ref()? {
-            history_views::Page::Work { work, index } => Some((*index, crate::session_reader::count(work))),
+            history_views::Page::Work { work, index } => {
+                Some((*index, crate::session_reader::count(work)))
+            }
             _ => None,
         }
     }
     fn step_request_navigation(&mut self, delta: isize) {
-        let Some((selected, count)) = self.request_position() else { return; };
+        let Some((selected, count)) = self.request_position() else {
+            return;
+        };
         let size = session_flow::REQUESTS_PER_PAGE;
         let first = selected / size * size;
         let len = count.saturating_sub(first).min(size);
-        if len == 0 { self.request_nav.select(None); return; }
+        if len == 0 {
+            self.request_nav.select(None);
+            return;
+        }
         let cursor = self.request_nav.selected().unwrap_or(selected % size);
-        self.request_nav.select(Some(cursor.saturating_add_signed(delta).min(len - 1)));
+        self.request_nav
+            .select(Some(cursor.saturating_add_signed(delta).min(len - 1)));
     }
     fn request_page(&mut self, delta: isize) -> Result<()> {
         if let Some((selected, count)) = self.request_position() {
             let size = session_flow::REQUESTS_PER_PAGE;
-            let page = (selected / size).saturating_add_signed(delta).min(count.saturating_sub(1) / size);
+            let page = (selected / size)
+                .saturating_add_signed(delta)
+                .min(count.saturating_sub(1) / size);
             self.follow(Link::Page(page * size))?;
         }
         Ok(())
     }
     fn session_picker(&mut self) {
-        self.open(session_views::picker(&self.review,&self.sessions,self.selected_work.as_ref()));self.sidebar=false;
+        self.open(session_views::picker(
+            &self.review,
+            &self.sessions,
+            self.selected_work.as_ref(),
+        ));
+        self.sidebar = false;
     }
-    fn select_session(&mut self,key:&str)->Result<()> {
+    fn select_session(&mut self, key: &str) -> Result<()> {
         let session = self.resolve_session(key)?;
         let snapshot = crate::session_work::snapshot_key(&session);
         let key = snapshot.as_str();
-        let work=crate::session_work::build(&self.review,&session);
-        if self.review["lazy_sessions"] == true { self.sessions = vec![session]; }
-        self.decision_brief=crate::decisions::saved(&self.root,&work)?.map(Arc::new);
-        self.selected_work=Some(work);
-        if let Some(index) = self.navigation_sessions().iter().position(|(entry, _)| entry == key) {
-            self.session_page = index / session_views::SESSIONS_PER_PAGE;
-            self.session_nav.select(Some(index % session_views::SESSIONS_PER_PAGE));
+        let work = crate::session_work::build(&self.review, &session);
+        if self.review["lazy_sessions"] == true {
+            self.sessions = vec![session];
         }
-        self.views.clear();self.session_flow();self.back.clear();Ok(())
+        self.decision_brief = crate::decisions::saved(&self.root, &work)?.map(Arc::new);
+        self.selected_work = Some(work);
+        self.selected_decision_work = None;
+        if let Some(index) = self
+            .navigation_sessions()
+            .iter()
+            .position(|(entry, _)| entry == key)
+        {
+            self.session_page = index / session_views::SESSIONS_PER_PAGE;
+            self.session_nav
+                .select(Some(index % session_views::SESSIONS_PER_PAGE));
+        }
+        self.views.clear();
+        self.session_flow();
+        self.back.clear();
+        Ok(())
     }
     fn remember_section(&mut self) {
-        if self.document.kind==View::SessionWork {
-            let key=format!("session-flow:{}",self.document.artifact.as_ref().map(|a|s(&a["session"]["storage_key"])).unwrap_or(""));
-            self.session_positions.insert(key.clone(), (self.document.pagination.as_ref().map(|p| p.index()).unwrap_or(0), self.document.scroll));
+        if self.document.kind == View::SessionWork {
+            let key = format!(
+                "session-flow:{}",
+                self.document
+                    .artifact
+                    .as_ref()
+                    .map(|a| s(&a["session"]["storage_key"]))
+                    .unwrap_or("")
+            );
+            self.session_positions.insert(
+                key.clone(),
+                (
+                    self.document
+                        .pagination
+                        .as_ref()
+                        .map(|p| p.index())
+                        .unwrap_or(0),
+                    self.document.scroll,
+                ),
+            );
             // Keep navigation positions for every session, but only two reader documents.
-            if !self.history_tabs.contains_key(&key) && self.history_tabs.keys().filter(|k| k.starts_with("session-flow:")).count() >= 2 {
-                if let Some(old) = self.history_tabs.keys().find(|k| k.starts_with("session-flow:")).cloned() {
-                    self.history_tabs.remove(&old);
-                }
+            if !self.history_tabs.contains_key(&key)
+                && self
+                    .history_tabs
+                    .keys()
+                    .filter(|k| k.starts_with("session-flow:"))
+                    .count()
+                    >= 2
+                && let Some(old) = self
+                    .history_tabs
+                    .keys()
+                    .find(|k| k.starts_with("session-flow:"))
+                    .cloned()
+            {
+                self.history_tabs.remove(&old);
             }
-            self.history_tabs.insert(key,self.document.clone());
+            self.history_tabs.insert(key, self.document.clone());
+        }
+    }
+    fn decision_document(&self, brief: Arc<Value>) -> Document {
+        use decision_views::BriefState;
+        let key = format!("decision-brief:{}", s(&brief["scope_key"]));
+        let state = if self.job.as_ref().is_some_and(|job| job.key == key) {
+            BriefState::Generating
+        } else if let Some(error) = self.decision_errors.get(&key) {
+            BriefState::Failed(error.clone())
+        } else if brief["mode"] == "assessment" {
+            BriefState::Ready
+        } else if brief["captured_edits"] == 0 {
+            BriefState::Unavailable
+        } else {
+            BriefState::NotAnalyzed
+        };
+        decision_views::overview(brief, state, &self.agent)
+    }
+    fn update_decision_status(&mut self) {
+        if self.document.kind == View::DecisionOverview
+            && self.document.scroll == 0
+            && self.editing.is_none()
+            && let Some(brief) = self.document.artifact.clone()
+        {
+            self.document = self.decision_document(brief);
         }
     }
     fn decision_home(&mut self) {
         self.remember_section();
-        if self.selected_work.is_none(){self.select_latest_work();}
-        let scope=self.decision_scope();
-        let sessions:Vec<_>=self.sessions.iter().filter(|session|crate::session_work::snapshot_key(session)==s(&scope["session"]["storage_key"])).cloned().collect();
-        let sessions=if sessions.is_empty(){crate::session_work::load(&self.root,&scope).ok().into_iter().collect()}else{sessions};
-        let brief = self.decision_brief.clone().filter(|a|a["scope_key"]==crate::decisions::scope_key(&scope))
-            .unwrap_or_else(||Arc::new(crate::decisions::recorded(&scope,&sessions)));
-        self.open(decision_views::overview(brief));
-        self.sidebar=false;
-        self.code=None;
+        if self.selected_work.is_none() {
+            self.select_latest_work();
+        }
+        let scope = self.decision_scope();
+        let sessions: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|session| {
+                crate::session_work::snapshot_key(session) == s(&scope["session"]["storage_key"])
+            })
+            .cloned()
+            .collect();
+        let sessions = if sessions.is_empty() {
+            crate::session_work::load(&self.root, &scope)
+                .ok()
+                .into_iter()
+                .collect()
+        } else {
+            sessions
+        };
+        let brief = self
+            .decision_brief
+            .clone()
+            .filter(|a| a["scope_key"] == crate::decisions::scope_key(&scope))
+            .unwrap_or_else(|| Arc::new(crate::decisions::recorded(&scope, &sessions)));
+        self.open(self.decision_document(brief));
+        self.sidebar = false;
+        self.code = None;
     }
     fn discover_decisions(&mut self) {
         if self.job.is_some() {
-            self.message("Wait for the current request or cancel it with x before discovering decisions");
+            self.message(
+                "Wait for the current request or cancel it with x before discovering decisions",
+            );
             return;
         }
-        if self.review["history_source"]!=self.source {
-            if let Err(error)=self.refresh() {self.fail(error);return;}
+        if self.review["history_source"] != self.source {
+            if let Err(error) = self.refresh() {
+                self.fail(error);
+                return;
+            }
+            self.message(
+                "History source refreshed · confirm the displayed scope, then generate the brief",
+            );
+            return;
         }
-        let scope=self.decision_scope();
+        if self.document.kind == View::SessionWork
+            && let Some((index, _)) = self.request_position()
+            && let Err(error) = self.select_decision_requests(Some(vec![index]))
+        {
+            self.fail(error);
+            return;
+        }
+        let scope = self.decision_scope();
         if arr(&scope["edits"]).is_empty() {
-            self.message("No captured code edits in the selected session · current files will not be substituted");
+            self.message("No captured code edits in the selected work · current files will not be substituted");
             return;
         }
-        let root=self.root.clone();
-        let review=scope;
-        let agent=self.agent.clone();
-        let cancel=Arc::new(AtomicBool::new(false));
-        let worker_cancel=cancel.clone();
-        let (sender,receiver)=mpsc::channel();
-        let handle=thread::spawn(move || {
-            let result=crate::decisions::run(&root,&review,&agent,&worker_cancel,|p|{let _=sender.send(Update::Progress(p.into()));});
-            let _=sender.send(Update::Done(result));
+        let key = format!("decision-brief:{}", crate::decisions::scope_key(&scope));
+        self.decision_errors.remove(&key);
+        let root = self.root.clone();
+        let review = scope;
+        let agent = self.agent.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let (sender, receiver) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let result = crate::decisions::run(&root, &review, &agent, &worker_cancel, |p| {
+                let _ = sender.send(Update::Progress(p.into()));
+            });
+            let _ = sender.send(Update::Done(result));
         });
-        self.job=Some(Job{receiver,cancel,handle,started:Instant::now(),scope:"session decisions".into(),key:"decision-brief".into(),file:None,progress:"Preparing decision discovery…".into()});
-        self.message("Decision discovery requested · selected evidence is sent to your reasoning CLI · keep browsing");
+        self.job = Some(Job {
+            receiver,
+            cancel,
+            handle,
+            started: Instant::now(),
+            scope: "selected-work decisions".into(),
+            key,
+            file: None,
+            progress: "Preparing decision discovery…".into(),
+        });
+        self.update_decision_status();
+        self.message("Decision discovery requested · selected-work evidence is sent to your reasoning CLI · keep browsing");
     }
     fn finish_decisions(&mut self, artifact: Arc<Value>) {
-        if artifact["scope_key"]!=crate::decisions::scope_key(&self.decision_scope()) {
-            self.message("Decision brief saved for an earlier capture · refresh and request a new brief");
+        if artifact["scope_key"] != crate::decisions::scope_key(&self.decision_scope()) {
+            self.message(
+                "Decision brief saved for another scope or capture · current selection unchanged",
+            );
             return;
         }
-        self.decision_brief=Some(artifact.clone());
+        self.decision_brief = Some(artifact.clone());
         // Do not interrupt a deep dive, scrolled reader, evidence view or draft.
-        if self.document.kind==View::DecisionOverview && self.document.scroll==0 && self.editing.is_none() {
-            self.document=decision_views::overview(artifact);
-            let mut doc=self.document.clone();
+        if self.document.kind == View::DecisionOverview
+            && self.document.scroll == 0
+            && self.editing.is_none()
+        {
+            self.document = self.decision_document(artifact);
+            let mut doc = self.document.clone();
             self.check_freshness(&mut doc);
-            self.document=doc;
+            self.document = doc;
         }
         self.message("Decisions ready");
     }
@@ -508,10 +765,10 @@ impl Workspace {
     fn open(&mut self, mut document: Document) {
         self.remember_view();
         self.check_freshness(&mut document);
-        if document.kind == View::Explanation {
-            if let Some(artifact) = &document.artifact {
-                self.cache_answer(artifact.clone());
-            }
+        if document.kind == View::Explanation
+            && let Some(artifact) = &document.artifact
+        {
+            self.cache_answer(artifact.clone());
         }
         let code = self.code_for_answer(&document);
         let old = std::mem::replace(&mut self.document, document);
@@ -559,11 +816,14 @@ impl Workspace {
         let Some(artifact) = &document.artifact else {
             return;
         };
-        if document.kind==View::Export {
+        if document.kind == View::Export {
             document.notice=Some(("Export of a dated snapshot, not a live review · preview sensitive content before saving".into(),AMBER));
             return;
         }
-        if document::is_recorded(artifact) || artifact["scope_kind"]=="session" || artifact["context"]=="session_work" {
+        if document::is_recorded(artifact)
+            || artifact["scope_kind"] == "session"
+            || artifact["context"] == "session_work"
+        {
             return;
         }
         let Some(review_id) = artifact["review_id"].as_str() else {
@@ -628,7 +888,8 @@ impl Workspace {
     }
     fn why_change(&mut self, refresh: bool) {
         if self.session_context() {
-            self.message("Open Decisions to assess this session's captured work");return;
+            self.message("Open Decisions to assess this session's captured work");
+            return;
         }
         if self.focus == Focus::Reader && self.document.historical() {
             self.message(
@@ -644,20 +905,18 @@ impl Workspace {
                     .filter(|a| !document::is_recorded(a))
             })
             .flatten();
-        if !refresh {
-            if let Some(artifact) = existing.clone() {
-                if self.document.kind != View::Explanation {
-                    self.open(document::explanation(artifact));
-                }
-                return;
+        if !refresh && let Some(artifact) = existing.clone() {
+            if self.document.kind != View::Explanation {
+                self.open(document::explanation(artifact));
             }
+            return;
         }
         let Some(options) = self.why_options(refresh) else {
             self.message("Select a changed file or function first");
             return;
         };
-        if !refresh {
-            if let Some(answer) = self
+        if !refresh
+            && let Some(answer) = self
                 .answers
                 .iter()
                 .rev()
@@ -672,16 +931,17 @@ impl Workspace {
                                 .unwrap_or(&Value::Null)
                 })
                 .cloned()
-            {
-                self.open(document::explanation(answer));
-                self.message("Saved answer · R updates it");
-                return;
-            }
+        {
+            self.open(document::explanation(answer));
+            self.message("Saved answer · R updates it");
+            return;
         }
         self.start(options);
     }
     fn why_options(&self, _refresh: bool) -> Option<reasoning::Options> {
-        if self.session_context(){return None;}
+        if self.session_context() {
+            return None;
+        }
         let target = if self.focus == Focus::Reader {
             if let Some(artifact) = &self.document.artifact {
                 document::artifact_target(artifact)
@@ -722,19 +982,20 @@ impl Workspace {
             options.file = edit["file"].as_str().map(str::to_owned);
             options.session_edit = Some(edit);
         }
-        if let Some(artifact) = &self.document.artifact {
-            if document::artifact_target(artifact).map(|t| t.selector())
+        if let Some(artifact) = &self.document.artifact
+            && document::artifact_target(artifact).map(|t| t.selector())
                 == options.target.clone().or(options.file.clone())
-            {
-                options.note_refs = arr(&artifact["packet"]["note_refs"]).to_vec();
-                let gaps = arr(&artifact["packet"]["gaps"])
-                    .iter()
-                    .map(s)
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                if !gaps.is_empty() {
-                    options.question.push_str(&format!("\nNotes about the captured excerpts: {gaps}"));
-                }
+        {
+            options.note_refs = arr(&artifact["packet"]["note_refs"]).to_vec();
+            let gaps = arr(&artifact["packet"]["gaps"])
+                .iter()
+                .map(s)
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !gaps.is_empty() {
+                options
+                    .question
+                    .push_str(&format!("\nNotes about the captured excerpts: {gaps}"));
             }
         }
         Some(options)
@@ -832,9 +1093,18 @@ impl Workspace {
             let job = self.job.take().unwrap();
             let _ = job.handle.join();
             match result {
-                Ok(artifact) if artifact["context"]=="decision_brief" => self.finish_decisions(Arc::new(artifact)),
+                Ok(artifact) if artifact["context"] == "decision_brief" => {
+                    self.finish_decisions(Arc::new(artifact))
+                }
                 Ok(artifact) => self.finish_answer(&job.key, Arc::new(artifact)),
-                Err(error) => self.fail(format!("{}: {error:#}", job.scope)),
+                Err(error) => {
+                    if job.key.starts_with("decision-brief:") {
+                        self.decision_errors
+                            .insert(job.key.clone(), format!("{error:#}"));
+                        self.update_decision_status();
+                    }
+                    self.fail(format!("{}: {error:#}", job.scope));
+                }
             }
             if let Some(next) = self.queue.pop_front() {
                 self.launch(next);
@@ -850,10 +1120,9 @@ impl Workspace {
             .views
             .iter_mut()
             .find(|v| v.key == key || v.key == request_key)
+            && saved.document.kind != View::Evidence
         {
-            if saved.document.kind != View::Evidence {
-                saved.document = doc.clone();
-            }
+            saved.document = doc.clone();
         }
         // Never move the user to another file, close a source, or interrupt a draft.
         if self.current_key().as_deref() == Some(request_key)
@@ -890,7 +1159,10 @@ impl Workspace {
                     target: artifact["packet"]["focus_target"]["target"]
                         .as_str()
                         .map(str::to_owned),
-                    previous: (!document::is_recorded(artifact) && artifact["context"]!="decision_brief" && artifact["context"]!="session_work").then(|| artifact.clone()),
+                    previous: (!document::is_recorded(artifact)
+                        && artifact["context"] != "decision_brief"
+                        && artifact["context"] != "session_work")
+                        .then(|| artifact.clone()),
                     note_refs: arr(&artifact["packet"]["note_refs"]).to_vec(),
                     session_edit: artifact["packet"]["focus_session_edit"]
                         .as_object()
@@ -935,42 +1207,127 @@ impl Workspace {
             return Ok(());
         }
         if mode == Some(Input::Question) && !input.starts_with('/') {
-            ensure!(!self.session_context(),"Open Decisions to assess captured session evidence; current-code follow-ups are separate");
+            ensure!(
+                !self.session_context(),
+                "Open Decisions to assess captured session evidence; current-code follow-ups are separate"
+            );
             self.start(question_options);
             return Ok(());
         }
         let (name, rest) = input.split_once(' ').unwrap_or((&input, ""));
         let rest = rest.trim();
         match name {
-            "/coverage" => self.open(history_views::coverage(&self.review,&self.sessions)),
+            "/coverage" => self.open(history_views::coverage(&self.review, &self.sessions)),
             "/sessions" => self.session_picker(),
             "/changes" => self.open(session_views::working_changes(&self.review)),
             "/decisions" if rest.is_empty() => self.decision_home(),
-            "/decisions" if rest=="discover" => self.discover_decisions(),
+            "/decisions" if rest == "discover" => self.discover_decisions(),
+            "/decisions" if rest == "session" => self.select_decision_requests(None)?,
+            "/decisions" if rest == "request" => {
+                let (index, _) = self.request_position().ok_or_else(|| {
+                    anyhow::anyhow!("Open a request first, or use /decisions requests START-END")
+                })?;
+                self.select_decision_requests(Some(vec![index]))?;
+            }
+            "/decisions" if rest.starts_with("requests ") => {
+                let range = rest.trim_start_matches("requests ").trim();
+                let (start, end) = range.split_once('-').unwrap_or((range, range));
+                let start: usize = start.trim().parse()?;
+                let end: usize = end.trim().parse()?;
+                let count = self
+                    .selected_work
+                    .as_ref()
+                    .map(|w| arr(&w["turns"]).len())
+                    .unwrap_or(0);
+                ensure!(
+                    start > 0 && end >= start && end <= count,
+                    "Choose a request range between 1 and {count}"
+                );
+                self.select_decision_requests(Some((start - 1..end).collect()))?;
+            }
             "/timeline" | "/decisions" => {
-                let target=if rest.is_empty(){self.document.target.clone().or_else(||self.explorer.target()).ok_or_else(||anyhow::anyhow!("Select a file or use /timeline FILE[:SYMBOL]"))?}else{
-                    let (file,symbol)=rest.split_once(':').map(|(f,s)|(f,Some(s.to_owned()))).unwrap_or((rest,None));
-                    ensure!(security::allowed(file),"Choose an eligible repository-relative file");
-                    Target{file:file.into(),symbol,line:1}
+                let target = if rest.is_empty() {
+                    self.document
+                        .target
+                        .clone()
+                        .or_else(|| self.explorer.target())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("Select a file or use /timeline FILE[:SYMBOL]")
+                        })?
+                } else {
+                    let (file, symbol) = rest
+                        .split_once(':')
+                        .map(|(f, s)| (f, Some(s.to_owned())))
+                        .unwrap_or((rest, None));
+                    ensure!(
+                        security::allowed(file),
+                        "Choose an eligible repository-relative file"
+                    );
+                    Target {
+                        file: file.into(),
+                        symbol,
+                        line: 1,
+                    }
                 };
-                self.open(history_views::context(&self.review,&self.sessions,target,name=="/decisions"));
+                self.open(history_views::context(
+                    &self.review,
+                    &self.sessions,
+                    target,
+                    name == "/decisions",
+                ));
             }
             "/setup" => {
-                if rest=="save"{
-                    ensure!(self.document.kind==View::Setup,"Preview /setup before saving the optional instructions");
-                    let path=crate::insights::save_private(&self.root,"decision-instructions.md",crate::insights::DECISION_INSTRUCTIONS)?;
-                    self.message(format!("Saved {} · agent configuration was NOT modified",path.display()));
-                }else{ensure!(rest.is_empty(),"Use /setup, then /setup save");self.open(history_views::setup());}
+                if rest == "save" {
+                    ensure!(
+                        self.document.kind == View::Setup,
+                        "Preview /setup before saving the optional instructions"
+                    );
+                    let path = crate::insights::save_private(
+                        &self.root,
+                        "decision-instructions.md",
+                        crate::insights::DECISION_INSTRUCTIONS,
+                    )?;
+                    self.message(format!(
+                        "Saved {} · agent configuration was NOT modified",
+                        path.display()
+                    ));
+                } else {
+                    ensure!(rest.is_empty(), "Use /setup, then /setup save");
+                    self.open(history_views::setup());
+                }
             }
             "/export" => {
-                if rest=="save"{
-                    ensure!(self.document.kind==View::Export,"Preview /export before saving");
-                    let artifact=self.document.artifact.as_ref().ok_or_else(||anyhow::anyhow!("Export preview unavailable"))?;
-                    ensure!(artifact["review_id"]==self.review["id"],"Capture changed; preview /export again");
-                    let name=format!("review-brief-{}.md",&security::digest(s(&artifact["export_text"]))[..16]);
-                    let path=crate::insights::save_private(&self.root,&name,s(&artifact["export_text"]))?;
-                    self.message(format!("Saved {} · nothing uploaded; review before sharing",path.display()));
-                }else{ensure!(rest.is_empty(),"Use /export, then /export save");self.open(history_views::export(&self.review,&self.sessions));}
+                if rest == "save" {
+                    ensure!(
+                        self.document.kind == View::Export,
+                        "Preview /export before saving"
+                    );
+                    let artifact = self
+                        .document
+                        .artifact
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("Export preview unavailable"))?;
+                    ensure!(
+                        artifact["review_id"] == self.review["id"],
+                        "Capture changed; preview /export again"
+                    );
+                    let name = format!(
+                        "review-brief-{}.md",
+                        &security::digest(s(&artifact["export_text"]))[..16]
+                    );
+                    let path = crate::insights::save_private(
+                        &self.root,
+                        &name,
+                        s(&artifact["export_text"]),
+                    )?;
+                    self.message(format!(
+                        "Saved {} · nothing uploaded; review before sharing",
+                        path.display()
+                    ));
+                } else {
+                    ensure!(rest.is_empty(), "Use /export, then /export save");
+                    self.open(history_views::export(&self.review, &self.sessions));
+                }
             }
             "/commits" => self.open_commits()?,
             "/commit" => {
@@ -1021,6 +1378,7 @@ impl Workspace {
                     "Use /agent codex or /agent claude"
                 );
                 self.agent = rest.into();
+                self.update_decision_status();
                 self.message(format!("Next explanation uses {rest}"));
             }
             "/source" => {
@@ -1033,7 +1391,10 @@ impl Workspace {
             "/cancel" => self.cancel(),
             "/ask" => {
                 ensure!(!rest.is_empty(), "Use /ask QUESTION");
-                ensure!(!self.session_context(),"Open Decisions to assess captured session evidence; current-code follow-ups are separate");
+                ensure!(
+                    !self.session_context(),
+                    "Open Decisions to assess captured session evidence; current-code follow-ups are separate"
+                );
                 ensure!(
                     !(self.focus == Focus::Reader && self.document.historical()),
                     "Select a current file to ask a question; this view contains saved commit conversations"
@@ -1049,7 +1410,10 @@ impl Workspace {
             }
             _ if input.starts_with('/') => self.message("Unknown command · ? opens help"),
             _ => {
-                ensure!(!self.session_context(),"Open Decisions to assess captured session evidence; current-code follow-ups are separate");
+                ensure!(
+                    !self.session_context(),
+                    "Open Decisions to assess captured session evidence; current-code follow-ups are separate"
+                );
                 ensure!(
                     !(self.focus == Focus::Reader && self.document.historical()),
                     "Select a current file to ask a question; this view contains saved commit conversations"
@@ -1061,8 +1425,12 @@ impl Workspace {
     }
     fn open_evidence(&mut self, index: usize) -> Result<()> {
         if !self.document.originals.is_empty() {
-            let reference=self.document.originals.get(index).ok_or_else(||anyhow::anyhow!("No original source at this position"))?;
-            let evidence=crate::history::origins::open(&self.root,reference)?;
+            let reference = self
+                .document
+                .originals
+                .get(index)
+                .ok_or_else(|| anyhow::anyhow!("No original source at this position"))?;
+            let evidence = crate::history::origins::open(&self.root, reference)?;
             self.open(document::original(&evidence));
             return Ok(());
         }
@@ -1085,46 +1453,82 @@ impl Workspace {
     }
     fn follow(&mut self, link: Link) -> Result<()> {
         match link {
-            Link::DecisionHome => {self.decision_home();Ok(())}
-            Link::DiscoverDecisions => {self.discover_decisions();Ok(())}
+            Link::DecisionHome => {
+                self.decision_home();
+                Ok(())
+            }
+            Link::DiscoverDecisions => {
+                self.discover_decisions();
+                Ok(())
+            }
+            Link::RequestDecisions(index) => self.select_decision_requests(Some(vec![index])),
+            Link::SessionDecisions => self.select_decision_requests(None),
             Link::Decision(index) => {
-                let brief=self.document.artifact.clone().filter(|a|a["context"]=="decision_brief").ok_or_else(||anyhow::anyhow!("Open the decision overview first"))?;
-                let doc=decision_views::detail(brief,index).ok_or_else(||anyhow::anyhow!("Decision not found"))?;
-                self.open(doc);self.code=None;Ok(())
+                let brief = self
+                    .document
+                    .artifact
+                    .clone()
+                    .filter(|a| a["context"] == "decision_brief")
+                    .ok_or_else(|| anyhow::anyhow!("Open the decision overview first"))?;
+                let doc = decision_views::detail(brief, index)
+                    .ok_or_else(|| anyhow::anyhow!("Decision not found"))?;
+                self.open(doc);
+                self.code = None;
+                Ok(())
             }
             Link::Page(index) => {
-                if let Some(page)=self.document.pagination.clone(){
+                if let Some(page) = self.document.pagination.clone() {
                     self.document = if let history_views::Page::Work { work, .. } = &page {
                         if work["indexed_reader"] == true {
-                            let work = crate::session_reader::page(&self.root, s(&work["session"]["storage_key"]), index)?;
+                            let work = crate::session_reader::page(
+                                &self.root,
+                                s(&work["session"]["storage_key"]),
+                                index,
+                            )?;
                             session_views::flow(Arc::new(work), index)
-                        } else { history_views::page(&self.review, &page, index) }
-                    } else { history_views::page(&self.review, &page, index) };
+                        } else {
+                            history_views::page(&self.review, &page, index)
+                        }
+                    } else {
+                        history_views::page(&self.review, &page, index)
+                    };
                     self.request_nav = ratatui::widgets::ListState::default();
-                    self.focus=Focus::Reader;
+                    self.focus = Focus::Reader;
                 }
                 Ok(())
             }
-            Link::Explain => {self.why_change(false);Ok(())}
+            Link::Explain => {
+                self.why_change(false);
+                Ok(())
+            }
             Link::Disclosure(id) => {
                 self.document.toggle_disclosure(&id);
                 Ok(())
             }
             Link::Session(key) => self.select_session(&key),
-            Link::SessionPicker => {self.session_picker();Ok(())}
-            Link::SessionPage(page) => {self.change_session_page(page);Ok(())}
+            Link::SessionPicker => {
+                self.session_picker();
+                Ok(())
+            }
+            Link::SessionPage(page) => {
+                self.change_session_page(page);
+                Ok(())
+            }
             Link::SessionEdit(reference) => {
-                let (edit,_)=crate::history::saved_edit(&self.root,&reference)?;
-                self.open(session_views::implementation(&edit));Ok(())
+                let (edit, _) = crate::history::saved_edit(&self.root, &reference)?;
+                self.open(session_views::implementation(&edit));
+                Ok(())
             }
             Link::CompareSessionEdit(reference) => {
-                let (edit,session)=crate::history::saved_edit(&self.root,&reference)?;
-                let work=crate::session_work::build(&self.review,&session);
-                self.open(session_views::comparison(&self.root,&work,&edit));Ok(())
+                let (edit, session) = crate::history::saved_edit(&self.root, &reference)?;
+                let work = crate::session_work::build(&self.review, &session);
+                self.open(session_views::comparison(&self.root, &work, &edit));
+                Ok(())
             }
             Link::Source(index) => self.open_evidence(index),
             Link::Turn(edit) => {
-                let (_, session) = crate::history::saved_edit(&self.root, &crate::history::edit_ref(&edit))?;
+                let (_, session) =
+                    crate::history::saved_edit(&self.root, &crate::history::edit_ref(&edit))?;
                 self.open(document::turn(&session, &edit));
                 Ok(())
             }
@@ -1137,17 +1541,33 @@ impl Workspace {
     }
     /// Rebuild the reader for the selected file, keeping the reading position.
     fn rebuild_reader(&mut self) {
-        let Some(code) = self.code.clone() else { return };
+        let Some(code) = self.code.clone() else {
+            return;
+        };
         if self.document.kind != View::Recorded {
             return;
         }
         let (scroll, selection) = (self.document.scroll, self.document.source_selection);
-        let disclosures:Vec<_>=self.document.sources.iter().filter_map(|(_,link)|if let Link::Disclosure(id)=link{Some((id.clone(),self.document.expanded.contains(id)))}else{None}).collect();
+        let disclosures: Vec<_> = self
+            .document
+            .sources
+            .iter()
+            .filter_map(|(_, link)| {
+                if let Link::Disclosure(id) = link {
+                    Some((id.clone(), self.document.expanded.contains(id)))
+                } else {
+                    None
+                }
+            })
+            .collect();
         self.document = self.local_notes(&code);
-        for (id,open) in disclosures {if self.document.expanded.contains(&id)!=open{self.document.toggle_disclosure(&id);}}
+        for (id, open) in disclosures {
+            if self.document.expanded.contains(&id) != open {
+                self.document.toggle_disclosure(&id);
+            }
+        }
         self.document.scroll = scroll;
-        self.document.source_selection =
-            selection.filter(|&i| i < self.document.sources.len());
+        self.document.source_selection = selection.filter(|&i| i < self.document.sources.len());
     }
     fn open_commits(&mut self) -> Result<()> {
         let entries = crate::commits::recent(&self.root)?;
@@ -1193,51 +1613,87 @@ impl Workspace {
     }
     fn change_view(&mut self, view: View) -> Result<()> {
         self.remember_section();
-        if view==View::Recorded {self.sidebar=true;}
-        if view==View::Sessions {
-            if self.document.kind!=View::SessionWork {self.session_flow();}
-            self.focus=Focus::Reader;return Ok(());
+        if view == View::Recorded {
+            self.sidebar = true;
         }
-        if self.document.kind==view {self.focus=Focus::Reader;return Ok(());}
-        if self.document.kind==View::Recorded {
-            if let Some(code)=&self.code {
-                if self.history_tabs.len()>=8{self.history_tabs.clear();}
-                self.history_tabs.insert(format!("changes:{}",navigation::code_key(code)),self.document.clone());
+        if view == View::Sessions {
+            if self.document.kind != View::SessionWork {
+                self.session_flow();
             }
+            self.focus = Focus::Reader;
+            return Ok(());
         }
-        if self.document.kind==View::Timeline {
-            if let Some(target)=&self.document.target {
-                if self.history_tabs.len()>=8{self.history_tabs.clear();}
-                self.history_tabs.insert(target.label(),self.document.clone());
+        if self.document.kind == view {
+            self.focus = Focus::Reader;
+            return Ok(());
+        }
+        if self.document.kind == View::Recorded
+            && let Some(code) = &self.code
+        {
+            if self.history_tabs.len() >= 8 {
+                self.history_tabs.clear();
             }
+            self.history_tabs.insert(
+                format!("changes:{}", navigation::code_key(code)),
+                self.document.clone(),
+            );
         }
-        let target=self.document.target.clone().or_else(||self.explorer.target());
+        if self.document.kind == View::Timeline
+            && let Some(target) = &self.document.target
+        {
+            if self.history_tabs.len() >= 8 {
+                self.history_tabs.clear();
+            }
+            self.history_tabs
+                .insert(target.label(), self.document.clone());
+        }
+        let target = self
+            .document
+            .target
+            .clone()
+            .or_else(|| self.explorer.target());
         match view {
             View::DecisionOverview => self.decision_home(),
             View::Diff | View::Recorded => {
-                if let Some(target)=target {
-                    let code=document::preview(&self.review,target);
-                    let key=format!("changes:{}",navigation::code_key(&code));
-                    let saved=self.history_tabs.get(&key).cloned();
-                    self.code=Some(code);
-                    if let Some(doc)=saved{self.document=doc;self.focus=Focus::Reader;}else{self.show_notes();}
-                } else {self.open(document::empty(&self.review));}
+                if let Some(target) = target {
+                    let code = document::preview(&self.review, target);
+                    let key = format!("changes:{}", navigation::code_key(&code));
+                    let saved = self.history_tabs.get(&key).cloned();
+                    self.code = Some(code);
+                    if let Some(doc) = saved {
+                        self.document = doc;
+                        self.focus = Focus::Reader;
+                    } else {
+                        self.show_notes();
+                    }
+                } else {
+                    self.open(document::empty(&self.review));
+                }
             }
             View::Explanation => {
-                if let Some(target)=target {
-                    let code=document::preview(&self.review,target.clone());
-                    let key=navigation::code_key(&code);
-                    if let Some(answer)=self.answer_for(&key){self.open(document::explanation(answer));}
-                    else{self.open(document::explanation_prompt(target));}
-                    self.code=Some(code);
+                if let Some(target) = target {
+                    let code = document::preview(&self.review, target.clone());
+                    let key = navigation::code_key(&code);
+                    if let Some(answer) = self.answer_for(&key) {
+                        self.open(document::explanation(answer));
+                    } else {
+                        self.open(document::explanation_prompt(target));
+                    }
+                    self.code = Some(code);
                 }
             }
             View::Timeline => {
-                if let Some(target)=target {
-                    let code=document::preview(&self.review,target.clone());
-                    let doc=self.history_tabs.get(&target.label()).cloned().unwrap_or_else(||history_views::context(&self.review,&self.sessions,target,false));
+                if let Some(target) = target {
+                    let code = document::preview(&self.review, target.clone());
+                    let doc = self
+                        .history_tabs
+                        .get(&target.label())
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            history_views::context(&self.review, &self.sessions, target, false)
+                        });
                     self.open(doc);
-                    self.code=Some(code);
+                    self.code = Some(code);
                 }
             }
             _ => {}
@@ -1269,7 +1725,6 @@ impl Workspace {
             &self.root,
             &service::ReviewOptions {
                 source: self.source.clone(),
-                ..Default::default()
             },
         )?;
         self.history_tabs.clear();
@@ -1282,8 +1737,17 @@ impl Workspace {
         self.code = None;
         self.document = document::empty(&self.review);
         self.select_latest_work();
-        self.decision_brief=crate::decisions::saved(&self.root,&self.decision_scope())?.map(Arc::new);
-        self.review["recent_code"]=serde_json::json!([]);self.explorer.rebuild(&self.review);
+        if self.selected_decision_work.as_ref().is_some_and(|work| {
+            self.selected_work.as_ref().is_none_or(|selected| {
+                selected["session"]["storage_key"] != work["session"]["storage_key"]
+            })
+        }) {
+            self.selected_decision_work = None;
+        }
+        self.decision_brief =
+            crate::decisions::saved(&self.root, &self.decision_scope())?.map(Arc::new);
+        self.review["recent_code"] = serde_json::json!([]);
+        self.explorer.rebuild(&self.review);
         self.decision_home();
         self.back.clear();
         self.message("Changes refreshed");
@@ -1351,35 +1815,68 @@ impl Workspace {
             }
             return Ok(false);
         }
-        if modifiers.contains(KeyModifiers::CONTROL) && matches!(code,KeyCode::Left|KeyCode::Right) {
-            let tabs=[View::DecisionOverview,View::Sessions];
-            let current=tabs.iter().position(|v|*v==self.section()).unwrap_or(0);
-            let next=if code==KeyCode::Right{(current+1)%tabs.len()}else{(current+tabs.len()-1)%tabs.len()};
-            self.change_view(tabs[next])?;return Ok(false);
+        if modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(code, KeyCode::Left | KeyCode::Right)
+        {
+            let tabs = [View::DecisionOverview, View::Sessions];
+            let current = tabs.iter().position(|v| *v == self.section()).unwrap_or(0);
+            let next = if code == KeyCode::Right {
+                (current + 1) % tabs.len()
+            } else {
+                (current + tabs.len() - 1) % tabs.len()
+            };
+            self.change_view(tabs[next])?;
+            return Ok(false);
         }
-        if modifiers.contains(KeyModifiers::ALT) && matches!(code,KeyCode::Left|KeyCode::Right) {
+        if modifiers.contains(KeyModifiers::ALT) && matches!(code, KeyCode::Left | KeyCode::Right) {
             if self.session_nav_focus {
-                self.change_session_page(if code == KeyCode::Right { self.session_page.saturating_add(1) } else { self.session_page.saturating_sub(1) });
+                self.change_session_page(if code == KeyCode::Right {
+                    self.session_page.saturating_add(1)
+                } else {
+                    self.session_page.saturating_sub(1)
+                });
                 return Ok(false);
             }
             if self.request_position().is_some() {
                 self.request_page(if code == KeyCode::Right { 1 } else { -1 })?;
                 return Ok(false);
             }
-            if let Some(page)=&self.document.pagination {
-                let index=if code==KeyCode::Right{page.index().saturating_add(1)}else{page.index().saturating_sub(1)};
+            if let Some(page) = &self.document.pagination {
+                let index = if code == KeyCode::Right {
+                    page.index().saturating_add(1)
+                } else {
+                    page.index().saturating_sub(1)
+                };
                 self.follow(Link::Page(index))?;
             }
             return Ok(false);
         }
         if matches!(code, KeyCode::Tab | KeyCode::BackTab) && self.section() != View::Recorded {
-            let current = if self.session_nav_focus { 1 } else if self.request_nav_focus { 2 } else { 0 };
-            let count = if self.request_position().is_some() { 3 } else { 2 };
-            let next = if code == KeyCode::BackTab { (current + count - 1) % count } else { (current + 1) % count };
+            let current = if self.session_nav_focus {
+                1
+            } else if self.request_nav_focus {
+                2
+            } else {
+                0
+            };
+            let count = if self.request_position().is_some() {
+                3
+            } else {
+                2
+            };
+            let next = if code == KeyCode::BackTab {
+                (current + count - 1) % count
+            } else {
+                (current + 1) % count
+            };
             self.session_nav_focus = next == 1;
             self.request_nav_focus = next == 2;
-            if self.session_nav_focus { self.step_session_navigation(0); }
-            if self.request_nav_focus { self.step_request_navigation(0); }
+            if self.session_nav_focus {
+                self.step_session_navigation(0);
+            }
+            if self.request_nav_focus {
+                self.step_request_navigation(0);
+            }
             return Ok(false);
         }
         if matches!(code, KeyCode::Char('[' | ']')) {
@@ -1397,14 +1894,31 @@ impl Workspace {
                 KeyCode::Enter | KeyCode::Right => {
                     if let Some((selected, _)) = self.request_position() {
                         let size = session_flow::REQUESTS_PER_PAGE;
-                        self.follow(Link::Page(selected / size * size + self.request_nav.selected().unwrap_or(selected % size)))?;
+                        self.follow(Link::Page(
+                            selected / size * size
+                                + self.request_nav.selected().unwrap_or(selected % size),
+                        ))?;
                     }
                     self.request_nav_focus = false;
                 }
                 KeyCode::Esc => self.request_nav_focus = false,
-                _ => { self.request_nav_focus = false; }
+                _ => {
+                    self.request_nav_focus = false;
+                }
             }
-            if matches!(code, KeyCode::Up | KeyCode::Down | KeyCode::Home | KeyCode::End | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Enter | KeyCode::Right | KeyCode::Esc | KeyCode::Char('j' | 'k')) {
+            if matches!(
+                code,
+                KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::Home
+                    | KeyCode::End
+                    | KeyCode::PageUp
+                    | KeyCode::PageDown
+                    | KeyCode::Enter
+                    | KeyCode::Right
+                    | KeyCode::Esc
+                    | KeyCode::Char('j' | 'k')
+            ) {
                 return Ok(false);
             }
         }
@@ -1417,15 +1931,36 @@ impl Workspace {
                 KeyCode::PageUp => self.change_session_page(self.session_page.saturating_sub(1)),
                 KeyCode::PageDown => self.change_session_page(self.session_page.saturating_add(1)),
                 KeyCode::Enter | KeyCode::Right => {
-                    if let Some((key, _)) = self.navigation_sessions().get(self.session_page * session_views::SESSIONS_PER_PAGE + self.session_nav.selected().unwrap_or(0)).cloned() {
+                    if let Some((key, _)) = self
+                        .navigation_sessions()
+                        .get(
+                            self.session_page * session_views::SESSIONS_PER_PAGE
+                                + self.session_nav.selected().unwrap_or(0),
+                        )
+                        .cloned()
+                    {
                         self.select_session(&key)?;
                     }
                     self.session_nav_focus = false;
                 }
                 KeyCode::Esc => self.session_nav_focus = false,
-                _ => { self.session_nav_focus = false; }
+                _ => {
+                    self.session_nav_focus = false;
+                }
             }
-            if matches!(code, KeyCode::Up | KeyCode::Down | KeyCode::Home | KeyCode::End | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Enter | KeyCode::Right | KeyCode::Esc | KeyCode::Char('j' | 'k')) {
+            if matches!(
+                code,
+                KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::Home
+                    | KeyCode::End
+                    | KeyCode::PageUp
+                    | KeyCode::PageDown
+                    | KeyCode::Enter
+                    | KeyCode::Right
+                    | KeyCode::Esc
+                    | KeyCode::Char('j' | 'k')
+            ) {
                 return Ok(false);
             }
         }
@@ -1438,8 +1973,12 @@ impl Workspace {
             KeyCode::Char('/') => self.edit(Input::Command),
             KeyCode::Char('g') => self.open_commits()?,
             KeyCode::Char('i') => {
-                if self.document.artifact.as_ref().is_some_and(|a|a["context"]=="decision_brief" || a["context"]=="session_work") {
-                    self.message("Inspect captured evidence, or open Decisions to request an assessment");
+                if self.document.artifact.as_ref().is_some_and(|a| {
+                    a["context"] == "decision_brief" || a["context"] == "session_work"
+                }) {
+                    self.message(
+                        "Inspect captured evidence, or open Decisions to request an assessment",
+                    );
                 } else if self.document.artifact.is_some() {
                     self.focus = Focus::Reader;
                     self.edit(Input::Question);
@@ -1449,7 +1988,14 @@ impl Workspace {
             }
             KeyCode::Char('f') => self.edit(Input::Filter),
             // Tab toggles Changes and Notes; Shift+Tab returns to the file tree.
-            KeyCode::Tab | KeyCode::BackTab if (self.selected_work.is_some() || matches!(self.document.kind,View::DecisionOverview|View::SessionWork|View::Sessions)) && self.section()!=View::Recorded => {
+            KeyCode::Tab | KeyCode::BackTab
+                if (self.selected_work.is_some()
+                    || matches!(
+                        self.document.kind,
+                        View::DecisionOverview | View::SessionWork | View::Sessions
+                    ))
+                    && self.section() != View::Recorded =>
+            {
                 self.change_view(View::Sessions)?;
             }
             KeyCode::BackTab => {
@@ -1458,7 +2004,9 @@ impl Workspace {
                 self.focus = Focus::Files;
             }
             KeyCode::Tab => {
-                if self.section()!=View::Recorded {self.change_view(View::Recorded)?;}
+                if self.section() != View::Recorded {
+                    self.change_view(View::Recorded)?;
+                }
                 self.focus = match self.focus {
                     Focus::Files => Focus::Reader,
                     Focus::Reader => {
@@ -1528,9 +2076,16 @@ impl Workspace {
                     self.document.scroll = self.scroll_max;
                 }
             }
-            KeyCode::Char('b') if self.selected_work.is_some() || self.section()!=View::Recorded => self.session_picker(),
+            KeyCode::Char('b')
+                if self.selected_work.is_some() || self.section() != View::Recorded =>
+            {
+                self.session_picker()
+            }
             KeyCode::Char('b') => {
-                if self.section()!=View::Recorded {self.change_view(View::Recorded)?;self.sidebar=false;}
+                if self.section() != View::Recorded {
+                    self.change_view(View::Recorded)?;
+                    self.sidebar = false;
+                }
                 self.sidebar = !self.sidebar;
                 self.focus = if self.sidebar {
                     Focus::Files
@@ -1539,14 +2094,42 @@ impl Workspace {
                 };
             }
             KeyCode::Char('z') => {
-                let codes:Vec<_>=self.document.sources.iter().filter_map(|(_,link)|if let Link::Disclosure(id)=link{id.starts_with("code-block-").then_some(id.clone())}else{None}).collect();
-                let expand=codes.iter().any(|id|!self.document.expanded.contains(id));
-                for id in &codes{if self.document.expanded.contains(id)!=expand{self.document.toggle_disclosure(id);}}
-                self.document.source_selection=None;
-                self.message(if codes.is_empty(){"No code blocks in this view"}else if expand{"Code blocks expanded"}else{"Code blocks collapsed"});
+                let codes: Vec<_> = self
+                    .document
+                    .sources
+                    .iter()
+                    .filter_map(|(_, link)| {
+                        if let Link::Disclosure(id) = link {
+                            id.starts_with("code-block-").then_some(id.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let expand = codes.iter().any(|id| !self.document.expanded.contains(id));
+                for id in &codes {
+                    if self.document.expanded.contains(id) != expand {
+                        self.document.toggle_disclosure(id);
+                    }
+                }
+                self.document.source_selection = None;
+                self.message(if codes.is_empty() {
+                    "No code blocks in this view"
+                } else if expand {
+                    "Code blocks expanded"
+                } else {
+                    "Code blocks collapsed"
+                });
             }
             KeyCode::Char('d') => self.decision_home(),
-            KeyCode::Char('e') if matches!(self.document.kind,View::DecisionOverview|View::SessionWork) => self.discover_decisions(),
+            KeyCode::Char('e')
+                if matches!(
+                    self.document.kind,
+                    View::DecisionOverview | View::SessionWork
+                ) =>
+            {
+                self.discover_decisions()
+            }
             KeyCode::Char('e') => self.why_change(false),
             KeyCode::Char('w') => {
                 self.brief = !self.brief;
@@ -1559,7 +2142,14 @@ impl Workspace {
             KeyCode::Char('t') => self.change_view(View::Sessions)?,
             KeyCode::Char('x') => self.cancel(),
             KeyCode::Char('s') if !self.document.sources.is_empty() => self.select_source(0),
-            KeyCode::Char('R') if matches!(self.document.kind,View::DecisionOverview|View::SessionWork) => self.discover_decisions(),
+            KeyCode::Char('R')
+                if matches!(
+                    self.document.kind,
+                    View::DecisionOverview | View::SessionWork
+                ) =>
+            {
+                self.discover_decisions()
+            }
             KeyCode::Char('R') => self.why_change(true),
             KeyCode::Char('p') => self.saved_explanation()?,
             KeyCode::Char('m') => self.mark(),
@@ -1576,10 +2166,29 @@ impl Workspace {
                         self.open_evidence(self.document.source_selection.unwrap_or(0))?;
                     }
                 } else if self.focus == Focus::Reader && self.document.source_selection.is_some() {
-                    let link = self.document.sources[self.document.source_selection.unwrap()].1.clone();
+                    let link = self.document.sources[self.document.source_selection.unwrap()]
+                        .1
+                        .clone();
                     self.follow(link)?;
                 } else if self.focus == Focus::Reader
-                    && matches!(self.document.kind,View::SessionWork|View::SessionImplementation|View::SessionComparison|View::DecisionOverview|View::DecisionDetail|View::Recorded|View::Explanation|View::Sessions|View::Timeline|View::Decisions|View::Session|View::Turn|View::Evidence|View::Original|View::Commit)
+                    && matches!(
+                        self.document.kind,
+                        View::SessionWork
+                            | View::SessionImplementation
+                            | View::SessionComparison
+                            | View::DecisionOverview
+                            | View::DecisionDetail
+                            | View::Recorded
+                            | View::Explanation
+                            | View::Sessions
+                            | View::Timeline
+                            | View::Decisions
+                            | View::Session
+                            | View::Turn
+                            | View::Evidence
+                            | View::Original
+                            | View::Commit
+                    )
                     && !self.document.sources.is_empty()
                 {
                     self.select_source(0);
@@ -1587,7 +2196,7 @@ impl Workspace {
                     && self
                         .explorer
                         .selected()
-                        .is_some_and(|r| matches!(r.kind,Kind::Folder|Kind::Section))
+                        .is_some_and(|r| matches!(r.kind, Kind::Folder | Kind::Section))
                 {
                     self.explorer.toggle(&self.review);
                 } else {
@@ -1599,13 +2208,24 @@ impl Workspace {
                 }
             }
             KeyCode::Char(c @ '1'..='9') => {
-                let index=c.to_digit(10).unwrap() as usize-1;
-                if self.document.kind==View::DecisionOverview {
+                let index = c.to_digit(10).unwrap() as usize - 1;
+                if self.document.kind == View::DecisionOverview {
                     self.follow(Link::Decision(index))?;
-                } else if self.document.kind==View::DecisionDetail {
-                    let link=self.document.sources.iter().filter(|(_,link)|matches!(link,Link::Source(_))).nth(index).map(|(_,link)|link.clone()).ok_or_else(||anyhow::anyhow!("No evidence at this position for this decision"))?;
+                } else if self.document.kind == View::DecisionDetail {
+                    let link = self
+                        .document
+                        .sources
+                        .iter()
+                        .filter(|(_, link)| matches!(link, Link::Source(_)))
+                        .nth(index)
+                        .map(|(_, link)| link.clone())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("No evidence at this position for this decision")
+                        })?;
                     self.follow(link)?;
-                } else {self.open_evidence(index)?;}
+                } else {
+                    self.open_evidence(index)?;
+                }
             }
             KeyCode::Esc => {
                 if self.focus == Focus::Reader
@@ -1643,9 +2263,15 @@ impl Workspace {
                 self.session_nav_focus = false;
                 self.request_nav_focus = false;
                 if self.areas.sessions.contains(point) {
-                    let row = self.session_nav.offset() + usize::from(event.row - self.areas.sessions.y);
+                    let row =
+                        self.session_nav.offset() + usize::from(event.row - self.areas.sessions.y);
                     let index = self.session_page * session_views::SESSIONS_PER_PAGE + row;
-                    if let Some((key, _)) = self.navigation_sessions().get(index).filter(|_| row < session_views::SESSIONS_PER_PAGE).cloned() {
+                    if let Some((key, _)) = self
+                        .navigation_sessions()
+                        .get(index)
+                        .filter(|_| row < session_views::SESSIONS_PER_PAGE)
+                        .cloned()
+                    {
                         self.session_nav.select(Some(row));
                         self.select_session(&key)?;
                     }
@@ -1678,7 +2304,11 @@ impl Workspace {
                         self.explorer.state.select(Some(index));
                         self.focus = Focus::Files;
                         // A click previews the file (or toggles a folder) without leaving the tree.
-                        if self.explorer.selected().is_some_and(|r| matches!(r.kind,Kind::Folder|Kind::Section)) {
+                        if self
+                            .explorer
+                            .selected()
+                            .is_some_and(|r| matches!(r.kind, Kind::Folder | Kind::Section))
+                        {
                             self.explorer.toggle(&self.review);
                         }
                         self.preview_selection();

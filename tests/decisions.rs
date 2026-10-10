@@ -91,7 +91,10 @@ fn discovery_child() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let rows = [
         json!({"type":"session_meta","payload":{"id":"coding","cwd":canonical,"timestamp":"2024-01-01T00:00:00Z"}}),
+        json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"First request"}]}}),
         json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"edit-1","input":"*** Begin Patch\n*** Add File: worker.rs\n+SESSION_CAPTURE_ONLY\n*** End Patch"}}),
+        json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"SECOND_REQUEST_ONLY"}]}}),
+        json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"edit-2","input":"*** Begin Patch\n*** Add File: worker.rs\n+SECOND_EDIT_ONLY\n*** End Patch"}}),
     ];
     std::fs::write(
         &path,
@@ -125,6 +128,26 @@ fn discovery_child() {
     std::fs::remove_file(root.join("worker.rs")).unwrap();
     decisions::run(root, &work, "codex", &cancel, |_| {}).unwrap();
     assert!(decisions::saved(root, &work).unwrap().is_some());
+    let mut scoped = wy::session_work::scoped(
+        &r,
+        &sessions[0],
+        wy::session_work::WorkSelection::Requests { ordinals: vec![0] },
+    )
+    .unwrap();
+    assert!(decisions::saved(root, &scoped).unwrap().is_none());
+    // Caller data is not trusted: rebuild the selected requests from the pinned snapshot.
+    scoped["edits"] = work["edits"].clone();
+    let scoped_brief = decisions::run(root, &scoped, "codex", &cancel, |_| {}).unwrap();
+    let prompt = std::fs::read_to_string(root.join(".wy-test-bin/prompt.txt")).unwrap();
+    assert!(prompt.contains("SESSION_CAPTURE_ONLY"));
+    assert!(!prompt.contains("SECOND_REQUEST_ONLY"));
+    assert!(!prompt.contains("SECOND_EDIT_ONLY"));
+    assert_ne!(scoped_brief["scope_key"], brief["scope_key"]);
+    assert!(decisions::saved(root, &scoped).unwrap().is_some());
+    output["decisions"][0]["evidence_ids"] =
+        json!([format!("session-edit-{}", wy::s(&work["edits"][1]["id"]))]);
+    std::fs::write(root.join(".wy-test-bin/response.json"), output.to_string()).unwrap();
+    assert!(decisions::run(root, &scoped, "codex", &cancel, |_| {}).is_err());
 }
 
 fn review() -> Value {

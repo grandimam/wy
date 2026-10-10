@@ -20,7 +20,13 @@ fn repo() -> tempfile::TempDir {
 
 /// Same review the app runs on startup and on `r`.
 fn capture(root: &Path, source: &str) -> Value {
-    service::review(root, &service::ReviewOptions { source: source.into() }).unwrap()
+    service::review(
+        root,
+        &service::ReviewOptions {
+            source: source.into(),
+        },
+    )
+    .unwrap()
 }
 
 /// Commit lookup used by `g` and `/commit`.
@@ -107,7 +113,10 @@ fn partial_or_modified_commits_do_not_automatically_match() {
     // A user can explicitly associate the broader review with a partial commit.
     let linked = link(root, &commit, reviewed["id"].as_str()).unwrap();
     assert_eq!(linked["association"], "explicit");
-    assert_eq!(lookup(root, &commit).unwrap()["sessions"][0]["id"], "coding");
+    assert_eq!(
+        lookup(root, &commit).unwrap()["sessions"][0]["id"],
+        "coding"
+    );
 }
 
 #[test]

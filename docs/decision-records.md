@@ -65,6 +65,14 @@ User messages and compaction summaries cannot declare recorded decisions.
 
 ## Selected-session decision overview
 
+Decision discovery can be narrowed to selected requests within a session. Open
+**Explain this request’s decisions** from request Detail, or use
+`/decisions requests 2-4` to include adjacent requests (one-based positions).
+`/decisions session` restores the full-session scope. Opening a scope does not
+invoke a model. Records, captured edits, and rationale are filtered to the same
+selection; file overlap does not import another request's explanations. Request
+boundaries are explicit selection units, not automatically inferred task boundaries.
+
 wy opens on decisions in the **latest dated captured session**, without asserting
 that the session is currently active. `d` returns to decisions; `t` opens the
 selected session's implementation flow; `b` or `/sessions` chooses another session.
@@ -85,7 +93,8 @@ file must cite a captured edit from the selected session. Recorded rationale
 requires an exact original assistant quote; validation checks references, not
 semantic truth. An input with unconfirmed execution is not a proven implementation.
 
-Briefs are cached by repository and pinned session snapshot, independently of Git
+Briefs are cached by repository, pinned session snapshot, normalized request selection,
+and analysis version, independently of Git
 HEAD and current files. Committing or deleting files does not erase captured work;
 new captured session content invalidates the cached brief. Current-code comparison
 is an explicit drill-down, never part of the session inference packet. Partial

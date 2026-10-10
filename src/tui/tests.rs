@@ -20,9 +20,23 @@ fn review() -> Value {
 fn workspace() -> Workspace {
     Workspace::from_review(Path::new("/example/payments"), review())
 }
-fn expand_details(doc:&mut Document) {
-    let ids:Vec<_>=doc.sources.iter().filter_map(|(_,link)|if let Link::Disclosure(id)=link{Some(id.clone())}else{None}).collect();
-    for id in ids {if !doc.expanded.contains(&id){doc.toggle_disclosure(&id);}}
+fn expand_details(doc: &mut Document) {
+    let ids: Vec<_> = doc
+        .sources
+        .iter()
+        .filter_map(|(_, link)| {
+            if let Link::Disclosure(id) = link {
+                Some(id.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    for id in ids {
+        if !doc.expanded.contains(&id) {
+            doc.toggle_disclosure(&id);
+        }
+    }
 }
 fn press(app: &mut Workspace, key: KeyCode) {
     app.key(key, KeyModifiers::NONE).unwrap();
@@ -189,7 +203,12 @@ fn selection_previews_the_diff_without_requests_or_history_noise() {
     }
     assert!(app.job.is_none());
     assert_eq!(app.document.kind, View::Explanation);
-    assert!(app.document.sources.iter().any(|(_,link)|*link==Link::Explain));
+    assert!(
+        app.document
+            .sources
+            .iter()
+            .any(|(_, link)| *link == Link::Explain)
+    );
 }
 #[test]
 fn why_requests_use_the_selected_change_and_refresh_the_original_scope() {
@@ -275,7 +294,13 @@ fn recorded_reason_leads_with_the_original_quote_and_openable_reference() {
     );
     assert!(!text.contains("No explicit reason"));
     let source = document::evidence(answer, 0).unwrap();
-    assert!(source.lines.iter().flat_map(|line| &line.spans).any(|span| span.content == quote));
+    assert!(
+        source
+            .lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .any(|span| span.content == quote)
+    );
     let mut app = workspace();
     app.open(doc);
     preview("recorded-reason", &screen(&mut app, 120, 34).1);
@@ -342,7 +367,6 @@ fn saved_explanations_and_back_check_for_edits_after_generation() {
         root.path(),
         &service::ReviewOptions {
             source: "none".into(),
-            ..Default::default()
         },
     )
     .unwrap();
@@ -632,9 +656,12 @@ fn session_code_appears_without_a_git_diff_and_keeps_a_distinct_answer() {
     );
     // Historical file contents start collapsed and can be opened explicitly.
     let (text, _) = screen(&mut app, 140, 50);
-    assert!(text.contains("Code saved in this session"));assert!(!text.contains("fn generated()"));
-    press(&mut app,KeyCode::Char('z'));assert!(!app.document.code_gutters.is_empty());
-    press(&mut app,KeyCode::Char('z'));assert!(app.document.code_gutters.is_empty());
+    assert!(text.contains("Code saved in this session"));
+    assert!(!text.contains("fn generated()"));
+    press(&mut app, KeyCode::Char('z'));
+    assert!(!app.document.code_gutters.is_empty());
+    press(&mut app, KeyCode::Char('z'));
+    assert!(app.document.code_gutters.is_empty());
     expand_details(&mut app.document);
     let (text, terminal) = screen(&mut app, 140, 50);
     assert!(text.contains("Earlier sessions"));
@@ -731,7 +758,12 @@ fn source_navigation_reaches_references_beyond_nine() {
         press(&mut app, KeyCode::Down);
     }
     screen(&mut app, 120, 24);
-    assert!(app.areas.sources.iter().any(|(_, link)| *link == Link::Source(11)));
+    assert!(
+        app.areas
+            .sources
+            .iter()
+            .any(|(_, link)| *link == Link::Source(11))
+    );
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.document.title, "[12] src/evidence_11.rs");
 }
@@ -777,8 +809,14 @@ fn automatic_notes_are_offline_cited_and_offer_enrichment() {
     let (collapsed, _) = screen(&mut app, 140, 38);
     assert!(collapsed.contains("Conversation mentioning this file"));
     assert!(!collapsed.contains("because repeated reads"));
-    assert!(app.document.sources.iter().any(|(_,link)|*link==Link::Explain));
-    app.follow(Link::Disclosure("related-conversation".into())).unwrap();
+    assert!(
+        app.document
+            .sources
+            .iter()
+            .any(|(_, link)| *link == Link::Explain)
+    );
+    app.follow(Link::Disclosure("related-conversation".into()))
+        .unwrap();
     let (text, terminal) = screen(&mut app, 140, 60);
     assert!(text.contains("because"));
     assert!(
@@ -796,7 +834,11 @@ fn automatic_notes_are_offline_cited_and_offer_enrichment() {
     assert!(app.job.is_none());
     let options = app.why_options(false).unwrap();
     assert_eq!(options.note_refs.len(), 2);
-    assert!(!options.question.contains("Notes about the captured excerpts"));
+    assert!(
+        !options
+            .question
+            .contains("Notes about the captured excerpts")
+    );
     preview("automatic-notes", &terminal);
     press(&mut app, KeyCode::Char('2'));
     assert_eq!(app.document.kind, View::Evidence);
@@ -812,10 +854,9 @@ fn automatic_notes_are_offline_cited_and_offer_enrichment() {
         options.note_refs
     );
     assert!(
-        app.question_options("What is missing?")
+        !app.question_options("What is missing?")
             .question
-            .find("Previous assessment")
-            .is_none()
+            .contains("Previous assessment")
     );
     assert!(app.job.is_none());
 }
@@ -980,7 +1021,6 @@ fn commit_workspace_with_rows(extra: &[Value]) -> (tempfile::TempDir, Workspace,
         root,
         &service::ReviewOptions {
             source: "codex".into(),
-            ..Default::default()
         },
     )
     .unwrap();
@@ -1087,11 +1127,21 @@ fn compacted_commit_sources_open_pinned_originals_and_show_missing_turns() {
     assert!(text.contains("Session summary"));
     assert!(!text.contains("Original turn unavailable"));
     expand_details(&mut app.document);
-    let details=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    let details = app
+        .document
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(details.contains("Original turn unavailable"));
     assert_eq!(app.document.originals.len(), 1);
     preview("commit-provenance", &terminal);
-    app.document.source_selection=app.document.sources.iter().position(|(_,link)|*link==Link::Source(0));
+    app.document.source_selection = app
+        .document
+        .sources
+        .iter()
+        .position(|(_, link)| *link == Link::Source(0));
     assert!(screen(&mut app, 140, 42).0.contains("Enter open"));
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.document.kind, View::Original);
@@ -1105,9 +1155,19 @@ fn compacted_commit_sources_open_pinned_originals_and_show_missing_turns() {
     assert!(app.job.is_none());
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.document.kind, View::Commit);
-    app.document.source_selection=app.document.sources.iter().position(|(_,link)|*link==Link::Source(0));
+    app.document.source_selection = app
+        .document
+        .sources
+        .iter()
+        .position(|(_, link)| *link == Link::Source(0));
     screen(&mut app, 140, 42);
-    let source = app.areas.sources.iter().find(|(_,link)|*link==Link::Source(0)).unwrap().0;
+    let source = app
+        .areas
+        .sources
+        .iter()
+        .find(|(_, link)| *link == Link::Source(0))
+        .unwrap()
+        .0;
     mouse_at(
         &mut app,
         MouseEventKind::Down(MouseButton::Left),
@@ -1167,11 +1227,21 @@ fn commit_picker_handles_empty_repositories_and_long_lists_on_small_screens() {
     let (_, _) = screen(&mut app, 40, 16);
     assert_eq!(app.document.source_selection, Some(49));
     assert!(app.document.scroll > 0);
-    assert!(app.areas.sources.iter().any(|(_, link)| *link == Link::Source(49)));
+    assert!(
+        app.areas
+            .sources
+            .iter()
+            .any(|(_, link)| *link == Link::Source(49))
+    );
     press(&mut app, KeyCode::Home);
     screen(&mut app, 40, 16);
     assert_eq!(app.document.scroll, 0);
-    assert!(app.areas.sources.iter().any(|(_, link)| *link == Link::Source(0)));
+    assert!(
+        app.areas
+            .sources
+            .iter()
+            .any(|(_, link)| *link == Link::Source(0))
+    );
 }
 
 #[test]
@@ -1252,95 +1322,195 @@ fn keyboard_resizes_active_dividers_preserves_typing_and_can_reset() {
 
 #[test]
 fn history_views_expose_source_dates_coverage_and_safe_preview_actions() {
-    let dir=tempfile::tempdir().unwrap();
-    let mut app=workspace();app.root=dir.path().into();
-    app.review["root"]=json!(dir.path());app.review["id"]=json!("review-test");
-    app.review["created_at"]=json!("2026-10-10T10:00:00Z");
-    app.review["coverage"]=json!([{"agent":"pi","enabled":true,"discovered":3,"captured":1,"skipped_budget":2,"skipped_unreadable":0,"skipped_scope":0,"duplicates":0,"issues":[]}]);
-    app.sessions=vec![json!({"id":"old-session","agent":"pi","started_at":"2024-01-01T00:00:00Z","events":[{"id":"u","kind":"user","text":"Change src/cache.rs","timestamp":"2024-01-02T00:00:00Z"}]})];
-    run_command(&mut app,"/coverage").unwrap();
-    assert_eq!(app.document.kind,View::Coverage);
-    let text=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-    assert!(text.contains("2026-10-10"));assert!(text.contains("Budget exclusions 2"));
-    app.review["sessions"]=json!([{"storage_key":crate::session_work::snapshot_key(&app.sessions[0]),"id":"old-session","agent":"pi"}]);
-    run_command(&mut app,"/sessions").unwrap();
-    let text=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-    assert!(text.contains("latest captured"));assert!(text.contains("old-session"));
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = workspace();
+    app.root = dir.path().into();
+    app.review["root"] = json!(dir.path());
+    app.review["id"] = json!("review-test");
+    app.review["created_at"] = json!("2026-10-10T10:00:00Z");
+    app.review["coverage"] = json!([{"agent":"pi","enabled":true,"discovered":3,"captured":1,"skipped_budget":2,"skipped_unreadable":0,"skipped_scope":0,"duplicates":0,"issues":[]}]);
+    app.sessions = vec![
+        json!({"id":"old-session","agent":"pi","started_at":"2024-01-01T00:00:00Z","events":[{"id":"u","kind":"user","text":"Change src/cache.rs","timestamp":"2024-01-02T00:00:00Z"}]}),
+    ];
+    run_command(&mut app, "/coverage").unwrap();
+    assert_eq!(app.document.kind, View::Coverage);
+    let text = app
+        .document
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("2026-10-10"));
+    assert!(text.contains("Budget exclusions 2"));
+    app.review["sessions"] = json!([{"storage_key":crate::session_work::snapshot_key(&app.sessions[0]),"id":"old-session","agent":"pi"}]);
+    run_command(&mut app, "/sessions").unwrap();
+    let text = app
+        .document
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("latest captured"));
+    assert!(text.contains("old-session"));
     assert!(text.contains(&crate::insights::local_date(&json!("2024-01-02T00:00:00Z"))));
-    run_command(&mut app,"/timeline src/cache.rs").unwrap();assert_eq!(app.document.kind,View::Timeline);
-    run_command(&mut app,"/decisions src/cache.rs").unwrap();assert_eq!(app.document.kind,View::Decisions);
-    assert!(run_command(&mut app,"/export save").is_err());
-    run_command(&mut app,"/export").unwrap();assert_eq!(app.document.kind,View::Export);
-    let text=s(&app.document.artifact.as_ref().unwrap()["export_text"]).to_owned();
-    run_command(&mut app,"/export save").unwrap();
-    let path=dir.path().join(".wy").join(format!("review-brief-{}.md",&security::digest(&text)[..16]));
-    assert_eq!(std::fs::read_to_string(path).unwrap(),text);
-    run_command(&mut app,"/setup").unwrap();run_command(&mut app,"/setup save").unwrap();
+    run_command(&mut app, "/timeline src/cache.rs").unwrap();
+    assert_eq!(app.document.kind, View::Timeline);
+    run_command(&mut app, "/decisions src/cache.rs").unwrap();
+    assert_eq!(app.document.kind, View::Decisions);
+    assert!(run_command(&mut app, "/export save").is_err());
+    run_command(&mut app, "/export").unwrap();
+    assert_eq!(app.document.kind, View::Export);
+    let text = s(&app.document.artifact.as_ref().unwrap()["export_text"]).to_owned();
+    run_command(&mut app, "/export save").unwrap();
+    let path = dir.path().join(".wy").join(format!(
+        "review-brief-{}.md",
+        &security::digest(&text)[..16]
+    ));
+    assert_eq!(std::fs::read_to_string(path).unwrap(), text);
+    run_command(&mut app, "/setup").unwrap();
+    run_command(&mut app, "/setup save").unwrap();
     assert!(dir.path().join(".wy/decision-instructions.md").exists());
     assert!(!dir.path().join("AGENTS.md").exists());
-    screen(&mut app,50,18);
+    screen(&mut app, 50, 18);
     assert!(app.job.is_none());
 }
 
 #[test]
 fn recorded_view_labels_nearby_context_and_old_edit_dates() {
-    let message=json!({"kind":"assistant","text":"I will create a cache.","provenance":{"source_type":"original_turn"}});
-    let mut doc=Document::new(View::Recorded,"Cache");
+    let message = json!({"kind":"assistant","text":"I will create a cache.","provenance":{"source_type":"original_turn"}});
+    let mut doc = Document::new(View::Recorded, "Cache");
     // Exercise through the public-to-TUI history session view as well as the turn.
-    let session=json!({"id":"old","agent":"pi","started_at":"2024-01-01T00:00:00Z","events":[message,{"id":"edit","kind":"change","timestamp":"2024-01-02T00:00:00Z"}]});
+    let session = json!({"id":"old","agent":"pi","started_at":"2024-01-01T00:00:00Z","events":[message,{"id":"edit","kind":"change","timestamp":"2024-01-02T00:00:00Z"}]});
     doc.lines.extend(history_views::session(&session).lines);
-    let text=doc.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-    assert!(text.contains("AGENT MESSAGE"));assert!(text.contains("2024-01-01"));
+    let text = doc
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("AGENT MESSAGE"));
+    assert!(text.contains("2024-01-01"));
     assert!(!text.contains("not proof of causation"));
-    let turn=document::turn(&session,&json!({"event_id":"edit","timestamp":"2024-01-02T00:00:00Z","file":"src/cache.rs"}));
-    let text=turn.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    let turn = document::turn(
+        &session,
+        &json!({"event_id":"edit","timestamp":"2024-01-02T00:00:00Z","file":"src/cache.rs"}),
+    );
+    let text = turn
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(text.contains("Selected edit recorded: 2024-01-02"));
 }
 
 #[test]
 fn reader_groups_code_with_collapsible_messages_and_supporting_material() {
-    let dir=tempfile::tempdir().unwrap();
-    let root=dir.path().canonicalize().unwrap();
-    assert!(std::process::Command::new("git").args(["init","-q"]).arg(&root).status().unwrap().success());
-    let session=json!({"id":"s1","agent":"pi","path":"pi.jsonl","cwd":root,"events":[
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(&root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let session = json!({"id":"s1","agent":"pi","path":"pi.jsonl","cwd":root,"events":[
         {"id":"u0","kind":"user","text":"Please cache repeated reads so startup stops refetching the same file.","timestamp":"2026-10-10T08:00:00Z","provenance":{"source_type":"original_turn"}},
         {"id":"u1","kind":"user","text":"yes do it","timestamp":"2026-10-10T08:01:00Z","provenance":{"source_type":"original_turn"}},
         {"id":"r","kind":"rationale","text":"Maybe a HashMap. **Bold idea**","timestamp":"2026-10-10T08:01:30Z","provenance":{"source_type":"unknown"}},
         {"id":"a","kind":"assistant","text":"I'll keep responses in memory. Repeated reads then reuse a response.","timestamp":"2026-10-10T08:02:00Z","model":"m1","provenance":{"source_type":"original_turn"}},
         {"id":"e","kind":"change","tool":"Write","text":"","call_id":"c","timestamp":"2026-10-10T08:03:00Z","files":["src/cache.rs"],"code_edits":[{"file":"src/cache.rs","format":"code","operation":"write","text":"cache.get(key)"}],"provenance":{"source_type":"tool_record"}}
     ]});
-    let mut app=workspace();app.root=root.clone();app.review["root"]=json!(root);app.sessions=vec![session];
-    let code=document::preview(&app.review,Target{file:"src/cache.rs".into(),symbol:None,line:1});
-    let mut doc=document::recorded(&app.review,&app.sessions,&code,false);
-    let collapsed=doc.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-    assert!(collapsed.contains("▶ Agent response"));assert!(!collapsed.contains("I'll keep responses"));
-    assert!(collapsed.find("Please cache repeated reads").unwrap()<collapsed.find("cache.get(key)").unwrap());
-    assert!(collapsed.find("cache.get(key)").unwrap()<collapsed.find("Agent response").unwrap());
+    let mut app = workspace();
+    app.root = root.clone();
+    app.review["root"] = json!(root);
+    app.sessions = vec![session];
+    let code = document::preview(
+        &app.review,
+        Target {
+            file: "src/cache.rs".into(),
+            symbol: None,
+            line: 1,
+        },
+    );
+    let mut doc = document::recorded(&app.review, &app.sessions, &code, false);
+    let collapsed = doc
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(collapsed.contains("▶ Agent response"));
+    assert!(!collapsed.contains("I'll keep responses"));
+    assert!(
+        collapsed.find("Please cache repeated reads").unwrap()
+            < collapsed.find("cache.get(key)").unwrap()
+    );
+    assert!(collapsed.find("cache.get(key)").unwrap() < collapsed.find("Agent response").unwrap());
     assert!(collapsed.contains("Earlier request in this session · context only"));
-    assert!(!collapsed.contains("▶ Raw patch"));assert!(!collapsed.contains("▶ Session details"));
+    assert!(!collapsed.contains("▶ Raw patch"));
+    assert!(!collapsed.contains("▶ Session details"));
     assert!(collapsed.contains("▶ Technical details"));
-    assert!(collapsed.find("Agent response").unwrap()<collapsed.find("View original chat").unwrap());
-    assert!(collapsed.find("View original chat").unwrap()<collapsed.find("Technical details").unwrap());
-    app.document=doc.clone();app.focus=Focus::Reader;app.sidebar=false;
-    for width in [110,40,32]{
-        let (text,terminal)=screen(&mut app,width,60);
-        assert!(text.contains("╭"));assert!(text.contains("╮"));assert!(text.contains("╰"));assert!(text.contains("╯"));
+    assert!(
+        collapsed.find("Agent response").unwrap() < collapsed.find("View original chat").unwrap()
+    );
+    assert!(
+        collapsed.find("View original chat").unwrap()
+            < collapsed.find("Technical details").unwrap()
+    );
+    app.document = doc.clone();
+    app.focus = Focus::Reader;
+    app.sidebar = false;
+    for width in [110, 40, 32] {
+        let (text, terminal) = screen(&mut app, width, 60);
+        assert!(text.contains("╭"));
+        assert!(text.contains("╮"));
+        assert!(text.contains("╰"));
+        assert!(text.contains("╯"));
         assert!(text.contains("Please cache"));
-        let buffer=terminal.backend().buffer();
-        let at=|symbol:&str|buffer.content.iter().position(|cell|cell.symbol()==symbol).unwrap();
-        let left=at("╭");let right=at("╮");let bottom=at("╯");
-        assert_eq!(right%width as usize,bottom%width as usize);
-        for row in left/width as usize+1..bottom/width as usize{
-            assert_eq!(buffer.content[row*width as usize+left%width as usize].symbol(),"│");
-            assert_eq!(buffer.content[row*width as usize+right%width as usize].symbol(),"│");
+        let buffer = terminal.backend().buffer();
+        let at = |symbol: &str| {
+            buffer
+                .content
+                .iter()
+                .position(|cell| cell.symbol() == symbol)
+                .unwrap()
+        };
+        let left = at("╭");
+        let right = at("╮");
+        let bottom = at("╯");
+        assert_eq!(right % width as usize, bottom % width as usize);
+        for row in left / width as usize + 1..bottom / width as usize {
+            assert_eq!(
+                buffer.content[row * width as usize + left % width as usize].symbol(),
+                "│"
+            );
+            assert_eq!(
+                buffer.content[row * width as usize + right % width as usize].symbol(),
+                "│"
+            );
         }
-        preview(&format!("request-card-{width}"),&terminal);
+        preview(&format!("request-card-{width}"), &terminal);
     }
-    app.document.scroll=5;app.document.source_selection=None;
-    let (scrolled,_)=screen(&mut app,40,12);
-    assert!(scrolled.contains("│"));assert!(!scrolled.contains("╭"),"Scrolling inside a card must not invent a new top border");
+    app.document.scroll = 5;
+    app.document.source_selection = None;
+    let (scrolled, _) = screen(&mut app, 40, 12);
+    assert!(scrolled.contains("│"));
+    assert!(
+        !scrolled.contains("╭"),
+        "Scrolling inside a card must not invent a new top border"
+    );
     doc.toggle_disclosure("reason-1-message");
-    let text=doc.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    let text = doc
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(text.contains("AGENT MESSAGE"));
     assert!(text.contains("I'll keep responses in memory. Repeated reads then reuse a response."));
     assert!(!text.contains("not a verified"));
@@ -1351,255 +1521,598 @@ fn reader_groups_code_with_collapsible_messages_and_supporting_material() {
     assert!(!text.contains("Coding tool:"));
     assert!(text.contains("▶ Agent notes"));
     assert!(text.contains("▼ YOUR REQUEST"));
-    app.document=doc;app.focus=Focus::Reader;
-    let rationale=app.document.sources.iter().position(|(_,l)|*l==Link::Disclosure("reason-1-rationale".into())).unwrap();
-    app.document.source_selection=Some(rationale);
-    press(&mut app,KeyCode::Enter);
-    let text=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-    assert!(text.contains("Maybe a HashMap. Bold idea"));assert!(!text.contains("**"));
-    let request=app.document.sources.iter().position(|(_,l)|*l==Link::Disclosure("reason-1-request".into())).unwrap();
-    app.document.source_selection=Some(request);
-    press(&mut app,KeyCode::Enter);
-    assert!(!app.document.lines.iter().any(|line|line.to_string().contains("Please cache repeated reads")));
-    let (closed,_)=screen(&mut app,100,60);assert!(closed.contains("▶ YOUR REQUEST"));assert!(!closed.contains("Please cache"));
-    press(&mut app,KeyCode::Enter);
-    let text=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-    assert!(text.contains("Please cache repeated reads"));assert!(text.contains("yes do it"));
-    let turn=app.document.sources.iter().find(|(_,l)|matches!(l,Link::Turn(_))).unwrap().0;
-    assert!(app.document.lines[turn].to_string().contains("View original chat"));
-    app.document.source_selection=Some(rationale);
-    press(&mut app,KeyCode::Enter);
-    let text=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-    assert!(!text.contains("Maybe a HashMap"));assert!(text.contains("Please cache repeated reads"));
-    let turn_after=app.document.sources.iter().find(|(_,l)|matches!(l,Link::Turn(_))).unwrap().0;
-    assert!(app.document.lines[turn_after].to_string().contains("View original chat"));
-    let details=app.document.sources.iter().find_map(|(_,link)|if let Link::Disclosure(id)=link{id.starts_with("raw-code-").then_some(id.clone())}else{None}).unwrap();
+    app.document = doc;
+    app.focus = Focus::Reader;
+    let rationale = app
+        .document
+        .sources
+        .iter()
+        .position(|(_, l)| *l == Link::Disclosure("reason-1-rationale".into()))
+        .unwrap();
+    app.document.source_selection = Some(rationale);
+    press(&mut app, KeyCode::Enter);
+    let text = app
+        .document
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("Maybe a HashMap. Bold idea"));
+    assert!(!text.contains("**"));
+    let request = app
+        .document
+        .sources
+        .iter()
+        .position(|(_, l)| *l == Link::Disclosure("reason-1-request".into()))
+        .unwrap();
+    app.document.source_selection = Some(request);
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        !app.document
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("Please cache repeated reads"))
+    );
+    let (closed, _) = screen(&mut app, 100, 60);
+    assert!(closed.contains("▶ YOUR REQUEST"));
+    assert!(!closed.contains("Please cache"));
+    press(&mut app, KeyCode::Enter);
+    let text = app
+        .document
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("Please cache repeated reads"));
+    assert!(text.contains("yes do it"));
+    let turn = app
+        .document
+        .sources
+        .iter()
+        .find(|(_, l)| matches!(l, Link::Turn(_)))
+        .unwrap()
+        .0;
+    assert!(
+        app.document.lines[turn]
+            .to_string()
+            .contains("View original chat")
+    );
+    app.document.source_selection = Some(rationale);
+    press(&mut app, KeyCode::Enter);
+    let text = app
+        .document
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!text.contains("Maybe a HashMap"));
+    assert!(text.contains("Please cache repeated reads"));
+    let turn_after = app
+        .document
+        .sources
+        .iter()
+        .find(|(_, l)| matches!(l, Link::Turn(_)))
+        .unwrap()
+        .0;
+    assert!(
+        app.document.lines[turn_after]
+            .to_string()
+            .contains("View original chat")
+    );
+    let details = app
+        .document
+        .sources
+        .iter()
+        .find_map(|(_, link)| {
+            if let Link::Disclosure(id) = link {
+                id.starts_with("raw-code-").then_some(id.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap();
     app.follow(Link::Disclosure(details)).unwrap();
-    let text=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    let text = app
+        .document
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(text.contains("Coding tool: pi"));
     assert!(text.contains("Model: m1"));
     assert!(text.contains("Session: s1"));
-    screen(&mut app,100,30);
+    screen(&mut app, 100, 30);
 }
 
 #[test]
 fn conversation_roles_are_explicit_and_user_text_is_not_dimmed() {
-    let mut doc=Document::new(View::Turn,"Conversation");
-    for (kind,label) in [("user","YOUR REQUEST"),("assistant","AGENT MESSAGE"),("rationale","AGENT NOTES"),("summary","SESSION SUMMARY"),("tool_call","TOOL ACTION"),("tool_output","TOOL RESULT")] {
-        let event=json!({"kind":kind,"text":format!("Readable {kind} body"),"timestamp":"2026-10-10T10:00:00Z","provenance":{"source_type":if ["user","assistant"].contains(&kind){"original_turn"}else{"unknown"}}});
-        assert_eq!(document::conversation_role(&event).0,label);
-        document::conversation(&mut doc,&event,"pi",1400);
+    let mut doc = Document::new(View::Turn, "Conversation");
+    for (kind, label) in [
+        ("user", "YOUR REQUEST"),
+        ("assistant", "AGENT MESSAGE"),
+        ("rationale", "AGENT NOTES"),
+        ("summary", "SESSION SUMMARY"),
+        ("tool_call", "TOOL ACTION"),
+        ("tool_output", "TOOL RESULT"),
+    ] {
+        let event = json!({"kind":kind,"text":format!("Readable {kind} body"),"timestamp":"2026-10-10T10:00:00Z","provenance":{"source_type":if ["user","assistant"].contains(&kind){"original_turn"}else{"unknown"}}});
+        assert_eq!(document::conversation_role(&event).0, label);
+        document::conversation(&mut doc, &event, "pi", 1400);
     }
-    assert_eq!(document::conversation_role(&json!({"kind":"assistant"})).0,"UNVERIFIED CONTEXT");
-    assert_eq!(document::conversation_role(&json!({"kind":"session","role":"user","provenance":{"source_type":"original_turn"}})).0,"YOUR REQUEST");
-    let text=doc.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    assert_eq!(
+        document::conversation_role(&json!({"kind":"assistant"})).0,
+        "UNVERIFIED CONTEXT"
+    );
+    assert_eq!(
+        document::conversation_role(
+            &json!({"kind":"session","role":"user","provenance":{"source_type":"original_turn"}})
+        )
+        .0,
+        "YOUR REQUEST"
+    );
+    let text = doc
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(!text.contains("Captured context"));
-    for line in &doc.lines {for span in &line.spans {
-        if span.content.starts_with("Readable ") {
-            assert_eq!(span.style.fg,Some(TEXT));
-            assert!(!span.style.add_modifier.contains(Modifier::DIM));
+    for line in &doc.lines {
+        for span in &line.spans {
+            if span.content.starts_with("Readable ") {
+                assert_eq!(span.style.fg, Some(TEXT));
+                assert!(!span.style.add_modifier.contains(Modifier::DIM));
+            }
         }
-    }}
-    let mut app=workspace();app.document=doc;app.focus=Focus::Reader;app.sidebar=false;
-    let (text,terminal)=screen(&mut app,100,32);
-    assert!(text.contains("YOUR REQUEST"));assert!(text.contains("Readable user body"));
-    preview("readable-conversation",&terminal);
-    let (text,_)=screen(&mut app,50,22);
-    assert!(text.contains("YOUR REQUEST"));assert!(text.contains("Readable user body"));
+    }
+    let mut app = workspace();
+    app.document = doc;
+    app.focus = Focus::Reader;
+    app.sidebar = false;
+    let (text, terminal) = screen(&mut app, 100, 32);
+    assert!(text.contains("YOUR REQUEST"));
+    assert!(text.contains("Readable user body"));
+    preview("readable-conversation", &terminal);
+    let (text, _) = screen(&mut app, 50, 22);
+    assert!(text.contains("YOUR REQUEST"));
+    assert!(text.contains("Readable user body"));
 }
 
 #[test]
 fn sections_are_visible_without_answers_and_inline_explanation_button_queues_the_selected_file() {
-    let mut app=workspace();select(&mut app,"src/cache.rs");app.preview_selection();app.focus=Focus::Reader;
-    let (text,_)=screen(&mut app,120,32);
-    assert!(text.contains("Decisions"));assert!(text.contains("Sessions"));
-    assert_eq!(app.areas.tabs.len(),2);
-    let history=app.areas.tabs.iter().find(|(_,view,_)|*view==View::Sessions).unwrap().0;
-    mouse_at(&mut app,MouseEventKind::Down(MouseButton::Left),history.x+1,history.y);
-    assert_eq!(app.document.kind,View::SessionWork);assert!(app.job.is_none());
-    press(&mut app,KeyCode::Char('v'));assert_eq!(app.document.kind,View::Explanation);assert!(app.job.is_none());
-    assert_eq!(app.document.target.as_ref().unwrap().file,"src/cache.rs");
-    let (text,_)=screen(&mut app,100,30);assert!(text.contains("Ask AI to explain this change"));
-    let sender=mock_job(&mut app,"README.md");
-    let button=app.areas.sources.iter().find(|(_,link)|*link==Link::Explain).unwrap().0;
-    mouse_at(&mut app,MouseEventKind::Down(MouseButton::Left),button.x+1,button.y);
-    assert_eq!(app.queue.len(),1);assert_eq!(app.queue[0].file.as_deref(),Some("src/cache.rs"));
-    app.queue.clear();app.document.source_selection=Some(0);press(&mut app,KeyCode::Enter);
-    assert_eq!(app.queue.len(),1);
-    press(&mut app,KeyCode::Char('o'));assert_eq!(app.document.kind,View::Recorded);
-    screen(&mut app,50,22);
-    app.cancel();drop(sender);
+    let mut app = workspace();
+    select(&mut app, "src/cache.rs");
+    app.preview_selection();
+    app.focus = Focus::Reader;
+    let (text, _) = screen(&mut app, 120, 32);
+    assert!(text.contains("Decisions"));
+    assert!(text.contains("Sessions"));
+    assert_eq!(app.areas.tabs.len(), 2);
+    let history = app
+        .areas
+        .tabs
+        .iter()
+        .find(|(_, view, _)| *view == View::Sessions)
+        .unwrap()
+        .0;
+    mouse_at(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        history.x + 1,
+        history.y,
+    );
+    assert_eq!(app.document.kind, View::SessionWork);
+    assert!(app.job.is_none());
+    press(&mut app, KeyCode::Char('v'));
+    assert_eq!(app.document.kind, View::Explanation);
+    assert!(app.job.is_none());
+    assert_eq!(app.document.target.as_ref().unwrap().file, "src/cache.rs");
+    let (text, _) = screen(&mut app, 100, 30);
+    assert!(text.contains("Ask AI to explain this change"));
+    let sender = mock_job(&mut app, "README.md");
+    let button = app
+        .areas
+        .sources
+        .iter()
+        .find(|(_, link)| *link == Link::Explain)
+        .unwrap()
+        .0;
+    mouse_at(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        button.x + 1,
+        button.y,
+    );
+    assert_eq!(app.queue.len(), 1);
+    assert_eq!(app.queue[0].file.as_deref(), Some("src/cache.rs"));
+    app.queue.clear();
+    app.document.source_selection = Some(0);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.queue.len(), 1);
+    press(&mut app, KeyCode::Char('o'));
+    assert_eq!(app.document.kind, View::Recorded);
+    screen(&mut app, 50, 22);
+    app.cancel();
+    drop(sender);
 }
 
 #[test]
 fn historical_files_have_a_separate_section_and_collapsed_notes_follow_code() {
-    let mut review=review();review["recent_code"]=json!([{"file":"src/old.rs","session_key":"old","text":"old","format":"code"}]);
-    let mut explorer=Explorer::default();explorer.rebuild(&review);
-    let current=explorer.rows.iter().position(|r|r.key=="@changes").unwrap();
-    let history=explorer.rows.iter().position(|r|r.key=="@history").unwrap();
-    assert!(current<history);assert!(explorer.rows[..history].iter().any(|r|r.key=="src/cache.rs"));
-    assert!(explorer.rows[history..].iter().any(|r|r.key=="src/old.rs"));
-    assert!(explorer.rows.iter().any(|r|r.key=="history:src/"));
-    explorer.state.select(Some(history));explorer.toggle(&review);
-    assert!(!explorer.rows.iter().any(|r|r.key=="src/old.rs"));
-    assert!(explorer.rows.iter().any(|r|r.key=="src/cache.rs"));
-    explorer.toggle(&review);assert!(explorer.rows.iter().any(|r|r.key=="src/old.rs"));
-    let mut app=with_notes();app.preview_selection();
-    let text=app.document.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-    assert!(text.find("cache.get(key)").unwrap()<text.find("Conversation mentioning this file").unwrap());
-    assert!(!text.contains("Tentative reasoning"));assert!(!text.contains("provenance was not classified"));
+    let mut review = review();
+    review["recent_code"] =
+        json!([{"file":"src/old.rs","session_key":"old","text":"old","format":"code"}]);
+    let mut explorer = Explorer::default();
+    explorer.rebuild(&review);
+    let current = explorer
+        .rows
+        .iter()
+        .position(|r| r.key == "@changes")
+        .unwrap();
+    let history = explorer
+        .rows
+        .iter()
+        .position(|r| r.key == "@history")
+        .unwrap();
+    assert!(current < history);
+    assert!(
+        explorer.rows[..history]
+            .iter()
+            .any(|r| r.key == "src/cache.rs")
+    );
+    assert!(
+        explorer.rows[history..]
+            .iter()
+            .any(|r| r.key == "src/old.rs")
+    );
+    assert!(explorer.rows.iter().any(|r| r.key == "history:src/"));
+    explorer.state.select(Some(history));
+    explorer.toggle(&review);
+    assert!(!explorer.rows.iter().any(|r| r.key == "src/old.rs"));
+    assert!(explorer.rows.iter().any(|r| r.key == "src/cache.rs"));
+    explorer.toggle(&review);
+    assert!(explorer.rows.iter().any(|r| r.key == "src/old.rs"));
+    let mut app = with_notes();
+    app.preview_selection();
+    let text = app
+        .document
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.find("cache.get(key)").unwrap()
+            < text.find("Conversation mentioning this file").unwrap()
+    );
+    assert!(!text.contains("Tentative reasoning"));
+    assert!(!text.contains("provenance was not classified"));
 }
 
 #[test]
 fn all_history_renderers_collapse_agent_notes_and_keep_metadata_in_details() {
-    let note=json!({"id":"n","kind":"rationale","text":"UNIQUE_WORKING_NOTES about src/cache.rs","timestamp":"2026-10-10T10:00:00Z","model":"MODEL_DETAIL","provenance":{"source_type":"unknown"}});
-    let edit=json!({"id":"e","kind":"change","text":"edit","timestamp":"2026-10-10T10:01:00Z"});
-    let session=json!({"id":"session","agent":"pi","path":"session.jsonl","events":[note,edit]});
-    let mut evidence=note.clone();evidence["id"]=json!("code-1");evidence["kind"]=json!("session");evidence["role"]=json!("rationale");
-    evidence["agent"]=json!("pi");evidence["file"]=json!("session.jsonl");
-    let mut answer=(*artifact(Some("src/cache.rs"))).clone();answer["packet"]["evidence"]=json!([evidence]);
-    let mut views=vec![history_views::session(&session),document::turn(&session,&json!({"event_id":"e","file":"src/cache.rs"})),document::original(&evidence),document::evidence(Arc::new(answer),0).unwrap(),document::commit_context(&json!({"commit":"abc","sessions":[session]}))];
+    let note = json!({"id":"n","kind":"rationale","text":"UNIQUE_WORKING_NOTES about src/cache.rs","timestamp":"2026-10-10T10:00:00Z","model":"MODEL_DETAIL","provenance":{"source_type":"unknown"}});
+    let edit = json!({"id":"e","kind":"change","text":"edit","timestamp":"2026-10-10T10:01:00Z"});
+    let session = json!({"id":"session","agent":"pi","path":"session.jsonl","events":[note,edit]});
+    let mut evidence = note.clone();
+    evidence["id"] = json!("code-1");
+    evidence["kind"] = json!("session");
+    evidence["role"] = json!("rationale");
+    evidence["agent"] = json!("pi");
+    evidence["file"] = json!("session.jsonl");
+    let mut answer = (*artifact(Some("src/cache.rs"))).clone();
+    answer["packet"]["evidence"] = json!([evidence]);
+    let mut views = vec![
+        history_views::session(&session),
+        document::turn(&session, &json!({"event_id":"e","file":"src/cache.rs"})),
+        document::original(&evidence),
+        document::evidence(Arc::new(answer), 0).unwrap(),
+        document::commit_context(&json!({"commit":"abc","sessions":[session]})),
+    ];
     for doc in &mut views {
-        let text=doc.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-        assert!(text.contains("Agent notes"));assert!(!text.contains("UNIQUE_WORKING_NOTES"));assert!(!text.contains("MODEL_DETAIL"));assert!(!text.contains("re-import"));assert!(!text.contains("Tentative reasoning"));
+        let text = doc
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Agent notes"));
+        assert!(!text.contains("UNIQUE_WORKING_NOTES"));
+        assert!(!text.contains("MODEL_DETAIL"));
+        assert!(!text.contains("re-import"));
+        assert!(!text.contains("Tentative reasoning"));
         expand_details(doc);
-        let text=doc.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-        assert!(text.contains("UNIQUE_WORKING_NOTES"));assert!(text.contains("MODEL_DETAIL"));assert!(!text.contains("re-import"));
+        let text = doc
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("UNIQUE_WORKING_NOTES"));
+        assert!(text.contains("MODEL_DETAIL"));
+        assert!(!text.contains("re-import"));
     }
 }
 
 #[test]
 fn sections_cycle_without_requests_and_history_keeps_its_reading_position() {
     let dir = tempfile::tempdir().unwrap();
-    let mut app=with_notes();app.focus=Focus::Reader;
+    let mut app = with_notes();
+    app.focus = Focus::Reader;
     app.root = dir.path().canonicalize().unwrap();
     app.review["root"] = json!(app.root);
-    app.key(KeyCode::Right,KeyModifiers::CONTROL).unwrap();
-    assert_eq!(app.document.kind,View::SessionWork);assert!(app.job.is_none());
-    app.document.scroll=4;app.document.text("Cached history marker",TEXT);
-    let depth=app.back.len();
-    app.change_view(View::Sessions).unwrap();assert_eq!(app.back.len(),depth);
-    app.key(KeyCode::Left,KeyModifiers::CONTROL).unwrap();
-    assert_eq!(app.document.kind,View::DecisionOverview);
-    app.key(KeyCode::Right,KeyModifiers::CONTROL).unwrap();
-    assert_eq!(app.document.scroll,4);
-    assert!(app.document.lines.iter().any(|line|line.to_string()=="Cached history marker"));
+    app.key(KeyCode::Right, KeyModifiers::CONTROL).unwrap();
+    assert_eq!(app.document.kind, View::SessionWork);
     assert!(app.job.is_none());
-    app.key(KeyCode::Right,KeyModifiers::CONTROL).unwrap();assert_eq!(app.document.kind,View::DecisionOverview);
-    app.key(KeyCode::Right,KeyModifiers::CONTROL).unwrap();assert_eq!(app.document.kind,View::SessionWork);
-    app.sidebar=false;
-    for width in [40,80,140] {
-        screen(&mut app,width,24);
-        let tabs:Vec<_>=app.areas.tabs.iter().filter(|(_,_,focus)|*focus==Focus::Reader).collect();
-        assert_eq!(tabs.len(),2);
-        assert!(tabs.windows(2).all(|pair|if width>=88 {pair[0].0.bottom()<=pair[1].0.y}else{pair[0].0.right()<=pair[1].0.x}));
-        assert!(tabs.iter().all(|(rect,_,_)|rect.width>=8));
+    app.document.scroll = 4;
+    app.document.text("Cached history marker", TEXT);
+    let depth = app.back.len();
+    app.change_view(View::Sessions).unwrap();
+    assert_eq!(app.back.len(), depth);
+    app.key(KeyCode::Left, KeyModifiers::CONTROL).unwrap();
+    assert_eq!(app.document.kind, View::DecisionOverview);
+    app.key(KeyCode::Right, KeyModifiers::CONTROL).unwrap();
+    assert_eq!(app.document.scroll, 4);
+    assert!(
+        app.document
+            .lines
+            .iter()
+            .any(|line| line.to_string() == "Cached history marker")
+    );
+    assert!(app.job.is_none());
+    app.key(KeyCode::Right, KeyModifiers::CONTROL).unwrap();
+    assert_eq!(app.document.kind, View::DecisionOverview);
+    app.key(KeyCode::Right, KeyModifiers::CONTROL).unwrap();
+    assert_eq!(app.document.kind, View::SessionWork);
+    app.sidebar = false;
+    for width in [40, 80, 140] {
+        screen(&mut app, width, 24);
+        let tabs: Vec<_> = app
+            .areas
+            .tabs
+            .iter()
+            .filter(|(_, _, focus)| *focus == Focus::Reader)
+            .collect();
+        assert_eq!(tabs.len(), 2);
+        assert!(tabs.windows(2).all(|pair| if width >= 88 {
+            pair[0].0.bottom() <= pair[1].0.y
+        } else {
+            pair[0].0.right() <= pair[1].0.x
+        }));
+        assert!(tabs.iter().all(|(rect, _, _)| rect.width >= 8));
     }
     app.edit(Input::Command);
-    app.key(KeyCode::Right,KeyModifiers::CONTROL).unwrap();
-    assert_eq!(app.document.kind,View::SessionWork);
+    app.key(KeyCode::Right, KeyModifiers::CONTROL).unwrap();
+    assert_eq!(app.document.kind, View::SessionWork);
 }
 
 #[test]
 fn code_views_hide_patch_transport_noise_and_use_real_or_unknown_positions() {
-    let patch="@@ -10,2 +20,2 @@\n kept\n-old\n+new\n\\ No newline at end of file";
-    let mut current=Document::new(View::Recorded,"Current");
-    code_view::render(&mut current,patch,"patch",false,usize::MAX);
-    let text=current.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-    assert!(text.contains("   10    20"));assert!(text.contains("   11       -"));assert!(text.contains("         21 +"));
-    assert!(!text.contains("No newline"));assert!(!text.contains("@@"));
-    let gutters=current.code_gutters.clone();
-    let code=current.sources.iter().find_map(|(_,link)|if let Link::Disclosure(id)=link{id.starts_with("code-block-").then_some(id.clone())}else{None}).unwrap();
-    current.toggle_disclosure(&code);assert!(current.code_gutters.is_empty());
-    current.toggle_disclosure(&code);assert_eq!(current.code_gutters,gutters);
-    let mut old=Document::new(View::Recorded,"Historical");
-    code_view::render(&mut old,patch,"patch",true,usize::MAX);
-    let collapsed=old.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");assert!(collapsed.contains("▶ Before / after"));assert!(!collapsed.contains("BEFORE"));
-    let code_id=old.sources.iter().find_map(|(_,link)|if let Link::Disclosure(id)=link{ id.starts_with("code-block-").then_some(id.clone())}else{None}).unwrap();
+    let patch = "@@ -10,2 +20,2 @@\n kept\n-old\n+new\n\\ No newline at end of file";
+    let mut current = Document::new(View::Recorded, "Current");
+    code_view::render(&mut current, patch, "patch", false, usize::MAX);
+    let text = current
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("   10    20"));
+    assert!(text.contains("   11       -"));
+    assert!(text.contains("         21 +"));
+    assert!(!text.contains("No newline"));
+    assert!(!text.contains("@@"));
+    let gutters = current.code_gutters.clone();
+    let code = current
+        .sources
+        .iter()
+        .find_map(|(_, link)| {
+            if let Link::Disclosure(id) = link {
+                id.starts_with("code-block-").then_some(id.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    current.toggle_disclosure(&code);
+    assert!(current.code_gutters.is_empty());
+    current.toggle_disclosure(&code);
+    assert_eq!(current.code_gutters, gutters);
+    let mut old = Document::new(View::Recorded, "Historical");
+    code_view::render(&mut old, patch, "patch", true, usize::MAX);
+    let collapsed = old
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(collapsed.contains("▶ Before / after"));
+    assert!(!collapsed.contains("BEFORE"));
+    let code_id = old
+        .sources
+        .iter()
+        .find_map(|(_, link)| {
+            if let Link::Disclosure(id) = link {
+                id.starts_with("code-block-").then_some(id.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap();
     old.toggle_disclosure(&code_id);
-    let text=old.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-    assert!(text.contains("BEFORE"));assert!(text.contains("AFTER"));assert!(text.contains("file line numbers unavailable"));assert!(!text.contains("No newline"));
+    let text = old
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("BEFORE"));
+    assert!(text.contains("AFTER"));
+    assert!(text.contains("file line numbers unavailable"));
+    assert!(!text.contains("No newline"));
     expand_details(&mut old);
-    let text=old.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");assert!(text.contains(patch));
-    let mut sql=Document::new(View::Recorded,"SQL");
-    code_view::render(&mut sql,"@@ -1 +1 @@\n--- old comment\n+-- new comment","patch",true,usize::MAX);
+    let text = old
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains(patch));
+    let mut sql = Document::new(View::Recorded, "SQL");
+    code_view::render(
+        &mut sql,
+        "@@ -1 +1 @@\n--- old comment\n+-- new comment",
+        "patch",
+        true,
+        usize::MAX,
+    );
     expand_details(&mut sql);
-    assert!(sql.lines.iter().any(|line|line.to_string().contains("-- old comment")));
+    assert!(
+        sql.lines
+            .iter()
+            .any(|line| line.to_string().contains("-- old comment"))
+    );
 }
 
 #[test]
 fn code_pans_without_wrapping_and_keeps_gutters_and_prose_fixed() {
-    let mut app=workspace();app.sidebar=false;app.focus=Focus::Reader;
-    let mut doc=Document::new(View::Recorded,"Code layout");
-    doc.text("Readable prose wraps naturally across the narrow terminal without panning.",TEXT);
-    doc.code_line("   10    20 + │ ".into(),&format!("START-CODE{}END-CODE","x".repeat(180)),GREEN);
-    doc.text("AFTER_CODE",TEXT);
-    app.document=doc;
-    let (first,_)=screen(&mut app,60,24);
-    let rows:Vec<_>=first.lines().collect();let code=rows.iter().position(|line|line.contains("START-CODE")).unwrap();
-    assert!(rows[code+1].contains("AFTER_CODE"));assert!(!first.contains("END-CODE"));assert!(rows[code].contains('›'));
-    app.document.horizontal=500;
-    let (panned,_)=screen(&mut app,60,24);
-    assert!(panned.contains("END-CODE"));assert!(panned.contains("10    20"));assert!(panned.contains("Readable prose"));
+    let mut app = workspace();
+    app.sidebar = false;
+    app.focus = Focus::Reader;
+    let mut doc = Document::new(View::Recorded, "Code layout");
+    doc.text(
+        "Readable prose wraps naturally across the narrow terminal without panning.",
+        TEXT,
+    );
+    doc.code_line(
+        "   10    20 + │ ".into(),
+        &format!("START-CODE{}END-CODE", "x".repeat(180)),
+        GREEN,
+    );
+    doc.text("AFTER_CODE", TEXT);
+    app.document = doc;
+    let (first, _) = screen(&mut app, 60, 24);
+    let rows: Vec<_> = first.lines().collect();
+    let code = rows
+        .iter()
+        .position(|line| line.contains("START-CODE"))
+        .unwrap();
+    assert!(rows[code + 1].contains("AFTER_CODE"));
+    assert!(!first.contains("END-CODE"));
+    assert!(rows[code].contains('›'));
+    app.document.horizontal = 500;
+    let (panned, _) = screen(&mut app, 60, 24);
+    assert!(panned.contains("END-CODE"));
+    assert!(panned.contains("10    20"));
+    assert!(panned.contains("Readable prose"));
 }
 
 #[test]
 fn history_and_sessions_page_without_losing_events_and_tab_return_reuses_changes() {
     let events:Vec<_>=(0..53).map(|i|json!({"id":format!("event-{i}"),"kind":if i==0{"user"}else{"assistant"},"text":format!("unique-event-{i:03} src/cache.rs"),"timestamp":"2026-10-10T10:00:00Z","provenance":{"source_type":"original_turn"}})).collect();
-    let session=json!({"id":"s","agent":"pi","events":events});
-    let review=review();let target=Target{file:"src/cache.rs".into(),symbol:None,line:1};
-    for initial in [history_views::session(&session),history_views::context(&review,&[session.clone()],target,false)] {
-        let state=initial.pagination.clone().unwrap();
-        let mut collected=std::collections::HashSet::new();
+    let session = json!({"id":"s","agent":"pi","events":events});
+    let review = review();
+    let target = Target {
+        file: "src/cache.rs".into(),
+        symbol: None,
+        line: 1,
+    };
+    for initial in [
+        history_views::session(&session),
+        history_views::context(&review, std::slice::from_ref(&session), target, false),
+    ] {
+        let state = initial.pagination.clone().unwrap();
+        let mut collected = std::collections::HashSet::new();
         for index in 0..3 {
-            let doc=history_views::page(&review,&state,index);
-            assert_eq!(doc.pagination.as_ref().unwrap().index(),index);
-            assert!(doc.lines.len()<250);
-            let text=doc.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-            let found:Vec<_>=(0..53).filter(|i|text.contains(&format!("unique-event-{i:03}"))).collect();
-            assert!(found.len()<=20);
-            for i in found {assert!(collected.insert(i));}
+            let doc = history_views::page(&review, &state, index);
+            assert_eq!(doc.pagination.as_ref().unwrap().index(), index);
+            assert!(doc.lines.len() < 250);
+            let text = doc
+                .lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let found: Vec<_> = (0..53)
+                .filter(|i| text.contains(&format!("unique-event-{i:03}")))
+                .collect();
+            assert!(found.len() <= 20);
+            for i in found {
+                assert!(collected.insert(i));
+            }
         }
-        assert_eq!(collected.len(),53);
+        assert_eq!(collected.len(), 53);
     }
-    let mut app=with_notes();app.focus=Focus::Reader;
-    app.document.text("CACHED_CHANGES",TEXT);
+    let mut app = with_notes();
+    app.focus = Focus::Reader;
+    app.document.text("CACHED_CHANGES", TEXT);
     app.change_view(View::Timeline).unwrap();
     app.follow(Link::Page(1)).unwrap();
     app.change_view(View::Recorded).unwrap();
-    assert!(app.document.lines.iter().any(|line|line.to_string()=="CACHED_CHANGES"));
+    assert!(
+        app.document
+            .lines
+            .iter()
+            .any(|line| line.to_string() == "CACHED_CHANGES")
+    );
     assert!(app.job.is_none());
 }
 
 #[test]
 fn request_leads_multiple_change_groups_once_and_missing_requests_stay_unknown() {
-    let dir=tempfile::tempdir().unwrap();let root=dir.path().canonicalize().unwrap();
-    let make_edit=|id:&str,old:&str,new:&str|json!({"id":id,"kind":"change","tool":"Edit","timestamp":"2026-10-10T10:01:00Z","code_edits":[{"file":"src/cache.rs","format":"patch","operation":"edit","text":format!("-{old}\n+{new}")} ]});
-    let mut session=json!({"id":"session","agent":"pi","cwd":root,"events":[
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let make_edit = |id: &str, old: &str, new: &str| json!({"id":id,"kind":"change","tool":"Edit","timestamp":"2026-10-10T10:01:00Z","code_edits":[{"file":"src/cache.rs","format":"patch","operation":"edit","text":format!("-{old}\n+{new}")} ]});
+    let mut session = json!({"id":"session","agent":"pi","cwd":root,"events":[
         {"id":"u","kind":"user","text":"Add caching.","timestamp":"2026-10-10T10:00:00Z","provenance":{"source_type":"original_turn"}},
         {"id":"a1","kind":"assistant","text":"First change","provenance":{"source_type":"original_turn"}},
         make_edit("e1","old_one","new_one"),
         {"id":"a2","kind":"assistant","text":"Second change","provenance":{"source_type":"original_turn"}},
         make_edit("e2","old_two","new_two")
     ]});
-    let review=json!({"root":root,"changes":[{"file":"src/cache.rs","diff":"@@ -1 +1 @@\n-old_one\n+new_one\n@@ -9 +9 @@\n-old_two\n+new_two"}],"sessions":[]});
-    let target=Target{file:"src/cache.rs".into(),symbol:None,line:1};
-    let code=document::preview(&review,target);
-    let doc=document::recorded(&review,&[session.clone()],&code,false);
-    let text=doc.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-    assert_eq!(text.matches("Add caching.").count(),1);
-    assert!(text.find("Add caching.").unwrap()<text.find("new_one").unwrap());
+    let review = json!({"root":root,"changes":[{"file":"src/cache.rs","diff":"@@ -1 +1 @@\n-old_one\n+new_one\n@@ -9 +9 @@\n-old_two\n+new_two"}],"sessions":[]});
+    let target = Target {
+        file: "src/cache.rs".into(),
+        symbol: None,
+        line: 1,
+    };
+    let code = document::preview(&review, target);
+    let doc = document::recorded(&review, &[session.clone()], &code, false);
+    let text = doc
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(text.matches("Add caching.").count(), 1);
+    assert!(text.find("Add caching.").unwrap() < text.find("new_one").unwrap());
     assert!(text.contains("Your request above"));
-    assert!(!text.contains("First change"));assert!(!text.contains("Second change"));
+    assert!(!text.contains("First change"));
+    assert!(!text.contains("Second change"));
     assert!(!crate::history::attribution::confirmation("Add caching."));
     assert!(crate::history::attribution::confirmation("Yes, do it!"));
-    session["events"][0]["text"]=json!("yes do it");
-    let doc=document::recorded(&review,&[session.clone()],&code,false);
-    let text=doc.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-    assert!(text.contains("Original request not captured"));assert!(!text.contains("▼ YOUR REQUEST"));assert!(!text.contains("yes do it"));
-    session["events"][0]["text"]=json!("Add caching.");session["events"][0]["provenance"]["source_type"]=json!("compaction_summary");
-    let doc=document::recorded(&review,&[session],&code,false);
-    assert!(!doc.lines.iter().any(|line|line.to_string().contains("▼ YOUR REQUEST")));
+    session["events"][0]["text"] = json!("yes do it");
+    let doc = document::recorded(&review, &[session.clone()], &code, false);
+    let text = doc
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("Original request not captured"));
+    assert!(!text.contains("▼ YOUR REQUEST"));
+    assert!(!text.contains("yes do it"));
+    session["events"][0]["text"] = json!("Add caching.");
+    session["events"][0]["provenance"]["source_type"] = json!("compaction_summary");
+    let doc = document::recorded(&review, &[session], &code, false);
+    assert!(
+        !doc.lines
+            .iter()
+            .any(|line| line.to_string().contains("▼ YOUR REQUEST"))
+    );
 }
 
 fn preview(name: &str, terminal: &Terminal<TestBackend>) {

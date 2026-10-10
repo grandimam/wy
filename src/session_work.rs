@@ -7,6 +7,95 @@ use std::{
     path::Path,
 };
 
+/// Request ordinals are meaningful only within one immutable session snapshot.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkSelection {
+    #[default]
+    EntireSession,
+    Requests {
+        ordinals: Vec<usize>,
+    },
+}
+
+pub fn selection(work: &Value) -> Result<WorkSelection> {
+    if work["selection"].is_null() {
+        Ok(WorkSelection::EntireSession)
+    } else {
+        Ok(serde_json::from_value(work["selection"].clone())?)
+    }
+}
+
+/// Resolve from the original snapshot, never from a paginated reader document.
+pub fn scoped(review: &Value, session: &Value, selection: WorkSelection) -> Result<Value> {
+    let mut work = build(review, session);
+    let WorkSelection::Requests { mut ordinals } = selection else {
+        return Ok(work);
+    };
+    ordinals.sort_unstable();
+    ordinals.dedup();
+    ensure!(!ordinals.is_empty(), "Select at least one request");
+    ensure!(
+        ordinals.iter().all(|i| *i < arr(&work["turns"]).len()),
+        "Request outside selected snapshot"
+    );
+    let mut edits = vec![];
+    let mut turns = vec![];
+    for ordinal in &ordinals {
+        let mut turn = work["turns"][*ordinal].clone();
+        let start = edits.len();
+        for index in arr(&turn["edit_indices"]) {
+            edits.push(work["edits"][crate::n(index)].clone());
+        }
+        turn["edit_indices"] = json!((start..edits.len()).collect::<Vec<_>>());
+        // Earlier requests are not silently imported as selected evidence.
+        turn["prior_request"] = Value::Null;
+        turns.push(turn);
+    }
+    let request = &turns[0]["request"];
+    work["session"]["title"] = json!(if history::provenance::original(request)
+        && !s(&request["text"]).trim().is_empty()
+    {
+        security::short(s(&request["text"]), 100).replace('\n', " ")
+    } else {
+        "Selected captured requests".to_owned()
+    });
+    work["turns"] = json!(turns);
+    work["edits"] = json!(edits);
+    work["steps"] = json!([]);
+    work["selection"] = json!(WorkSelection::Requests { ordinals });
+    let mut files: BTreeSet<String> = arr(&work["edits"])
+        .iter()
+        .map(|e| s(&e["file"]).to_owned())
+        .collect();
+    files.extend(
+        arr(&session["events"])
+            .iter()
+            .filter(|e| event_in_scope(&work, e))
+            .flat_map(insights::decisions)
+            .map(|d| s(&d["file"]).to_owned()),
+    );
+    work["changes"] = json!(
+        files
+            .into_iter()
+            .map(|file| json!({"file":file}))
+            .collect::<Vec<_>>()
+    );
+    Ok(work)
+}
+
+/// Membership uses captured event identity/content, not file overlap or request IDs.
+pub fn event_in_scope(work: &Value, event: &Value) -> bool {
+    if work["selection"]["kind"] != "requests" {
+        return true;
+    }
+    arr(&work["turns"]).iter().any(|turn| {
+        turn["request"] == *event
+            || arr(&turn["messages"]).contains(event)
+            || arr(&turn["activity"]).contains(event)
+    })
+}
+
 pub fn snapshot_key(session: &Value) -> String {
     format!(
         "{}:{}:{}",
@@ -100,7 +189,10 @@ fn request_turns(session: &Value, edits: &[Value]) -> Vec<Value> {
                 .unwrap()
                 .push(event.clone());
         } else {
-            current["activity"].as_array_mut().unwrap().push(event.clone());
+            current["activity"]
+                .as_array_mut()
+                .unwrap()
+                .push(event.clone());
         }
         if let Some(indices) =
             by_event.remove(&(s(&event["id"]).into(), crate::n(&event["source_line"])))
@@ -170,6 +262,7 @@ pub fn packet(work: &Value, session: &Value) -> Value {
     // Explicit decision records first; remaining public context in source order.
     let mut events: Vec<_> = arr(&session["events"])
         .iter()
+        .filter(|e| event_in_scope(work, e))
         .filter(|e| ["user", "assistant", "summary", "rationale"].contains(&s(&e["kind"])))
         .collect();
     events.sort_by_key(|e| insights::decisions(e).is_empty());
@@ -186,7 +279,7 @@ pub fn packet(work: &Value, session: &Value) -> Value {
         e["session_key"] = work["session"]["storage_key"].clone();
         evidence.push(e);
     }
-    json!({"scope_kind":"session","session":work["session"],"evidence":evidence,"omitted_items":omitted,"warnings":work["warnings"],
+    json!({"scope_kind":"session","session":work["session"],"selection":work["selection"],"evidence":evidence,"omitted_items":omitted,"warnings":work["warnings"],
         "limitations":"Captured edits are historical excerpts, not reconstructed complete files. Recorded tool inputs may not have executed. Shell, manual, failed and unsupported edits may be missing. No current code or other sessions were used."})
 }
 

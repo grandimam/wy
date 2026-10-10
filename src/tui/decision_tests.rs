@@ -164,6 +164,77 @@ fn decision_completion_stays_with_selected_snapshot_and_does_not_interrupt_readi
     assert_eq!(app.decision_brief.as_ref().unwrap()["id"], "updated");
 }
 #[test]
+fn request_decision_action_is_explicit_and_rejects_other_scope_completion() {
+    let (_dir, mut app) = app();
+    let mut whole = (*app.document.artifact.clone().unwrap()).clone();
+    whole["mode"] = json!("assessment");
+    app.session_flow();
+    assert!(
+        app.document
+            .sources
+            .iter()
+            .any(|(_, link)| *link == Link::RequestDecisions(0))
+    );
+    app.follow(Link::RequestDecisions(0)).unwrap();
+    assert_eq!(app.document.kind, View::DecisionOverview);
+    assert!(text(&app.document).contains("Scope: Selected requests 1"));
+    assert!(text(&app.document).contains("Generate with: codex"));
+    assert!(app.job.is_none());
+    let key = crate::decisions::scope_key(&app.decision_scope());
+    assert_ne!(key, s(&whole["scope_key"]));
+    app.finish_decisions(Arc::new(whole));
+    assert!(app.decision_brief.is_none());
+    assert_eq!(
+        s(&app.document.artifact.as_ref().unwrap()["scope_key"]),
+        key
+    );
+    app.input = "/decisions requests 1-1".into();
+    app.command().unwrap();
+    assert_eq!(crate::decisions::scope_key(&app.decision_scope()), key);
+    for command in [
+        "/decisions requests 0-1",
+        "/decisions requests 1-2",
+        "/decisions requests 2-1",
+    ] {
+        app.input = command.into();
+        assert!(app.command().is_err());
+    }
+    app.follow(Link::SessionDecisions).unwrap();
+    assert!(text(&app.document).contains("Scope: Entire session"));
+    assert!(app.job.is_none());
+}
+
+#[test]
+fn overview_distinguishes_not_analyzed_empty_assessment_and_failure() {
+    let (_dir, mut app) = app();
+    let mut brief = (*app.document.artifact.clone().unwrap()).clone();
+    brief["decisions"] = json!([]);
+    let unassessed = app.decision_document(Arc::new(brief.clone()));
+    assert!(text(&unassessed).contains("No generated decision brief yet"));
+    assert!(!text(&unassessed).contains("No consequential choices identified"));
+    brief["mode"] = json!("assessment");
+    assert!(
+        text(&app.decision_document(Arc::new(brief.clone())))
+            .contains("No consequential choices identified")
+    );
+    app.decision_errors.insert(
+        format!("decision-brief:{}", s(&brief["scope_key"])),
+        "CLI unavailable".into(),
+    );
+    let failed = app.decision_document(Arc::new(brief));
+    assert!(text(&failed).contains("Generation failed: CLI unavailable"));
+    assert!(text(&failed).contains("Retry decision brief generation"));
+}
+
+#[test]
+fn request_selection_does_not_survive_a_different_snapshot() {
+    let (_dir, mut app) = app();
+    app.select_decision_requests(Some(vec![0])).unwrap();
+    app.selected_work.as_mut().unwrap()["session"]["storage_key"] = json!("new-snapshot");
+    assert!(app.decision_scope()["selection"].is_null());
+}
+
+#[test]
 fn only_decisions_and_sessions_are_primary_and_picker_remains_available() {
     let (_dir, mut app) = app();
     for width in [40, 80, 140] {
@@ -196,7 +267,7 @@ fn only_decisions_and_sessions_are_primary_and_picker_remains_available() {
         })
         .unwrap();
         assert_eq!(app.document.kind, View::SessionWork);
-        assert!(text(&app.document).contains("Your request"));
+        assert!(text(&app.document).contains("YOU"));
         assert!(!text(&app.document).contains("Implementation flow"));
         assert!(!text(&app.document).contains("CURRENT_CODE_ONLY"));
         terminal.draw(|f| app.draw(f)).unwrap();
@@ -233,7 +304,10 @@ fn session_navigation_supports_click_keyboard_scrolling_and_narrow_terminals() {
         let mut session = base.clone();
         session["id"] = json!(format!("older-{index}"));
         let key = crate::session_work::snapshot_key(&session);
-        app.review["sessions"].as_array_mut().unwrap().push(json!({"storage_key":key,"id":session["id"],"agent":session["agent"]}));
+        app.review["sessions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"storage_key":key,"id":session["id"],"agent":session["agent"]}));
         app.sessions.push(session);
     }
     app.rebuild_session_navigation();
@@ -248,7 +322,13 @@ fn session_navigation_supports_click_keyboard_scrolling_and_narrow_terminals() {
     let rect = app.areas.sessions;
     assert!(!rect.is_empty());
     assert!(rect.right() <= app.areas.reader.x);
-    app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: rect.x, row: rect.y, modifiers: KeyModifiers::NONE }).unwrap();
+    app.mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: rect.x,
+        row: rect.y,
+        modifiers: KeyModifiers::NONE,
+    })
+    .unwrap();
     assert_eq!(app.document.kind, View::SessionWork);
     assert!(!text(&app.document).contains("Open conversation"));
     assert!(!text(&app.document).contains("Original context"));
@@ -260,8 +340,20 @@ fn session_navigation_supports_click_keyboard_scrolling_and_narrow_terminals() {
     assert_eq!(app.session_nav.selected(), Some(9));
     assert!(app.session_nav.offset() > 0);
     let selection = app.selected_work.as_ref().unwrap()["session"]["id"].clone();
-    let next = app.areas.sources.iter().find(|(_, link)| *link == Link::SessionPage(1)).unwrap().0;
-    app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: next.x, row: next.y, modifiers: KeyModifiers::NONE }).unwrap();
+    let next = app
+        .areas
+        .sources
+        .iter()
+        .find(|(_, link)| *link == Link::SessionPage(1))
+        .unwrap()
+        .0;
+    app.mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: next.x,
+        row: next.y,
+        modifiers: KeyModifiers::NONE,
+    })
+    .unwrap();
     assert_eq!(app.session_page, 1);
     assert_eq!(app.session_nav.selected(), Some(0));
     app.key(KeyCode::PageDown, KeyModifiers::NONE).unwrap();
@@ -270,8 +362,16 @@ fn session_navigation_supports_click_keyboard_scrolling_and_narrow_terminals() {
     app.key(KeyCode::End, KeyModifiers::NONE).unwrap();
     assert_eq!(app.session_nav.selected(), Some(0));
     terminal.draw(|f| app.draw(f)).unwrap();
-    assert!(!app.areas.sources.iter().any(|(_, link)| *link == Link::SessionPage(4)));
-    assert_eq!(app.selected_work.as_ref().unwrap()["session"]["id"], selection);
+    assert!(
+        !app.areas
+            .sources
+            .iter()
+            .any(|(_, link)| *link == Link::SessionPage(4))
+    );
+    assert_eq!(
+        app.selected_work.as_ref().unwrap()["session"]["id"],
+        selection
+    );
     app.key(KeyCode::PageUp, KeyModifiers::NONE).unwrap();
     assert_eq!(app.session_page, 2);
     app.change_session_page(0);
@@ -320,25 +420,50 @@ fn session_catalog_has_no_twenty_session_cap_and_loads_only_the_selection() {
             json!({"type":"session_meta","payload":{"id":format!("session-{index}"),"cwd":root,"timestamp":format!("2026-11-{index:02}T10:00:00Z")}}),
             json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"A request"}]}}),
         ];
-        std::fs::write(root.join(format!(".codex/sessions/catalog-{index}.jsonl")), rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
+        std::fs::write(
+            root.join(format!(".codex/sessions/catalog-{index}.jsonl")),
+            rows.iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
     }
     let mut app = Workspace::new(&root).unwrap();
     assert_eq!(app.navigation_sessions().len(), 26);
     assert_eq!(app.sessions.len(), 1);
-    assert_eq!(app.selected_work.as_ref().unwrap()["session"]["id"], "session-25");
-    let reference = arr(&app.review["sessions"]).iter().find(|r| r["id"] == "session-1").unwrap();
+    assert_eq!(
+        app.selected_work.as_ref().unwrap()["session"]["id"],
+        "session-25"
+    );
+    let reference = arr(&app.review["sessions"])
+        .iter()
+        .find(|r| r["id"] == "session-1")
+        .unwrap();
     assert!(reference["source_entry"].is_object());
     let key = s(&reference["storage_key"]).to_owned();
     app.select_session(&key).unwrap();
     assert_eq!(app.sessions.len(), 1);
-    assert_eq!(app.selected_work.as_ref().unwrap()["session"]["id"], "session-1");
+    assert_eq!(
+        app.selected_work.as_ref().unwrap()["session"]["id"],
+        "session-1"
+    );
     if let Some(history_views::Page::Work { work, .. }) = app.document.pagination.as_ref() {
         assert_eq!(work["indexed_reader"], true);
-    } else { panic!("Expected indexed request reader"); }
+    } else {
+        panic!("Expected indexed request reader");
+    }
     std::fs::remove_file(root.join(".codex/sessions/catalog-1.jsonl")).unwrap();
     app.refresh().unwrap();
-    assert_eq!(app.navigation_sessions().len(), 26, "Saved sessions remain available without their source files");
-    assert_eq!(app.selected_work.as_ref().unwrap()["session"]["id"], "session-1");
+    assert_eq!(
+        app.navigation_sessions().len(),
+        26,
+        "Saved sessions remain available without their source files"
+    );
+    assert_eq!(
+        app.selected_work.as_ref().unwrap()["session"]["id"],
+        "session-1"
+    );
 }
 #[test]
 fn startup_selects_latest_capture_and_refresh_preserves_explicit_selection() {
@@ -358,8 +483,15 @@ fn startup_selects_latest_capture_and_refresh_preserves_explicit_selection() {
     );
     assert!(text(&app.document).contains("NEW_SESSION_REQUEST"));
     assert!(!text(&app.document).contains("Persist background jobs"));
-    assert_eq!(app.sessions.len(), 1, "Only the selected transcript is loaded");
-    let old = arr(&app.review["sessions"]).iter().find(|s| s["id"] == "coding").unwrap();
+    assert_eq!(
+        app.sessions.len(),
+        1,
+        "Only the selected transcript is loaded"
+    );
+    let old = arr(&app.review["sessions"])
+        .iter()
+        .find(|s| s["id"] == "coding")
+        .unwrap();
     let key = s(&old["storage_key"]).to_owned();
     app.follow(Link::Session(key)).unwrap();
     assert_eq!(
@@ -375,7 +507,7 @@ fn startup_selects_latest_capture_and_refresh_preserves_explicit_selection() {
     assert!(app.job.is_none());
 }
 #[test]
-fn request_cards_have_direct_notes_and_linked_change_groups_without_repeated_warnings() {
+fn flat_detail_shows_request_and_response_with_optional_supporting_sections() {
     let (_dir, mut app) = app();
     let mut work = app.decision_scope();
     work["turns"][0]["prior_request"] = work["turns"][0]["request"].clone();
@@ -399,18 +531,17 @@ fn request_cards_have_direct_notes_and_linked_change_groups_without_repeated_war
         let flat = text(&app.document);
         assert!(flat.contains("yes do it"));
         assert!(!flat.contains("Persist background jobs"));
-        assert!(flat.contains("Agent response") && flat.contains("Agent notes"));
+        assert!(flat.contains("YOU") && flat.contains("AGENT") && flat.contains("Agent notes"));
+        assert!(
+            flat.contains("WY_DECISION"),
+            "Response is visible without expanding anything"
+        );
+        assert!(!app.document.sources.iter().any(|(_, link)| matches!(link, Link::Disclosure(id) if id.ends_with("-response") || id.ends_with("-request"))));
         assert!(!flat.contains("CAPTURED_NOTES"));
         assert!(!flat.contains("OTHER_TURN_NOTES"));
         assert!(!flat.contains("Implementation flow"));
         assert_eq!(flat.matches("Execution unconfirmed").count(), 1);
-        assert!(
-            app.document
-                .reader_panels()
-                .iter()
-                .all(|(_, _, request)| *request)
-        );
-        assert_eq!(app.document.reader_panels().len(), 1);
+        assert!(app.document.reader_panels().is_empty());
         assert!(
             !app.document
                 .sources
@@ -426,7 +557,8 @@ fn request_cards_have_direct_notes_and_linked_change_groups_without_repeated_war
             .iter()
             .map(|c| c.symbol())
             .collect::<String>();
-        assert!(screen.contains('╭') && screen.contains('╰') && screen.contains("yes do it"));
+        assert!(!screen.contains('╭') && !screen.contains('╰'));
+        assert!(screen.contains("yes do it") && screen.contains("AGENT"));
         if let Some(path) = std::env::var_os("WY_TUI_PREVIEW_DIR") {
             std::fs::create_dir_all(&path).unwrap();
             let rows = terminal
@@ -505,6 +637,39 @@ fn request_cards_have_direct_notes_and_linked_change_groups_without_repeated_war
 }
 
 #[test]
+fn detail_hides_empty_sections_and_keeps_capture_warnings_collapsed() {
+    let (_dir, mut app) = app();
+    let mut work = app.decision_scope();
+    work["turns"][0]["messages"] = json!([]);
+    work["turns"][0]["activity"] = json!([]);
+    work["turns"][0]["edit_indices"] = json!([]);
+    work["warnings"] = json!(["CAPTURE_LIMIT_WARNING"]);
+    let id = s(&work["turns"][0]["request"]["id"]).to_owned();
+    app.open(session_views::flow(Arc::new(work), 0));
+    let detail = text(&app.document);
+    assert!(app.document.title.contains(&id));
+    assert!(app.document.title.contains("codex"));
+    assert!(detail.contains("YOU") && detail.contains("Persist background jobs"));
+    for absent in [
+        "AGENT",
+        "Agent notes",
+        "Tool activity",
+        "Changes",
+        "No supported code edits",
+        "CAPTURE_LIMIT_WARNING",
+    ] {
+        assert!(
+            !detail.contains(absent),
+            "Unexpected empty/expanded section: {absent}"
+        );
+    }
+    assert!(detail.contains("⚠ Capture warning"));
+    assert!(app.document.reader_panels().is_empty());
+    app.follow(Link::Disclosure("session-capture-warning".into()))
+        .unwrap();
+    assert!(text(&app.document).contains("CAPTURE_LIMIT_WARNING"));
+}
+#[test]
 fn request_detail_keeps_all_edits_together_without_splitting_the_request() {
     let (_dir, mut app) = app();
     let mut work = app.decision_scope();
@@ -541,7 +706,7 @@ fn request_detail_keeps_all_edits_together_without_splitting_the_request() {
     assert!(text(&app.document).contains("step-44.rs"));
     assert!(!text(&app.document).contains("Your request · continued"));
     assert_eq!(app.request_position(), Some((0, 1)));
-    assert_eq!(app.document.title, "Detail");
+    assert!(app.document.title.starts_with("Detail · "));
 }
 #[test]
 fn session_and_request_panes_resize_and_persist_without_changing_detail() {
@@ -551,16 +716,37 @@ fn session_and_request_panes_resize_and_persist_without_changing_detail() {
     let mut terminal = Terminal::new(TestBackend::new(160, 32)).unwrap();
     terminal.draw(|f| app.draw(f)).unwrap();
     for (divider, delta) in [(Divider::Sessions, 8i16), (Divider::Requests, -8)] {
-        let rect = match divider { Divider::Sessions => app.areas.session_divider, _ => app.areas.request_divider };
+        let rect = match divider {
+            Divider::Sessions => app.areas.session_divider,
+            _ => app.areas.request_divider,
+        };
         assert_eq!(rect.width, 1);
         let target = rect.x.saturating_add_signed(delta);
-        for (kind, column) in [(MouseEventKind::Down(MouseButton::Left), rect.x), (MouseEventKind::Drag(MouseButton::Left), target)] {
-            app.mouse(MouseEvent { kind, column, row: rect.y + 2, modifiers: KeyModifiers::NONE }).unwrap();
+        for (kind, column) in [
+            (MouseEventKind::Down(MouseButton::Left), rect.x),
+            (MouseEventKind::Drag(MouseButton::Left), target),
+        ] {
+            app.mouse(MouseEvent {
+                kind,
+                column,
+                row: rect.y + 2,
+                modifiers: KeyModifiers::NONE,
+            })
+            .unwrap();
         }
         terminal.draw(|f| app.draw(f)).unwrap();
-        let moved = match divider { Divider::Sessions => app.areas.session_divider, _ => app.areas.request_divider };
+        let moved = match divider {
+            Divider::Sessions => app.areas.session_divider,
+            _ => app.areas.request_divider,
+        };
         assert_eq!(moved.x, target);
-        app.mouse(MouseEvent { kind: MouseEventKind::Up(MouseButton::Left), column: target, row: rect.y + 2, modifiers: KeyModifiers::NONE }).unwrap();
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: target,
+            row: rect.y + 2,
+            modifiers: KeyModifiers::NONE,
+        })
+        .unwrap();
         assert_eq!(app.request_position(), selected);
         assert!(app.areas.reader.width >= 40);
     }
@@ -582,7 +768,13 @@ fn session_and_request_panes_resize_and_persist_without_changing_detail() {
     smaller.draw(|f| app.draw(f)).unwrap();
     assert!(app.areas.reader.width >= 40);
     assert_eq!(app.request_position(), selected);
-    let screen = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect::<String>();
+    let screen = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
     assert!(screen.contains("Explain with: codex"));
 }
 #[test]
@@ -597,15 +789,30 @@ fn session_responses_and_notes_keep_text_beyond_previous_capture_and_display_lim
         json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":response}]}}),
         json!({"type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":notes}]}}),
     ];
-    std::fs::write(&path, rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
+    std::fs::write(
+        &path,
+        rows.iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
     let session = crate::history::collect(&path).unwrap();
-    assert!(arr(&session["events"]).iter().any(|e| e["text"] == response && e["truncated"] == false));
-    assert!(arr(&session["events"]).iter().any(|e| e["text"] == notes && e["truncated"] == false));
+    assert!(
+        arr(&session["events"])
+            .iter()
+            .any(|e| e["text"] == response && e["truncated"] == false)
+    );
+    assert!(
+        arr(&session["events"])
+            .iter()
+            .any(|e| e["text"] == notes && e["truncated"] == false)
+    );
     let work = crate::session_work::build(&app.review, &session);
     app.open(session_views::flow(Arc::new(work), 0));
-    for kind in ["response", "notes"] {
-        app.follow(Link::Disclosure(format!("session-turn-0-0-{kind}"))).unwrap();
-    }
+    assert!(text(&app.document).contains(&response));
+    app.follow(Link::Disclosure("session-turn-0-0-notes".into()))
+        .unwrap();
     let detail = text(&app.document);
     assert!(detail.contains(&response));
     assert!(detail.contains(&notes));
@@ -616,19 +823,29 @@ fn session_responses_and_notes_keep_text_beyond_previous_capture_and_display_lim
 fn request_labels_use_captured_ids_not_message_or_project_text() {
     let turn = json!({"request":{"id":"event-42","kind":"user","text":"<environment_context>Project: /private/project</environment_context>"}});
     assert_eq!(session_flow::request_label(&turn, 0), "event-42");
-    assert_eq!(session_flow::request_label(&json!({"request":{"text":"/private/project"}}), 20), "Request 21 · ID unavailable");
-    assert_eq!(session_flow::request_label(&json!({"request":null}), 0), "Request 1 · ID unavailable");
+    assert_eq!(
+        session_flow::request_label(&json!({"request":{"text":"/private/project"}}), 20),
+        "Request 21 · ID unavailable"
+    );
+    assert_eq!(
+        session_flow::request_label(&json!({"request":null}), 0),
+        "Request 1 · ID unavailable"
+    );
 }
 #[test]
 fn requests_pane_paginates_independently_and_restores_selection() {
     let (_dir, mut app) = app();
     let mut work = app.decision_scope();
     let turn = work["turns"][0].clone();
-    work["turns"] = json!((0..45).map(|index| {
-        let mut turn = turn.clone();
-        turn["request"]["text"] = json!(format!("REQUEST_{index:02}"));
-        turn
-    }).collect::<Vec<_>>());
+    work["turns"] = json!(
+        (0..45)
+            .map(|index| {
+                let mut turn = turn.clone();
+                turn["request"]["text"] = json!(format!("REQUEST_{index:02}"));
+                turn
+            })
+            .collect::<Vec<_>>()
+    );
     app.selected_work = Some(work.clone());
     app.open(session_views::flow(Arc::new(work), 0));
     let mut terminal = Terminal::new(TestBackend::new(140, 32)).unwrap();
@@ -638,9 +855,26 @@ fn requests_pane_paginates_independently_and_restores_selection() {
     assert!(text(&app.document).contains("REQUEST_00"));
     assert!(!text(&app.document).contains("REQUEST_01"));
     // Next-page links live in the right pane, not the detail document.
-    assert!(!app.document.sources.iter().any(|(_, link)| matches!(link, Link::Page(_))));
-    let next = app.areas.sources.iter().find(|(_, link)| *link == Link::Page(20)).unwrap().0;
-    app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: next.x, row: next.y, modifiers: KeyModifiers::NONE }).unwrap();
+    assert!(
+        !app.document
+            .sources
+            .iter()
+            .any(|(_, link)| matches!(link, Link::Page(_)))
+    );
+    let next = app
+        .areas
+        .sources
+        .iter()
+        .find(|(_, link)| *link == Link::Page(20))
+        .unwrap()
+        .0;
+    app.mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: next.x,
+        row: next.y,
+        modifiers: KeyModifiers::NONE,
+    })
+    .unwrap();
     assert_eq!(app.request_position(), Some((20, 45)));
     assert!(text(&app.document).contains("REQUEST_20"));
     app.key(KeyCode::BackTab, KeyModifiers::NONE).unwrap();
@@ -658,7 +892,12 @@ fn requests_pane_paginates_independently_and_restores_selection() {
     app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     assert_eq!(app.request_position(), Some((44, 45)));
     terminal.draw(|f| app.draw(f)).unwrap();
-    assert!(!app.areas.sources.iter().any(|(_, link)| *link == Link::Page(60)));
+    assert!(
+        !app.areas
+            .sources
+            .iter()
+            .any(|(_, link)| *link == Link::Page(60))
+    );
     let mut narrow = Terminal::new(TestBackend::new(60, 18)).unwrap();
     narrow.draw(|f| app.draw(f)).unwrap();
     assert!(app.areas.requests.is_empty());

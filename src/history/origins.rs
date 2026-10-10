@@ -39,31 +39,33 @@ fn captures(
                         .iter()
                         .any(|e| e["provenance"]["turn_id"] == *boundary))
         })
-    }) {
-        if let Some(entry) = super::discover(root, agent, None, None)?
-            .into_iter()
-            .find(|e| e["id"] == id)
-        {
-            let session = super::collect_entry(&entry)?;
-            ensure!(
-                super::belongs(s(&session["cwd"]), root)
-                    && session["id"] == id
-                    && session["agent"] == agent,
-                "Original transcript does not match the requested repository and session"
-            );
-            let key = format!("{agent}:{id}:{}", &digest(&session.to_string())[..12]);
-            store.put("session", &key, &session)?;
-            if !saved.iter().any(|(existing, _)| existing == &key) {
-                saved.insert(0, (key, session));
-            }
+    }) && let Some(entry) = super::discover(root, agent, None, None)?
+        .into_iter()
+        .find(|e| e["id"] == id)
+    {
+        let session = super::collect_entry(&entry)?;
+        ensure!(
+            super::belongs(s(&session["cwd"]), root)
+                && session["id"] == id
+                && session["agent"] == agent,
+            "Original transcript does not match the requested repository and session"
+        );
+        let key = format!("{agent}:{id}:{}", &digest(&session.to_string())[..12]);
+        store.put("session", &key, &session)?;
+        if !saved.iter().any(|(existing, _)| existing == &key) {
+            saved.insert(0, (key, session));
         }
     }
     Ok(saved)
 }
 
 pub fn enrich(root: &Path, evidence: &mut Value) -> Result<()> {
-    if evidence["kind"]=="rationale" || evidence["role"]=="rationale" {
-        if let Some(object)=evidence.as_object_mut(){object.remove("origin_status");object.remove("origin_reason");object.remove("originals");}
+    if evidence["kind"] == "rationale" || evidence["role"] == "rationale" {
+        if let Some(object) = evidence.as_object_mut() {
+            object.remove("origin_status");
+            object.remove("origin_reason");
+            object.remove("originals");
+        }
         return Ok(());
     }
     let source = s(&evidence["provenance"]["source_type"]).to_owned();
@@ -263,7 +265,9 @@ pub fn open(root: &Path, reference: &Value) -> Result<Value> {
 }
 
 pub fn status(evidence: &Value) -> Option<String> {
-    if evidence["kind"]=="rationale" || evidence["role"]=="rationale" {return None;}
+    if evidence["kind"] == "rationale" || evidence["role"] == "rationale" {
+        return None;
+    }
     if ["original_turn", "tool_record"].contains(&s(&evidence["provenance"]["source_type"])) {
         return None;
     }

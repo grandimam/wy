@@ -20,7 +20,15 @@ fn provenance(d: &Value) -> &'static str {
     }
 }
 
-pub(super) fn overview(brief: Arc<Value>) -> Document {
+pub(super) enum BriefState {
+    NotAnalyzed,
+    Generating,
+    Ready,
+    Failed(String),
+    Unavailable,
+}
+
+pub(super) fn overview(brief: Arc<Value>, state: BriefState, agent: &str) -> Document {
     let mut doc = Document::new(View::DecisionOverview, "Decisions");
     let session_scope = brief["scope_kind"] == "session";
     doc.text(
@@ -33,20 +41,70 @@ pub(super) fn overview(brief: Arc<Value>) -> Document {
         },
         MUTED,
     );
+    if session_scope {
+        let ordinals = arr(&brief["selection"]["ordinals"]);
+        if ordinals.is_empty() {
+            doc.text("Scope: Entire session", MUTED);
+        } else {
+            doc.text(
+                format!(
+                    "Scope: Selected requests {}",
+                    ordinals
+                        .iter()
+                        .map(|i| (crate::n(i) + 1).to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                AMBER,
+            );
+        }
+        doc.text(
+            "Select a request in Sessions, or /decisions requests START-END",
+            MUTED,
+        );
+    }
+    doc.text(
+        format!("Generate with: {agent} · sends captured code and context"),
+        MUTED,
+    );
+    match &state {
+        BriefState::NotAnalyzed => doc.text(
+            "Not analyzed · generation requires your explicit request",
+            MUTED,
+        ),
+        BriefState::Generating => doc.text(
+            "Generating decision brief… · x cancels · keep browsing",
+            AMBER,
+        ),
+        BriefState::Failed(error) => {
+            doc.text(format!("Generation failed: {error} · retry below"), AMBER)
+        }
+        BriefState::Unavailable => doc.text(
+            "Discovery unavailable: no captured code edits. Current files will not be substituted.",
+            AMBER,
+        ),
+        BriefState::Ready => {}
+    }
     let decisions = arr(&brief["decisions"]);
-    if brief["changed_files"] == 0 {
+    if (session_scope && brief["captured_edits"] == 0)
+        || (!session_scope && brief["changed_files"] == 0)
+    {
         doc.heading(if session_scope {
             "No captured code edits"
         } else {
             "No uncommitted changes"
         });
     } else if decisions.is_empty() {
-        doc.heading("No decisions identified");
+        doc.heading(if brief["mode"] == "assessment" {
+            "No consequential choices identified"
+        } else {
+            "No generated decision brief yet"
+        });
         doc.text(
             if brief["mode"] == "assessment" {
                 "No consequential choices were identified in the available evidence."
             } else {
-                "No recorded decisions found."
+                "No structured decision records found. Generate a brief to identify choices and distinguish recorded reasons from inferred explanations."
             },
             MUTED,
         );
@@ -67,28 +125,35 @@ pub(super) fn overview(brief: Arc<Value>) -> Document {
             );
         }
     }
-    if if session_scope {
-        brief["captured_edits"].as_u64().unwrap_or(0) > 0
-    } else {
-        brief["changed_files"] != 0
-    } {
+    if !matches!(state, BriefState::Generating | BriefState::Unavailable)
+        && (if session_scope {
+            brief["captured_edits"].as_u64().unwrap_or(0) > 0
+        } else {
+            brief["changed_files"] != 0
+        })
+    {
         doc.gap();
         link(
             &mut doc,
-            if brief["mode"] == "assessment" {
+            if matches!(state, BriefState::Failed(_)) {
+                "Retry decision brief generation"
+            } else if brief["mode"] == "assessment" {
                 "Refresh decisions with AI"
             } else {
-                "Identify decisions with AI"
+                "Generate decision brief · Identify decisions with AI"
             },
             Link::DiscoverDecisions,
         );
         doc.text(
-            "Sends selected code and history to your reasoning CLI.",
+            "Sends selected captured code and context to your reasoning CLI. Generation is explicit; inspect evidence before relying on explanations.",
             MUTED,
         );
     }
     if session_scope {
         doc.gap();
+        if brief["selection"]["kind"] == "requests" {
+            link(&mut doc, "Use entire session", Link::SessionDecisions);
+        }
         link(&mut doc, "Choose a session", Link::SessionPicker);
     }
     let mut details = if session_scope {

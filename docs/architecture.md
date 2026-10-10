@@ -31,7 +31,12 @@ flowchart LR
 - `session_work.rs` builds the selected session's file set, requests and edit
   sequence. It does not read current files to reconstruct historical content.
   `load` resolves and verifies the pinned snapshot identity and repository scope.
-  Packet assembly includes only that session's captured edits and public context,
+  `WorkSelection` optionally narrows discovery to normalized request ordinals within
+  the immutable snapshot. `scoped` resolves selected turns and reindexes their edits;
+  offline records and packet context share the same event-membership filter.
+  Discovery rebuilds the selection from the pinned snapshot rather than trusting
+  caller-provided edits or paginated reader documents.
+  Packet assembly includes only the selected work's captured edits and public context,
   bounded by size and item count. Unsupported, unconfirmed or partial work is not
   repaired by borrowing today's code or another session's edits.
 - `decisions.rs` groups self-reported records within the selected session and runs
@@ -42,7 +47,8 @@ flowchart LR
   are assessments unless explicitly attributed. Structural validity does not prove
   semantic support.
 - `decision_brief` artifacts include their evidence packet, scope kind and snapshot
-  metadata. Session cache identity is repository + immutable session key. Current
+  metadata. Session cache identity is repository + immutable session key + normalized
+  request selection + analysis version. Current
   file hashes and Git HEAD are deliberately absent: commits and later edits do not
   invalidate historical explanations, while newly captured session content does.
 - The earlier change-set assessment API remains separate for compatibility. It

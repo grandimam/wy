@@ -236,7 +236,6 @@ fn explicit_original_references_survive_resume_and_deleted_transcripts() {
         &root,
         &wy::service::ReviewOptions {
             source: "codex".into(),
-            ..Default::default()
         },
     )
     .unwrap();
@@ -461,7 +460,6 @@ fn summary_provenance_and_missing_original_reach_explanation_packets() {
         &root,
         &wy::service::ReviewOptions {
             source: "codex".into(),
-            ..Default::default()
         },
     )
     .unwrap();

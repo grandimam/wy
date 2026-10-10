@@ -155,4 +155,3 @@ pub fn lookup(path: &Path, revision: &str, source: &str) -> Result<Value> {
     }
     Ok(json!({"commit":commit,"links":links,"sessions":saved}))
 }
-

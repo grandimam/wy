@@ -46,7 +46,12 @@ fn hunks(diff: &str) -> Vec<(usize, Lines)> {
             result.push((index, Lines::default()));
         } else if result.is_empty() && line.starts_with('+') && !line.starts_with("+++") {
             result.push((index, Lines::default()));
-            result.last_mut().unwrap().1.added.extend(significant(line.strip_prefix('+').unwrap()));
+            result
+                .last_mut()
+                .unwrap()
+                .1
+                .added
+                .extend(significant(line.strip_prefix('+').unwrap()));
         } else if let Some((_, hunk)) = result.last_mut() {
             if let Some(text) = line.strip_prefix('+').filter(|_| !line.starts_with("+++")) {
                 hunk.added.extend(significant(text));
@@ -152,7 +157,8 @@ pub fn turn(session: &Value, event_id: &Value) -> Vec<Value> {
     let Some(at) = events.iter().position(|e| e["id"] == *event_id) else {
         return vec![];
     };
-    let message = |e: &Value| ["user", "assistant", "summary", "rationale"].contains(&s(&e["kind"]));
+    let message =
+        |e: &Value| ["user", "assistant", "summary", "rationale"].contains(&s(&e["kind"]));
     let start = events[..at]
         .iter()
         .rposition(|e| e["kind"] == "user")
@@ -225,9 +231,31 @@ pub fn headline(text: &str) -> (String, String) {
 }
 
 /// Recognize confirmations explicitly; a short instruction can still be substantive.
-pub fn confirmation(text:&str)->bool {
-    let normalized=text.split_whitespace().map(|word|word.trim_matches([',','.','!','?'])).collect::<Vec<_>>().join(" ").to_lowercase();
-    ["yes","yes do it","yes please","do it","continue","continue with this","go ahead","ok","okay","implement it","proceed","please do","sounds good","sure","yep"].contains(&normalized.as_str())
+pub fn confirmation(text: &str) -> bool {
+    let normalized = text
+        .split_whitespace()
+        .map(|word| word.trim_matches([',', '.', '!', '?']))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    [
+        "yes",
+        "yes do it",
+        "yes please",
+        "do it",
+        "continue",
+        "continue with this",
+        "go ahead",
+        "ok",
+        "okay",
+        "implement it",
+        "proceed",
+        "please do",
+        "sounds good",
+        "sure",
+        "yep",
+    ]
+    .contains(&normalized.as_str())
 }
 
 /// The agent's reasons for the changes to one file, with the hunks in file order.
@@ -248,7 +276,10 @@ pub fn reasons(root: &Path, sessions: &[Value], file: &str, diff: Option<&str>) 
             let header = text.lines().next().unwrap_or("");
             let change = json!({"id":format!("{file}:{line}"),"label":hunk_label(header),"text":text,
                 "format":"patch","added":added,"removed":removed,"status":source["status"]});
-            pairs.push((source["edit"].as_object().map(|_| source["edit"].clone()), change));
+            pairs.push((
+                source["edit"].as_object().map(|_| source["edit"].clone()),
+                change,
+            ));
         }
     } else {
         for edit in &edits {
@@ -261,9 +292,11 @@ pub fn reasons(root: &Path, sessions: &[Value], file: &str, diff: Option<&str>) 
     let mut groups: Vec<Value> = vec![];
     let mut hunks = vec![];
     for (edit, mut change) in pairs {
-        let session = edit
-            .as_ref()
-            .and_then(|e| sessions.iter().find(|x| x["id"] == e["session_id"] && x["agent"] == e["agent"]));
+        let session = edit.as_ref().and_then(|e| {
+            sessions
+                .iter()
+                .find(|x| x["id"] == e["session_id"] && x["agent"] == e["agent"])
+        });
         let (Some(edit), Some(session)) = (edit, session) else {
             change["reason"] = Value::Null;
             change["first"] = json!(false);
@@ -282,7 +315,22 @@ pub fn reasons(root: &Path, sessions: &[Value], file: &str, diff: Option<&str>) 
         let prior = request
             .filter(|r| confirmation(s(&r["text"])))
             .and_then(|r| events.iter().position(|e| e["id"] == r["id"]))
-            .and_then(|i| events[..i].iter().rev().find(|e| e["kind"] == "user" && super::provenance::original(e) && !s(&e["text"]).trim().is_empty() && !confirmation(s(&e["text"])) && !["<environment_context>","<permissions","# AGENTS.md","<turn_aborted>"].iter().any(|prefix|s(&e["text"]).trim_start().starts_with(prefix))));
+            .and_then(|i| {
+                events[..i].iter().rev().find(|e| {
+                    e["kind"] == "user"
+                        && super::provenance::original(e)
+                        && !s(&e["text"]).trim().is_empty()
+                        && !confirmation(s(&e["text"]))
+                        && ![
+                            "<environment_context>",
+                            "<permissions",
+                            "# AGENTS.md",
+                            "<turn_aborted>",
+                        ]
+                        .iter()
+                        .any(|prefix| s(&e["text"]).trim_start().starts_with(prefix))
+                })
+            });
         let after = turn[at..].iter().find(|e| e["kind"] == "assistant");
         let anchor = message
             .or(request)
@@ -292,14 +340,12 @@ pub fn reasons(root: &Path, sessions: &[Value], file: &str, diff: Option<&str>) 
         let index = match groups.iter().position(|g| g["key"] == key) {
             Some(index) => index,
             None => {
-                let model = message
-                    .and_then(|m| m["model"].as_str())
-                    .or_else(|| {
-                        arr(&session["events"])
-                            .iter()
-                            .find(|e| e["id"] == edit["event_id"])
-                            .and_then(|e| e["model"].as_str())
-                    });
+                let model = message.and_then(|m| m["model"].as_str()).or_else(|| {
+                    arr(&session["events"])
+                        .iter()
+                        .find(|e| e["id"] == edit["event_id"])
+                        .and_then(|e| e["model"].as_str())
+                });
                 // How many context compactions happened before this edit in its session.
                 // The reader marks the point where the agent's memory was cut.
                 let compactions = arr(&session["events"])
@@ -329,7 +375,8 @@ mod tests {
 
     #[test]
     fn hunks_match_recorded_edits_by_exact_changed_lines() {
-        let agent = patch("@@\n-    fetch()\n+    cache.get(key)\n+        .unwrap_or_else(fetch)\n }");
+        let agent =
+            patch("@@\n-    fetch()\n+    cache.get(key)\n+        .unwrap_or_else(fetch)\n }");
         let result = hunk_sources(DIFF, &[agent]);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0]["line"], 2);
@@ -368,16 +415,27 @@ mod tests {
             {"id":"5","kind":"assistant","text":"Done."},
             {"id":"6","kind":"change","text":"patch"},
             {"id":"7","kind":"user","text":"Next"}]});
-        let ids = |events: Vec<Value>| events.iter().map(|e| s(&e["id"]).to_owned()).collect::<Vec<_>>();
+        let ids = |events: Vec<Value>| {
+            events
+                .iter()
+                .map(|e| s(&e["id"]).to_owned())
+                .collect::<Vec<_>>()
+        };
         assert_eq!(ids(turn(&session, &json!("3"))), ["1", "2", "3", "5"]);
     }
     #[test]
     fn headlines_split_at_the_first_sentence_not_at_dotted_names() {
         assert_eq!(
             headline("I'll cache responses. Repeated reads reuse them."),
-            ("I'll cache responses.".into(), "Repeated reads reuse them.".into())
+            (
+                "I'll cache responses.".into(),
+                "Repeated reads reuse them.".into()
+            )
         );
-        assert_eq!(headline("Use cache.get(key) here"), ("Use cache.get(key) here".into(), String::new()));
+        assert_eq!(
+            headline("Use cache.get(key) here"),
+            ("Use cache.get(key) here".into(), String::new())
+        );
         assert_eq!(headline("First line\nsecond").0, "First line");
     }
     #[test]

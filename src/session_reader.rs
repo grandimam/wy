@@ -9,6 +9,10 @@ pub const PAGE_SIZE: usize = 20;
 /// Materialize an immutable work snapshot once. Content is never shortened here.
 /// The importer still owns source validation and capture budgets.
 pub fn index(root: &Path, work: &Value) -> Result<()> {
+    ensure!(
+        session_work::selection(work)? == session_work::WorkSelection::EntireSession,
+        "The session reader index requires the entire snapshot, not a decision selection"
+    );
     let key = s(&work["session"]["storage_key"]);
     ensure!(!key.is_empty(), "No selected session");
     let store = Store::open(root)?;
@@ -18,7 +22,10 @@ pub fn index(root: &Path, work: &Value) -> Result<()> {
 pub fn page(root: &Path, key: &str, selected: usize) -> Result<Value> {
     let store = Store::open(root)?;
     let mut work = store.session_work_header(key)?;
-    ensure!(s(&work["root"]) == root.to_string_lossy(), "Request index belongs to another repository");
+    ensure!(
+        s(&work["root"]) == root.to_string_lossy(),
+        "Request index belongs to another repository"
+    );
     let count = n(&work["request_count"]);
     let selected = selected.min(count.saturating_sub(1));
     let first = selected / PAGE_SIZE * PAGE_SIZE;
@@ -40,14 +47,22 @@ pub fn page(root: &Path, key: &str, selected: usize) -> Result<Value> {
 /// Older snapshots migrate on demand, without loading other sessions.
 pub fn ensure_index(root: &Path, key: &str, review: &Value) -> Result<()> {
     let store = Store::open(root)?;
-    if store.has_session_work(key)? { return Ok(()); }
+    if store.has_session_work(key)? {
+        return Ok(());
+    }
     let session = store.get("session", key)?;
     crate::validate("Session", &session)?;
-    ensure!(crate::history::belongs(s(&session["cwd"]), root) && session_work::snapshot_key(&session) == key,
-        "Session snapshot is not verifiably scoped to this repository");
+    ensure!(
+        crate::history::belongs(s(&session["cwd"]), root)
+            && session_work::snapshot_key(&session) == key,
+        "Session snapshot is not verifiably scoped to this repository"
+    );
     index(root, &session_work::build(review, &session))
 }
 
 pub fn count(work: &Value) -> usize {
-    work["request_count"].as_u64().map(|v| v as usize).unwrap_or_else(|| arr(&work["turns"]).len())
+    work["request_count"]
+        .as_u64()
+        .map(|v| v as usize)
+        .unwrap_or_else(|| arr(&work["turns"]).len())
 }

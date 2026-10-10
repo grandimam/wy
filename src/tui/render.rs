@@ -1,13 +1,15 @@
 //! Section navigation beside the reader; the file tree belongs only to Code.
 use super::*;
+use ratatui::widgets::{Block, BorderType, Borders, Padding};
 use std::collections::HashMap;
-use ratatui::widgets::{Block, Borders, BorderType, Padding};
 
 /// Native panel chrome. A scrolled panel draws only its visible edges.
-fn reader_block(request:bool)->Block<'static>{
-    Block::default().border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(if request{ACCENT}else{BORDER}))
-        .borders(Borders::LEFT|Borders::RIGHT).padding(Padding::horizontal(1))
+fn reader_block(request: bool) -> Block<'static> {
+    Block::default()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(if request { ACCENT } else { BORDER }))
+        .borders(Borders::LEFT | Borders::RIGHT)
+        .padding(Padding::horizontal(1))
 }
 
 impl Workspace {
@@ -34,19 +36,38 @@ impl Workspace {
         self.draw_header(frame, rows[0]);
         let narrow = area.width < 88;
         self.areas.workspace = rows[2];
-        let show_requests = self.request_position().is_some() && (area.width >= 110 || self.request_nav_focus);
+        let show_requests =
+            self.request_position().is_some() && (area.width >= 110 || self.request_nav_focus);
         let reserved_requests = if show_requests && area.width >= 110 {
-            self.pane_sizes.requests.unwrap_or(30).clamp(18, area.width.saturating_sub(62).max(18)) + 1
-        } else { 0 };
+            self.pane_sizes
+                .requests
+                .unwrap_or(30)
+                .clamp(18, area.width.saturating_sub(62).max(18))
+                + 1
+        } else {
+            0
+        };
         let body = if narrow && !self.session_nav_focus {
             self.draw_navigation(frame, rows[1], false);
             rows[2]
         } else {
             let resizable = !narrow && self.section() != View::Recorded;
-            let width = if self.section() == View::Recorded { 14 } else if narrow { 20 } else {
-                self.pane_sizes.sessions.unwrap_or(28).clamp(16, area.width.saturating_sub(reserved_requests + 45).max(16))
+            let width = if self.section() == View::Recorded {
+                14
+            } else if narrow {
+                20
+            } else {
+                self.pane_sizes.sessions.unwrap_or(28).clamp(
+                    16,
+                    area.width.saturating_sub(reserved_requests + 45).max(16),
+                )
             };
-            let columns=Layout::horizontal([Constraint::Length(width), Constraint::Length(u16::from(resizable)), Constraint::Min(0)]).split(rows[2]);
+            let columns = Layout::horizontal([
+                Constraint::Length(width),
+                Constraint::Length(u16::from(resizable)),
+                Constraint::Min(0),
+            ])
+            .split(rows[2]);
             self.draw_navigation(frame, columns[0], true);
             if resizable {
                 self.areas.session_divider = columns[1];
@@ -56,17 +77,30 @@ impl Workspace {
         };
         let body = if show_requests {
             let resizable = area.width >= 110;
-            let width = if resizable { reserved_requests - 1 } else { body.width.min(28) };
-            let panes = Layout::horizontal([Constraint::Min(0), Constraint::Length(u16::from(resizable)), Constraint::Length(width)]).split(body);
+            let width = if resizable {
+                reserved_requests - 1
+            } else {
+                body.width.min(28)
+            };
+            let panes = Layout::horizontal([
+                Constraint::Min(0),
+                Constraint::Length(u16::from(resizable)),
+                Constraint::Length(width),
+            ])
+            .split(body);
             if resizable {
                 self.areas.request_divider = panes[1];
                 self.draw_divider(frame, panes[1]);
             }
             self.draw_requests(frame, panes[2]);
             panes[0]
-        } else { body };
+        } else {
+            body
+        };
         self.areas.body = body;
-        let show_files = self.section()==View::Recorded && self.sidebar && (!narrow || self.focus == Focus::Files);
+        let show_files = self.section() == View::Recorded
+            && self.sidebar
+            && (!narrow || self.focus == Focus::Files);
         let show_reader = !show_files || !narrow;
         let file_width = match (show_files, narrow) {
             (false, _) => 0,
@@ -102,7 +136,6 @@ impl Workspace {
         let title = Line::from(vec![
             Span::styled(" wy", Style::default().fg(ACCENT).bold()),
             Span::styled(format!("  {repo}"), Style::default().fg(TEXT).bold()),
-
         ]);
         frame.render_widget(Paragraph::new(title), area);
         let agent = Line::from(Span::styled(
@@ -125,11 +158,7 @@ impl Workspace {
     fn draw_files(&mut self, frame: &mut Frame, area: Rect) {
         // The filter line appears only while a filter is being typed or applied.
         let filtering = self.editing == Some(Input::Filter) || !self.explorer.filter.is_empty();
-        let sections = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(1),
-        ])
-        .split(area);
+        let sections = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(area);
         if filtering {
             frame.render_widget(
                 Paragraph::new(format!(" / {}", self.explorer.filter))
@@ -138,70 +167,90 @@ impl Workspace {
             );
         }
         if !filtering {
-            frame.render_widget(Paragraph::new(if self.explorer.rows.iter().any(|r|r.kind==Kind::Section){" Files · f filters"}else{" Current changes · f filters"}).style(Style::default().fg(TEXT).bold()),sections[0]);
+            frame.render_widget(
+                Paragraph::new(
+                    if self.explorer.rows.iter().any(|r| r.kind == Kind::Section) {
+                        " Files · f filters"
+                    } else {
+                        " Current changes · f filters"
+                    },
+                )
+                .style(Style::default().fg(TEXT).bold()),
+                sections[0],
+            );
         }
         self.areas.files = sections[1];
         let available = sections[1].width.saturating_sub(3) as usize;
-        let items: Vec<_> = self
-            .explorer
-            .rows
-            .iter()
-            .map(|row| {
-                if row.kind==Kind::Section{return ListItem::new(Line::styled(format!("{} {} · {}",if row.expanded{"▾"}else{"▸"},row.label,row.count),Style::default().fg(TEXT).bold()));}
-                let icon = if row.expandable {
-                    if row.expanded { "▾" } else { "▸" }
-                } else if row.kind == Kind::Symbol {
-                    "·"
-                } else {
-                    " "
-                };
-                let reviewed = row.kind == Kind::File
-                    && row
-                        .target
-                        .as_ref()
-                        .is_some_and(|t| self.explorer.reviewed.contains(&t.file));
-                let label = format!(
-                    "{}{icon} {}{}",
-                    "  ".repeat(row.depth.min(6)),
-                    row.label,
-                    if row.kind == Kind::Folder { "/" } else { "" }
-                );
-                let state:Option<(&str,Color)>=None;
-                let suffix = match row.kind {
-                    Kind::Section => String::new(),
-                    Kind::Folder => format!(" {}", row.count),
-                    Kind::File if reviewed => " ✓".into(),
-                    Kind::File if row.diff => format!(" +{} −{}", row.added, row.removed),
-                    Kind::File if row.session => String::new(),
-                    Kind::File => String::new(),
-                    Kind::Symbol => {
-                        format!(" :{}", row.target.as_ref().map(|t| t.line).unwrap_or(0))
+        let items: Vec<_> =
+            self.explorer
+                .rows
+                .iter()
+                .map(|row| {
+                    if row.kind == Kind::Section {
+                        return ListItem::new(Line::styled(
+                            format!(
+                                "{} {} · {}",
+                                if row.expanded { "▾" } else { "▸" },
+                                row.label,
+                                row.count
+                            ),
+                            Style::default().fg(TEXT).bold(),
+                        ));
                     }
-                };
-                let label = fit(
-                    &label,
-                    available
-                        .saturating_sub(Line::from(suffix.as_str()).width())
-                        .max(4),
-                );
-                let color = match row.kind {
-                    Kind::Section => TEXT,
-                    Kind::Folder => ACCENT,
-                    Kind::File if reviewed => GREEN,
-                    Kind::File => TEXT,
-                    Kind::Symbol => MUTED,
-                };
-                ListItem::new(Line::from(vec![
-                    Span::styled(label, Style::default().fg(color)),
-                    Span::styled(
-                        suffix,
-                        Style::default().fg(state
-                            .map(|(_, color)| color)
-                            .unwrap_or(if reviewed { GREEN } else { MUTED })),
-                    ),
-                ]))
-            })
-            .collect();
+                    let icon = if row.expandable {
+                        if row.expanded { "▾" } else { "▸" }
+                    } else if row.kind == Kind::Symbol {
+                        "·"
+                    } else {
+                        " "
+                    };
+                    let reviewed = row.kind == Kind::File
+                        && row
+                            .target
+                            .as_ref()
+                            .is_some_and(|t| self.explorer.reviewed.contains(&t.file));
+                    let label = format!(
+                        "{}{icon} {}{}",
+                        "  ".repeat(row.depth.min(6)),
+                        row.label,
+                        if row.kind == Kind::Folder { "/" } else { "" }
+                    );
+                    let state: Option<(&str, Color)> = None;
+                    let suffix = match row.kind {
+                        Kind::Section => String::new(),
+                        Kind::Folder => format!(" {}", row.count),
+                        Kind::File if reviewed => " ✓".into(),
+                        Kind::File if row.diff => format!(" +{} −{}", row.added, row.removed),
+                        Kind::File if row.session => String::new(),
+                        Kind::File => String::new(),
+                        Kind::Symbol => {
+                            format!(" :{}", row.target.as_ref().map(|t| t.line).unwrap_or(0))
+                        }
+                    };
+                    let label = fit(
+                        &label,
+                        available
+                            .saturating_sub(Line::from(suffix.as_str()).width())
+                            .max(4),
+                    );
+                    let color = match row.kind {
+                        Kind::Section => TEXT,
+                        Kind::Folder => ACCENT,
+                        Kind::File if reviewed => GREEN,
+                        Kind::File => TEXT,
+                        Kind::Symbol => MUTED,
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(label, Style::default().fg(color)),
+                        Span::styled(
+                            suffix,
+                            Style::default().fg(state
+                                .map(|(_, color)| color)
+                                .unwrap_or(if reviewed { GREEN } else { MUTED })),
+                        ),
+                    ]))
+                })
+                .collect();
         if items.is_empty() {
             frame.render_widget(
                 Paragraph::new(if self.explorer.filter.is_empty() {
@@ -228,57 +277,164 @@ impl Workspace {
         }
     }
     fn draw_title(&mut self, frame: &mut Frame, area: Rect) {
-        let state=self.document.target.as_ref().and_then(|t|self.file_state(&t.file));
-        let suffix=state.map(|(s,_)|format!(" · explanation {s}")).unwrap_or_default();
-        frame.render_widget(Paragraph::new(fit(&format!("{}{}",self.document.title,suffix),area.width as usize)).style(Style::default().fg(TEXT).bold()),area);
+        let state = self
+            .document
+            .target
+            .as_ref()
+            .and_then(|t| self.file_state(&t.file));
+        let suffix = state
+            .map(|(s, _)| format!(" · explanation {s}"))
+            .unwrap_or_default();
+        frame.render_widget(
+            Paragraph::new(fit(
+                &format!("{}{}", self.document.title, suffix),
+                area.width as usize,
+            ))
+            .style(Style::default().fg(TEXT).bold()),
+            area,
+        );
     }
-    fn draw_navigation(&mut self,frame:&mut Frame,area:Rect,vertical:bool){
-        let horizontal=Layout::horizontal([Constraint::Ratio(1,2);2]).split(area);
-        for (index,(label,view)) in [("Decisions",View::DecisionOverview),("Sessions",View::Sessions)].into_iter().enumerate() {
-            let rect=if vertical {Rect::new(area.x,area.y+index as u16*2,area.width.saturating_sub(1),1)}else{horizontal[index]};
-            let selected=self.section()==view || (view==View::Sessions && self.section()==View::Recorded);
-            let style=if selected{Style::default().fg(ACCENT).bold().add_modifier(Modifier::REVERSED)}else{Style::default().fg(TEXT)};
-            frame.render_widget(Paragraph::new(format!(" {label}")).style(style),rect);
-            self.areas.tabs.push((rect,view,Focus::Reader));
+    fn draw_navigation(&mut self, frame: &mut Frame, area: Rect, vertical: bool) {
+        let horizontal = Layout::horizontal([Constraint::Ratio(1, 2); 2]).split(area);
+        for (index, (label, view)) in [
+            ("Decisions", View::DecisionOverview),
+            ("Sessions", View::Sessions),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let rect = if vertical {
+                Rect::new(
+                    area.x,
+                    area.y + index as u16 * 2,
+                    area.width.saturating_sub(1),
+                    1,
+                )
+            } else {
+                horizontal[index]
+            };
+            let selected = self.section() == view
+                || (view == View::Sessions && self.section() == View::Recorded);
+            let style = if selected {
+                Style::default()
+                    .fg(ACCENT)
+                    .bold()
+                    .add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default().fg(TEXT)
+            };
+            frame.render_widget(Paragraph::new(format!(" {label}")).style(style), rect);
+            self.areas.tabs.push((rect, view, Focus::Reader));
         }
         if vertical && area.height > 4 {
-            let rect = Rect::new(area.x, area.y + 4, area.width.saturating_sub(1), area.height - 4);
-            let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1), Constraint::Length(1), Constraint::Length(1)]).split(rect);
+            let rect = Rect::new(
+                area.x,
+                area.y + 4,
+                area.width.saturating_sub(1),
+                area.height - 4,
+            );
+            let rows = Layout::vertical([
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(rect);
             self.areas.sessions = rows[0];
             if self.session_nav.selected().is_none() {
                 self.step_session_navigation(0);
             }
             let entries = self.navigation_sessions();
             if entries.is_empty() {
-                frame.render_widget(Paragraph::new("  No captured sessions").style(Style::default().fg(MUTED)), rect);
+                frame.render_widget(
+                    Paragraph::new("  No captured sessions").style(Style::default().fg(MUTED)),
+                    rect,
+                );
                 return;
             }
             let count = entries.len();
             let size = session_views::SESSIONS_PER_PAGE;
             let page = self.session_page;
             let pages = count.div_ceil(size).max(1);
-            let items: Vec<_> = entries.iter().skip(page * size).take(size).map(|(key, id)| {
-                let selected = self.selected_work.as_ref().is_some_and(|w| w["session"]["storage_key"] == *key);
-                ListItem::new(format!(" {} {}", if selected { "›" } else { " " }, fit(id, rect.width.saturating_sub(4) as usize)))
-                    .style(Style::default().fg(if selected { ACCENT } else { MUTED }))
-            }).collect();
-            let highlight = if self.session_nav_focus { Style::default().add_modifier(Modifier::REVERSED) } else { Style::default() };
-            frame.render_stateful_widget(List::new(items).highlight_style(highlight), rows[0], &mut self.session_nav);
-            frame.render_widget(Paragraph::new(format!("{count} {} · {}/{pages}", if self.review["lazy_sessions"] == true { "sessions" } else { "captured" }, page + 1)).style(Style::default().fg(MUTED)), rows[1]);
+            let items: Vec<_> = entries
+                .iter()
+                .skip(page * size)
+                .take(size)
+                .map(|(key, id)| {
+                    let selected = self
+                        .selected_work
+                        .as_ref()
+                        .is_some_and(|w| w["session"]["storage_key"] == *key);
+                    ListItem::new(format!(
+                        " {} {}",
+                        if selected { "›" } else { " " },
+                        fit(id, rect.width.saturating_sub(4) as usize)
+                    ))
+                    .style(Style::default().fg(if selected {
+                        ACCENT
+                    } else {
+                        MUTED
+                    }))
+                })
+                .collect();
+            let highlight = if self.session_nav_focus {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            frame.render_stateful_widget(
+                List::new(items).highlight_style(highlight),
+                rows[0],
+                &mut self.session_nav,
+            );
+            frame.render_widget(
+                Paragraph::new(format!(
+                    "{count} {} · {}/{pages}",
+                    if self.review["lazy_sessions"] == true {
+                        "sessions"
+                    } else {
+                        "captured"
+                    },
+                    page + 1
+                ))
+                .style(Style::default().fg(MUTED)),
+                rows[1],
+            );
             let controls = Layout::horizontal([Constraint::Ratio(1, 2); 2]).split(rows[2]);
             if page > 0 {
-                frame.render_widget(Paragraph::new("← Previous").style(Style::default().fg(ACCENT)), controls[0]);
-                self.areas.sources.push((controls[0], Link::SessionPage(page - 1)));
+                frame.render_widget(
+                    Paragraph::new("← Previous").style(Style::default().fg(ACCENT)),
+                    controls[0],
+                );
+                self.areas
+                    .sources
+                    .push((controls[0], Link::SessionPage(page - 1)));
             }
             if page + 1 < pages {
-                frame.render_widget(Paragraph::new("Next →").style(Style::default().fg(ACCENT)), controls[1]);
-                self.areas.sources.push((controls[1], Link::SessionPage(page + 1)));
+                frame.render_widget(
+                    Paragraph::new("Next →").style(Style::default().fg(ACCENT)),
+                    controls[1],
+                );
+                self.areas
+                    .sources
+                    .push((controls[1], Link::SessionPage(page + 1)));
             }
-            frame.render_widget(Paragraph::new(if self.review["lazy_sessions"] == true { "Load on selection" } else { "Capture limits: /coverage" }).style(Style::default().fg(MUTED)), rows[3]);
+            frame.render_widget(
+                Paragraph::new(if self.review["lazy_sessions"] == true {
+                    "Load on selection"
+                } else {
+                    "Capture limits: /coverage"
+                })
+                .style(Style::default().fg(MUTED)),
+                rows[3],
+            );
         }
     }
     fn draw_requests(&mut self, frame: &mut Frame, area: Rect) {
-        let Some(history_views::Page::Work { work, index }) = self.document.pagination.as_ref() else { return; };
+        let Some(history_views::Page::Work { work, index }) = self.document.pagination.as_ref()
+        else {
+            return;
+        };
         let selected = *index;
         let indexed = work["indexed_reader"] == true;
         let turns = arr(&work[if indexed { "request_page" } else { "turns" }]);
@@ -287,37 +443,94 @@ impl Workspace {
         let page = selected / size;
         let count = total.div_ceil(size).max(1);
         let first = page * size;
-        let rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0), Constraint::Length(1), Constraint::Length(1)]).split(area);
-        frame.render_widget(Paragraph::new("Requests").style(Style::default().fg(if self.request_nav_focus { ACCENT } else { TEXT }).bold()), rows[0]);
+        let rows = Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(area);
+        frame.render_widget(
+            Paragraph::new("Requests").style(
+                Style::default()
+                    .fg(if self.request_nav_focus { ACCENT } else { TEXT })
+                    .bold(),
+            ),
+            rows[0],
+        );
         self.areas.requests = rows[1];
         if self.request_nav.selected().is_none() && !turns.is_empty() {
             self.request_nav.select(Some(selected % size));
         }
-        let items: Vec<_> = turns.iter().enumerate().skip(if indexed { 0 } else { first }).take(size).map(|(index, turn)| {
-            let index = if indexed { first + index } else { index };
-            let label = session_flow::request_label(turn, index);
-            ListItem::new(format!("{} {}", if index == selected { "›" } else { " " }, fit(&label, area.width.saturating_sub(3) as usize)))
-                .style(Style::default().fg(if index == selected { ACCENT } else { MUTED }))
-        }).collect();
-        let highlight = if self.request_nav_focus { Style::default().add_modifier(Modifier::REVERSED) } else { Style::default() };
-        frame.render_stateful_widget(List::new(items).highlight_style(highlight), rows[1], &mut self.request_nav);
+        let items: Vec<_> = turns
+            .iter()
+            .enumerate()
+            .skip(if indexed { 0 } else { first })
+            .take(size)
+            .map(|(index, turn)| {
+                let index = if indexed { first + index } else { index };
+                let label = session_flow::request_label(turn, index);
+                ListItem::new(format!(
+                    "{} {}",
+                    if index == selected { "›" } else { " " },
+                    fit(&label, area.width.saturating_sub(3) as usize)
+                ))
+                .style(Style::default().fg(if index == selected {
+                    ACCENT
+                } else {
+                    MUTED
+                }))
+            })
+            .collect();
+        let highlight = if self.request_nav_focus {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
+        frame.render_stateful_widget(
+            List::new(items).highlight_style(highlight),
+            rows[1],
+            &mut self.request_nav,
+        );
         for row in 0..rows[1].height {
             let index = first + self.request_nav.offset() + usize::from(row);
-            if index >= total.min(first + size) { break; }
-            self.areas.sources.push((Rect::new(rows[1].x, rows[1].y + row, rows[1].width, 1), Link::Page(index)));
+            if index >= total.min(first + size) {
+                break;
+            }
+            self.areas.sources.push((
+                Rect::new(rows[1].x, rows[1].y + row, rows[1].width, 1),
+                Link::Page(index),
+            ));
         }
         if turns.is_empty() {
-            frame.render_widget(Paragraph::new("No captured requests").style(Style::default().fg(MUTED)), rows[1]);
+            frame.render_widget(
+                Paragraph::new("No captured requests").style(Style::default().fg(MUTED)),
+                rows[1],
+            );
         }
-        frame.render_widget(Paragraph::new(format!("Page {} / {count}", page + 1)).style(Style::default().fg(MUTED)), rows[2]);
+        frame.render_widget(
+            Paragraph::new(format!("Page {} / {count}", page + 1))
+                .style(Style::default().fg(MUTED)),
+            rows[2],
+        );
         let controls = Layout::horizontal([Constraint::Ratio(1, 2); 2]).split(rows[3]);
         if page > 0 {
-            frame.render_widget(Paragraph::new("← Previous").style(Style::default().fg(ACCENT)), controls[0]);
-            self.areas.sources.push((controls[0], Link::Page((page - 1) * size)));
+            frame.render_widget(
+                Paragraph::new("← Previous").style(Style::default().fg(ACCENT)),
+                controls[0],
+            );
+            self.areas
+                .sources
+                .push((controls[0], Link::Page((page - 1) * size)));
         }
         if page + 1 < count {
-            frame.render_widget(Paragraph::new("Next →").style(Style::default().fg(ACCENT)), controls[1]);
-            self.areas.sources.push((controls[1], Link::Page((page + 1) * size)));
+            frame.render_widget(
+                Paragraph::new("Next →").style(Style::default().fg(ACCENT)),
+                controls[1],
+            );
+            self.areas
+                .sources
+                .push((controls[1], Link::Page((page + 1) * size)));
         }
     }
     fn draw_reader(&mut self, frame: &mut Frame, area: Rect) {
@@ -350,39 +563,97 @@ impl Workspace {
                 rows[1],
             );
         }
-        let content = Rect::new(rows[3].x, rows[3].y, rows[3].width.saturating_sub(1), rows[3].height);
+        let content = Rect::new(
+            rows[3].x,
+            rows[3].y,
+            rows[3].width.saturating_sub(1),
+            rows[3].height,
+        );
         let mut lines = self.document.lines.clone();
         let mut source_positions = vec![];
-        let panels=if content.width>=6{self.document.reader_panels()}else{vec![]};
-        let mut panel_rows=HashMap::new();
-        for (first,last,request) in &panels{
-            for row in *first..=*last{panel_rows.insert(row,(*first,*last,*request));}
+        let panels = if content.width >= 6 {
+            self.document.reader_panels()
+        } else {
+            vec![]
+        };
+        let mut panel_rows = HashMap::new();
+        for (first, last, request) in &panels {
+            for row in *first..=*last {
+                panel_rows.insert(row, (*first, *last, *request));
+            }
         }
-        let mut indents=HashMap::new();
-        if self.document.kind==View::SessionWork {
-            for (index,line) in lines.iter_mut().enumerate().filter(|(i,_)|!panel_rows.contains_key(i)) {
-                if let Some(first)=line.spans.first_mut() {
-                    let indent=first.content.bytes().take_while(|b|*b==b' ').count().min(4).min(content.width.saturating_sub(1) as usize);
-                    if indent>0 {first.content=first.content[indent..].to_owned().into();indents.insert(index,indent as u16);}
+        let mut indents = HashMap::new();
+        if self.document.kind == View::SessionWork {
+            for (index, line) in lines
+                .iter_mut()
+                .enumerate()
+                .filter(|(i, _)| !panel_rows.contains_key(i))
+            {
+                if let Some(first) = line.spans.first_mut() {
+                    let indent = first
+                        .content
+                        .bytes()
+                        .take_while(|b| *b == b' ')
+                        .count()
+                        .min(4)
+                        .min(content.width.saturating_sub(1) as usize);
+                    if indent > 0 {
+                        first.content = first.content[indent..].to_owned().into();
+                        indents.insert(index, indent as u16);
+                    }
                 }
             }
         }
-        let panel_width=|request:bool|if request{content.width.min(100)}else{content.width};
-        let row_width=|index:usize|panel_rows.get(&index).map(|(_,_,request)|reader_block(*request).inner(Rect::new(0,0,panel_width(*request),1)).width).unwrap_or(content.width.saturating_sub(*indents.get(&index).unwrap_or(&0)));
+        let panel_width = |request: bool| {
+            if request {
+                content.width.min(100)
+            } else {
+                content.width
+            }
+        };
+        let row_width = |index: usize| {
+            panel_rows
+                .get(&index)
+                .map(|(_, _, request)| {
+                    reader_block(*request)
+                        .inner(Rect::new(0, 0, panel_width(*request), 1))
+                        .width
+                })
+                .unwrap_or(
+                    content
+                        .width
+                        .saturating_sub(*indents.get(&index).unwrap_or(&0)),
+                )
+        };
         // Compute wrapped offsets once. Re-laying out every preceding line for
         // each clickable row made long history views quadratic to redraw.
-        let mut offsets=Vec::with_capacity(lines.len()+1);offsets.push(0usize);
-        for (index,line) in lines.iter().enumerate() {
-            let width=row_width(index).max(1);
-            let edge=panel_rows.get(&index).is_some_and(|(first,last,_)|index==*first||index==*last);
-            let height=if edge||self.document.code()||self.document.code_gutters.contains_key(&index){1}else{Paragraph::new(line.clone()).wrap(Wrap{trim:false}).line_count(width).max(1)};
-            offsets.push(offsets.last().unwrap()+height);
+        let mut offsets = Vec::with_capacity(lines.len() + 1);
+        offsets.push(0usize);
+        for (index, line) in lines.iter().enumerate() {
+            let width = row_width(index).max(1);
+            let edge = panel_rows
+                .get(&index)
+                .is_some_and(|(first, last, _)| index == *first || index == *last);
+            let height = if edge
+                || self.document.code()
+                || self.document.code_gutters.contains_key(&index)
+            {
+                1
+            } else {
+                Paragraph::new(line.clone())
+                    .wrap(Wrap { trim: false })
+                    .line_count(width)
+                    .max(1)
+            };
+            offsets.push(offsets.last().unwrap() + height);
         }
         for (position, (line, link)) in self.document.sources.iter().enumerate() {
-            let offset=offsets[*line];
-            let height=offsets[*line+1]-offset;
+            let offset = offsets[*line];
+            let height = offsets[*line + 1] - offset;
             if self.document.source_selection == Some(position) {
-                lines[*line] = lines[*line].clone().style(Style::default().add_modifier(Modifier::REVERSED));
+                lines[*line] = lines[*line]
+                    .clone()
+                    .style(Style::default().add_modifier(Modifier::REVERSED));
                 let scroll = usize::from(self.document.scroll);
                 if offset < scroll {
                     self.document.scroll = offset.min(u16::MAX as usize) as u16;
@@ -392,7 +663,15 @@ impl Workspace {
                         .min(u16::MAX as usize) as u16;
                 }
             }
-            source_positions.push((offset, height, panel_rows.get(line).map(|(_,_,request)|panel_width(*request)).unwrap_or(content.width), link.clone()));
+            source_positions.push((
+                offset,
+                height,
+                panel_rows
+                    .get(line)
+                    .map(|(_, _, request)| panel_width(*request))
+                    .unwrap_or(content.width),
+                link.clone(),
+            ));
         }
         let count = *offsets.last().unwrap_or(&0);
         let scroll_max = count
@@ -415,50 +694,123 @@ impl Workspace {
                 ));
             }
         }
-        let overflow=self.document.lines.iter().enumerate().filter(|(i,_)|self.document.code()||self.document.code_gutters.contains_key(i)).map(|(i,line)|line.width().saturating_sub(row_width(i) as usize)).max().unwrap_or(0);
-        self.document.horizontal=self.document.horizontal.min(overflow.min(u16::MAX as usize) as u16);
+        let overflow = self
+            .document
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.document.code() || self.document.code_gutters.contains_key(i))
+            .map(|(i, line)| line.width().saturating_sub(row_width(i) as usize))
+            .max()
+            .unwrap_or(0);
+        self.document.horizontal = self
+            .document
+            .horizontal
+            .min(overflow.min(u16::MAX as usize) as u16);
         self.scroll_max = scroll_max;
         self.page_size = content.height.saturating_sub(2).max(1);
         // Layout prose and code separately: prose wraps, code stays on one row.
         // Only render visible source rows; never materialize a fully wrapped document.
-        let top=self.document.scroll as usize;let bottom=top+content.height as usize;
-        for (first,last,request) in &panels{
-            let start=offsets[*first];let end=offsets[*last+1];
-            if end<=top||start>=bottom{continue;}
-            let mut borders=Borders::LEFT|Borders::RIGHT;
-            if start>=top{borders|=Borders::TOP;}
-            if first!=last&&end<=bottom{borders|=Borders::BOTTOM;}
-            let mut block=reader_block(*request).borders(borders);
-            if start>=top{
-                let mut spans=vec![Span::raw(" ")];spans.extend(lines[*first].spans.clone());spans.push(Span::raw(" "));
-                block=block.title(Line::from(spans).style(lines[*first].style.add_modifier(Modifier::BOLD)));
+        let top = self.document.scroll as usize;
+        let bottom = top + content.height as usize;
+        for (first, last, request) in &panels {
+            let start = offsets[*first];
+            let end = offsets[*last + 1];
+            if end <= top || start >= bottom {
+                continue;
             }
-            frame.render_widget(block,Rect::new(content.x,content.y+(start.max(top)-top) as u16,panel_width(*request),(end.min(bottom)-start.max(top)) as u16));
+            let mut borders = Borders::LEFT | Borders::RIGHT;
+            if start >= top {
+                borders |= Borders::TOP;
+            }
+            if first != last && end <= bottom {
+                borders |= Borders::BOTTOM;
+            }
+            let mut block = reader_block(*request).borders(borders);
+            if start >= top {
+                let mut spans = vec![Span::raw(" ")];
+                spans.extend(lines[*first].spans.clone());
+                spans.push(Span::raw(" "));
+                block = block.title(
+                    Line::from(spans).style(lines[*first].style.add_modifier(Modifier::BOLD)),
+                );
+            }
+            frame.render_widget(
+                block,
+                Rect::new(
+                    content.x,
+                    content.y + (start.max(top) - top) as u16,
+                    panel_width(*request),
+                    (end.min(bottom) - start.max(top)) as u16,
+                ),
+            );
         }
-        for (index,line) in lines.iter().enumerate(){
-            if offsets[index+1]<=top{continue;}if offsets[index]>=bottom{break;}
-            let y=offsets[index].max(top);
-            let rect=Rect::new(content.x,content.y+(y-top) as u16,content.width,(offsets[index+1].min(bottom)-y) as u16);
-            let code=self.document.code()||self.document.code_gutters.contains_key(&index);
-            let rect=if let Some((first,last,request))=panel_rows.get(&index){
-                if index==*first||index==*last{continue;}
-                reader_block(*request).inner(Rect::new(rect.x,rect.y,panel_width(*request),rect.height))
-            }else{
-                let indent=*indents.get(&index).unwrap_or(&0);
-                Rect::new(rect.x+indent,rect.y,rect.width.saturating_sub(indent),rect.height)
-            };
-            if let Some(gutter)=self.document.code_gutters.get(&index){
-                let width=(*gutter as u16).min(rect.width.saturating_sub(1));
-                frame.render_widget(Paragraph::new(line.spans[0].clone()),Rect::new(rect.x,rect.y,width,1));
-                let body=Line::from(line.spans[1..].to_vec());
-                frame.render_widget(Paragraph::new(body).scroll((0,self.document.horizontal)),Rect::new(rect.x+width,rect.y,rect.width-width,1));
-            }else if code{
-                frame.render_widget(Paragraph::new(line.clone()).scroll((0,self.document.horizontal)),rect);
-            }else{
-                frame.render_widget(Paragraph::new(line.clone()).wrap(Wrap{trim:false}).scroll(((y-offsets[index]) as u16,0)),rect);
+        for (index, line) in lines.iter().enumerate() {
+            if offsets[index + 1] <= top {
+                continue;
             }
-            if code&&rect.width>0&&line.width()>rect.width as usize+self.document.horizontal as usize{
-                frame.render_widget(Paragraph::new("›").style(Style::default().fg(ACCENT)),Rect::new(rect.right()-1,rect.y,1,1));
+            if offsets[index] >= bottom {
+                break;
+            }
+            let y = offsets[index].max(top);
+            let rect = Rect::new(
+                content.x,
+                content.y + (y - top) as u16,
+                content.width,
+                (offsets[index + 1].min(bottom) - y) as u16,
+            );
+            let code = self.document.code() || self.document.code_gutters.contains_key(&index);
+            let rect = if let Some((first, last, request)) = panel_rows.get(&index) {
+                if index == *first || index == *last {
+                    continue;
+                }
+                reader_block(*request).inner(Rect::new(
+                    rect.x,
+                    rect.y,
+                    panel_width(*request),
+                    rect.height,
+                ))
+            } else {
+                let indent = *indents.get(&index).unwrap_or(&0);
+                Rect::new(
+                    rect.x + indent,
+                    rect.y,
+                    rect.width.saturating_sub(indent),
+                    rect.height,
+                )
+            };
+            if let Some(gutter) = self.document.code_gutters.get(&index) {
+                let width = (*gutter as u16).min(rect.width.saturating_sub(1));
+                frame.render_widget(
+                    Paragraph::new(line.spans[0].clone()),
+                    Rect::new(rect.x, rect.y, width, 1),
+                );
+                let body = Line::from(line.spans[1..].to_vec());
+                frame.render_widget(
+                    Paragraph::new(body).scroll((0, self.document.horizontal)),
+                    Rect::new(rect.x + width, rect.y, rect.width - width, 1),
+                );
+            } else if code {
+                frame.render_widget(
+                    Paragraph::new(line.clone()).scroll((0, self.document.horizontal)),
+                    rect,
+                );
+            } else {
+                frame.render_widget(
+                    Paragraph::new(line.clone())
+                        .wrap(Wrap { trim: false })
+                        .scroll(((y - offsets[index]) as u16, 0)),
+                    rect,
+                );
+            }
+            if code
+                && rect.width > 0
+                && line.width() > rect.width as usize + self.document.horizontal as usize
+            {
+                frame.render_widget(
+                    Paragraph::new("›").style(Style::default().fg(ACCENT)),
+                    Rect::new(rect.right() - 1, rect.y, 1, 1),
+                );
             }
         }
         if count > content.height as usize && content.height > 0 {
@@ -501,7 +853,10 @@ impl Workspace {
         } else {
             MUTED
         };
-        frame.render_widget(Paragraph::new(status).style(Style::default().fg(color)), area);
+        frame.render_widget(
+            Paragraph::new(status).style(Style::default().fg(color)),
+            area,
+        );
     }
     /// At most four keys, chosen for what is on screen.
     fn draw_keys(&mut self, frame: &mut Frame, area: Rect) {
@@ -509,29 +864,67 @@ impl Workspace {
         let reasons = if self.brief { "reasons" } else { "brief" };
         let keys: Vec<(&str, &str)> = if reader && self.document.kind == View::Commits {
             vec![("↑↓", "commits"), ("Enter", "open"), ("Esc", "back")]
-        } else if reader && self.document.kind==View::DecisionOverview {
-            vec![("↑↓", "decisions"), ("Enter", "open"), ("e", "discover"), ("t", "session")]
-        } else if reader && self.document.kind==View::SessionWork {
-            vec![("Tab", "panes"), ("s", "select"), ("Enter", "open"), ("d", "decisions")]
-        } else if reader && self.document.kind==View::DecisionDetail {
-            vec![("↑↓", "read"), ("s", "evidence"), ("d", "decisions"), ("Esc", "back")]
+        } else if reader && self.document.kind == View::DecisionOverview {
+            vec![
+                ("↑↓", "decisions"),
+                ("Enter", "open"),
+                ("e", "discover"),
+                ("t", "session"),
+            ]
+        } else if reader && self.document.kind == View::SessionWork {
+            vec![
+                ("Tab", "panes"),
+                ("s", "select"),
+                ("Enter", "open"),
+                ("d", "decisions"),
+            ]
+        } else if reader && self.document.kind == View::DecisionDetail {
+            vec![
+                ("↑↓", "read"),
+                ("s", "evidence"),
+                ("d", "decisions"),
+                ("Esc", "back"),
+            ]
         } else if reader && self.document.source_selection.is_some() {
             vec![("↑↓", "select"), ("Enter", "open"), ("Esc", "done")]
         } else if reader && self.document.historical() {
             vec![("↑↓", "scroll"), ("Esc", "back"), ("?", "more")]
         } else if reader && self.document.kind == View::Explanation {
-            vec![("i", "ask"), ("s", "sources"), ("Esc", "back"), ("?", "more")]
+            vec![
+                ("i", "ask"),
+                ("s", "sources"),
+                ("Esc", "back"),
+                ("?", "more"),
+            ]
         } else if reader && self.document.kind == View::Recorded {
-            vec![("Enter", "select action"), ("w", reasons), ("e", "explain"), ("?", "more")]
+            vec![
+                ("Enter", "select action"),
+                ("w", reasons),
+                ("e", "explain"),
+                ("?", "more"),
+            ]
         } else if self.focus == Focus::Files {
-            vec![("↑↓", "files"), ("Tab", "read"), ("e", "explain"), ("?", "more")]
+            vec![
+                ("↑↓", "files"),
+                ("Tab", "read"),
+                ("e", "explain"),
+                ("?", "more"),
+            ]
         } else {
-            vec![("↑↓", "scroll"), ("Tab", "files"), ("e", "explain"), ("?", "more")]
+            vec![
+                ("↑↓", "scroll"),
+                ("Tab", "files"),
+                ("e", "explain"),
+                ("?", "more"),
+            ]
         };
         let mut spans = vec![Span::raw(" ")];
         for (key, label) in keys {
             spans.push(Span::styled(key, Style::default().fg(ACCENT).bold()));
-            spans.push(Span::styled(format!(" {label}   "), Style::default().fg(MUTED)));
+            spans.push(Span::styled(
+                format!(" {label}   "),
+                Style::default().fg(MUTED),
+            ));
         }
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }

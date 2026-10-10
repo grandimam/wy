@@ -10,6 +10,14 @@ Session-code checks cover committed files with a clean Git diff, captured code s
 
 ## Decision visibility milestone
 
+Request-scope regression checks cover overlapping files with separate rationale,
+normalized selection/cache identity, invalid request ranges, selection reset across
+snapshots, explicit request-to-overview navigation, empty versus ungenerated briefs,
+and failure/retry presentation. The stub-CLI integration also verifies that discovery
+rebuilds selected requests from the pinned snapshot, excludes another request's code
+and text even if the caller supplies whole-session edits, and rejects out-of-scope
+citations. These checks do not establish real-model explanation quality.
+
 Decision tests cover multi-record parsing, cross-file grouping without collapsing
 conflicting rationale, clean-tree/missing-history states, in-scope diff citations,
 exact recorded-reason quotes, secondary-history rejection, scope-key invalidation,

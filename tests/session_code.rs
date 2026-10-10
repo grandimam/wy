@@ -68,7 +68,6 @@ fn committed_code_is_discovered_from_wrapped_edits_and_keeps_its_conversation() 
         &root,
         &service::ReviewOptions {
             source: "codex".into(),
-            ..Default::default()
         },
     )
     .unwrap();
@@ -82,7 +81,7 @@ fn committed_code_is_discovered_from_wrapped_edits_and_keeps_its_conversation() 
     let (edit, session) = history::saved_edit(&root, &reference).unwrap();
     let notes = history::notes(
         &review,
-        &[session.clone()],
+        std::slice::from_ref(&session),
         "lib.rs",
         Some(&reference),
     );
@@ -137,7 +136,6 @@ fn committed_code_is_discovered_from_wrapped_edits_and_keeps_its_conversation() 
         &root,
         &service::ReviewOptions {
             source: "none".into(),
-            ..Default::default()
         },
     )
     .unwrap();

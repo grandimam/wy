@@ -41,6 +41,35 @@ refresh, section changes, or session selection.
 
 ## Read decisions
 
+### Choose the work to explain
+
+In a request's Detail view, select **Explain this request’s decisions**. This opens
+its decision overview without calling a model. The header shows the selected scope,
+configured provider, and whether a generated brief exists. **Generate decision brief**
+explicitly sends the selected captured evidence; failures offer retry, and **x** cancels.
+An ungenerated brief is distinguished from an assessment that found no consequential choices.
+
+- `/decisions request`: open decisions for the request currently being read.
+- `/decisions requests 2-4`: include adjacent requests 2 through 4.
+- `/decisions requests 2`: select request 2 only.
+- `/decisions session`: return to the entire-session scope.
+
+Numbers are the one-based request positions displayed in Detail, not provider request IDs.
+Request boundaries are not automatically detected task boundaries: include adjacent requests
+explicitly when follow-ups belong to the same work. Earlier-request context is not silently
+sent with a selected request. Pressing **e** in request Detail generates for that request;
+in Decisions it generates for the displayed scope.
+
+Scoped records, edits, and rationale come only from the selected requests. The same file
+appearing elsewhere in the session does not make that other request's evidence eligible.
+Brief caches include the immutable snapshot, normalized selection, and analysis version.
+If refresh changes the snapshot, the request selection is cleared rather than reusing
+ordinals against different content. Changing history source requires confirming the refreshed
+scope before generation. Existing session-wide briefs remain stored, but this analysis-version
+change requires regeneration before reuse.
+
+### Inspect the brief
+
 The overview groups identical explicit `WY_DECISION` assertions across files in
 one session. Different reasons remain separate. Original assistant statements are
 self-reported evidence, not independent verification. File association does not
@@ -53,7 +82,7 @@ caveats and snapshot metadata are collapsed under **Details**.
 
 Press **e** on Decisions or the session flow, click **Identify decisions with AI**,
 or use `/decisions discover` to request a retrospective assessment. This sends
-bounded captured edits and public context from **only the selected session** to
+bounded captured edits and public context from **only the selected work within the session** to
 your configured Codex or Claude CLI. It returns at most eight choices ordered by
 assessed consequence. It may consume your signed-in account's usage.
 
@@ -66,7 +95,7 @@ If there are no captured code edits, decision discovery does not substitute toda
 files. Explicit recorded decisions can still be read, with missing code links
 identified. Unsupported edits, omitted context and truncation remain gaps.
 
-Briefs are saved against the repository and immutable session snapshot. Later
+Briefs are saved against the repository, immutable session snapshot, and selected request scope. Later
 commits, current-code edits, or file deletion do not invalidate a historical brief.
 New captured content for the session does. A background result never changes the
 selected session, interrupts a draft, or replaces a deep dive. **x** cancels requests.
@@ -94,12 +123,16 @@ at least 40 columns when all three panes are visible.
 The top-right **Explain with: codex** (or another agent) identifies the configured
 explanation agent, not the source of the selected historical session.
 
-Detail gives the selected original request a bordered card. **Agent response** and
-**Agent notes** sit directly beneath it, collapsed by default, followed by the
-captured changes. Planning turns without edits remain available. Notes are
-captured context, not verified reasons; unavailable notes are labeled explicitly.
-Conversation text is no longer shortened during capture or in Detail: expanding
-responses and notes shows their full captured text, with secret redaction retained.
+Detail is a flat conversation: **YOU** and **AGENT** are visible by default,
+without a request box or another level of navigation. The header combines the
+request ID, agent, and session date. Changes, agent notes, and tool activity remain
+expandable; empty sections are omitted. Session-level capture warnings are available
+under **⚠ Capture warning**, collapsed by default. Edit execution uncertainty stays
+beside the changes it qualifies. Planning turns without edits remain available.
+Notes are captured context, not verified reasons.
+Conversation text is no longer shortened during capture or in Detail: responses
+are shown fully, and expanding notes reveals their full captured text, with secret
+redaction retained.
 Older snapshots may already contain shortened text; press `r` to recapture from
 available originals. Source omissions and compaction cannot be recovered by expanding
 a section. Code edits, Git diffs, and comparison text no longer have 40,000-character

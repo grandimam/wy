@@ -43,24 +43,49 @@ impl Workspace {
     pub(super) fn resize_pane(&mut self, divider: Divider, column: u16) {
         match divider {
             Divider::Files => {
-                if self.areas.file_divider.width == 0 { return; }
+                if self.areas.file_divider.width == 0 {
+                    return;
+                }
                 let requested = column.saturating_sub(self.areas.body.x);
-                let sizes = PaneSizes { files: Some(requested), ..Default::default() };
+                let sizes = PaneSizes {
+                    files: Some(requested),
+                    ..Default::default()
+                };
                 self.pane_sizes.files = Some(sizes.file_width(self.areas.body.width));
             }
             Divider::Sessions => {
                 let area = self.areas.session_divider;
-                if area.width == 0 { return; }
+                if area.width == 0 {
+                    return;
+                }
                 let current = area.x.saturating_sub(self.areas.workspace.x);
-                let maximum = current.saturating_add(self.areas.body.width).saturating_sub(44).max(16);
-                self.pane_sizes.sessions = Some(column.saturating_sub(self.areas.workspace.x).clamp(16, maximum));
+                let maximum = current
+                    .saturating_add(self.areas.body.width)
+                    .saturating_sub(44)
+                    .max(16);
+                self.pane_sizes.sessions = Some(
+                    column
+                        .saturating_sub(self.areas.workspace.x)
+                        .clamp(16, maximum),
+                );
             }
             Divider::Requests => {
                 let area = self.areas.request_divider;
-                if area.width == 0 { return; }
+                if area.width == 0 {
+                    return;
+                }
                 let current = self.areas.workspace.right().saturating_sub(area.right());
-                let maximum = current.saturating_add(self.areas.body.width).saturating_sub(44).max(18);
-                self.pane_sizes.requests = Some(self.areas.workspace.right().saturating_sub(column.saturating_add(1)).clamp(18, maximum));
+                let maximum = current
+                    .saturating_add(self.areas.body.width)
+                    .saturating_sub(44)
+                    .max(18);
+                self.pane_sizes.requests = Some(
+                    self.areas
+                        .workspace
+                        .right()
+                        .saturating_sub(column.saturating_add(1))
+                        .clamp(18, maximum),
+                );
             }
         }
     }

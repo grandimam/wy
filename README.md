@@ -41,8 +41,9 @@ cd /path/to/your/repo
 wy
 ```
 
-- **Decisions (`d`):** inspect the selected session's choices, with recorded/inferred/unknown rationale.
-- **Identify decisions with AI (`e`):** explicitly request a cited assessment of captured edits from that session only. No model runs automatically.
+- **Decisions (`d`):** inspect choices for the selected work, with recorded/inferred/unknown rationale.
+- **Explain this request’s decisions:** open a request-scoped overview from Detail, without a model call. Use `/decisions requests 2-4` to include adjacent requests, or `/decisions session` for the whole session.
+- **Generate decision brief (`e`):** explicitly request a cited assessment of the displayed scope; in request Detail, assesses that request only. No model runs automatically.
 - **Sessions (`t`):** bordered requests, collapsible agent responses and notes, and chronological change groups. Open an edit to read its captured code.
 - **Compare with current code:** optional, inside an edit. Partial or unconfirmed captures cannot establish a full historical file.
 - **Choose another session (`b` or `/sessions`):** older sessions appear only in the picker.

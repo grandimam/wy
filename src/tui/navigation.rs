@@ -33,7 +33,14 @@ pub(super) fn options_key(options: &reasoning::Options) -> String {
 }
 impl Workspace {
     pub(super) fn current_key(&self) -> Option<String> {
-        if self.document.artifact.as_ref().is_some_and(|a|a["context"]=="decision_brief" || a["context"]=="session_work") {return None;}
+        if self
+            .document
+            .artifact
+            .as_ref()
+            .is_some_and(|a| a["context"] == "decision_brief" || a["context"] == "session_work")
+        {
+            return None;
+        }
         self.document
             .artifact
             .as_ref()
@@ -74,17 +81,15 @@ impl Workspace {
             .cloned()
     }
     pub(super) fn local_notes(&self, code: &Document) -> Document {
-        if let Some(edit) = &code.session_edit {
-            if !arr(&self.review["sessions"])
+        if let Some(edit) = &code.session_edit
+            && !arr(&self.review["sessions"])
                 .iter()
                 .any(|r| r["storage_key"] == edit["session_key"])
-            {
-                if let Ok((_, session)) = crate::history::saved_edit(&self.root, edit) {
-                    let mut review = self.review.clone();
-                    review["sessions"] = serde_json::json!([{"id":session["id"],"agent":session["agent"],"storage_key":edit["session_key"]}]);
-                    return document::recorded(&review, &[session], code, self.brief);
-                }
-            }
+            && let Ok((_, session)) = crate::history::saved_edit(&self.root, edit)
+        {
+            let mut review = self.review.clone();
+            review["sessions"] = serde_json::json!([{"id":session["id"],"agent":session["agent"],"storage_key":edit["session_key"]}]);
+            return document::recorded(&review, &[session], code, self.brief);
         }
         document::recorded(&self.review, &self.sessions, code, self.brief)
     }

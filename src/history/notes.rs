@@ -58,12 +58,7 @@ pub fn note_evidence(root: &Path, reference: &Value) -> Result<Value> {
 }
 
 /// Gaps are factual notices about the capture, not claims about the agent's private reasoning.
-pub fn notes(
-    review: &Value,
-    sessions: &[Value],
-    file: &str,
-    edit: Option<&Value>,
-) -> Value {
+pub fn notes(review: &Value, sessions: &[Value], file: &str, edit: Option<&Value>) -> Value {
     let basename = file.rsplit('/').next().unwrap_or(file);
     let names: BTreeSet<_> = review["file_hashes"]
         .as_object()
@@ -126,15 +121,14 @@ pub fn notes(
             if let Some(start) = start {
                 selected.insert(start);
             }
-            if let Some(i) = (start.unwrap_or(0)..at)
-                .rev()
-                .find(|&i| ["assistant", "rationale"].contains(&s(&events[i]["kind"])) && visible(&events[i]))
-            {
+            if let Some(i) = (start.unwrap_or(0)..at).rev().find(|&i| {
+                ["assistant", "rationale"].contains(&s(&events[i]["kind"])) && visible(&events[i])
+            }) {
                 selected.insert(i);
             }
-            if let Some(i) =
-                ((at + 1)..end).find(|&i| ["assistant", "rationale"].contains(&s(&events[i]["kind"])) && visible(&events[i]))
-            {
+            if let Some(i) = ((at + 1)..end).find(|&i| {
+                ["assistant", "rationale"].contains(&s(&events[i]["kind"])) && visible(&events[i])
+            }) {
                 selected.insert(i);
             }
         }
@@ -163,11 +157,11 @@ pub fn notes(
     }
     for item in &mut evidence {
         // In-memory/synthetic reviews can still display provenance without storage.
-        if let Some(root) = review["root"].as_str() {
-            if let Err(error) = super::origins::enrich(Path::new(root), item) {
-                item["origin_status"] = json!("unavailable");
-                item["origin_reason"] = json!(security::redact(&error.to_string()));
-            }
+        if let Some(root) = review["root"].as_str()
+            && let Err(error) = super::origins::enrich(Path::new(root), item)
+        {
+            item["origin_status"] = json!("unavailable");
+            item["origin_reason"] = json!(security::redact(&error.to_string()));
         }
     }
     let assistant = evidence
@@ -219,12 +213,7 @@ mod tests {
             event("6", "assistant", "I chose a table instead of prose."),
             event("7", "analysis", "PRIVATE src/cache.rs rationale"),
         ]);
-        let result = notes(
-            &review(),
-            &[session],
-            "src/cache.rs",
-            None,
-        );
+        let result = notes(&review(), &[session], "src/cache.rs", None);
         let text = result.to_string();
         assert!(text.contains("because repeated requests"));
         assert!(!text.contains("documentation"));

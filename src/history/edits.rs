@@ -114,14 +114,13 @@ fn wrapped(input: &str) -> Vec<Value> {
                 .child_by_field_name("function")
                 .and_then(|n| n.utf8_text(input.as_bytes()).ok())
                 .unwrap_or("");
-            if matches!(name, "tools.apply_patch" | "apply_patch") {
-                if let Some(text) = node
+            if matches!(name, "tools.apply_patch" | "apply_patch")
+                && let Some(text) = node
                     .child_by_field_name("arguments")
                     .and_then(|n| n.named_child(0))
                     .and_then(|n| literal(n, input))
-                {
-                    result.extend(patch(&text));
-                }
+            {
+                result.extend(patch(&text));
             }
         }
         let mut cursor = node.walk();
@@ -182,17 +181,17 @@ pub(super) fn extract(tool: &str, text: &str) -> Vec<Value> {
             return vec![edit(file, "patch", "edit", &patches.join("\n"))];
         }
     }
-    if tool == "file_change" {
-        if let Ok(changes) = serde_json::from_str::<Value>(text) {
-            return arr(&changes)
-                .iter()
-                .filter_map(|c| {
-                    c["path"]
-                        .as_str()
-                        .map(|file| edit(file, "patch", s(&c["kind"]), s(&c["diff"])))
-                })
-                .collect();
-        }
+    if tool == "file_change"
+        && let Ok(changes) = serde_json::from_str::<Value>(text)
+    {
+        return arr(&changes)
+            .iter()
+            .filter_map(|c| {
+                c["path"]
+                    .as_str()
+                    .map(|file| edit(file, "patch", s(&c["kind"]), s(&c["diff"])))
+            })
+            .collect();
     }
     vec![]
 }

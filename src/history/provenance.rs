@@ -84,10 +84,10 @@ pub fn classify(row: &Value, kind: &str, text: &str, turn: &str) -> Value {
 
 pub fn observe(row: &Value, session: &mut Value, turn: &mut String) {
     let p = &row["payload"];
-    if row["type"] == "turn_context" || row["type"] == "event_msg" && p["type"] == "task_started" {
-        if let Some(id) = p["turn_id"].as_str() {
-            *turn = id.to_owned();
-        }
+    if (row["type"] == "turn_context" || row["type"] == "event_msg" && p["type"] == "task_started")
+        && let Some(id) = p["turn_id"].as_str()
+    {
+        *turn = id.to_owned();
     }
     if row["type"] == "session_meta" {
         let parent = p.get("forked_from_id").or_else(|| p.get("forkedFromId"));
@@ -170,7 +170,9 @@ pub fn compaction(row: &Value, session: &Value, line: usize, turn: &str) -> Vec<
 }
 
 pub fn label(event: &Value) -> String {
-    if event["kind"]=="rationale" || event["role"]=="rationale" {return "Available rationale · tentative, not a verified reason for this edit".into();}
+    if event["kind"] == "rationale" || event["role"] == "rationale" {
+        return "Available rationale · tentative, not a verified reason for this edit".into();
+    }
     match s(&event["provenance"]["source_type"]) {
         "original_turn" => "Original turn · captured message".into(),
         "tool_record" => "Captured tool record".into(),
