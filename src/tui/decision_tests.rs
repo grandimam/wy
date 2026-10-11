@@ -247,25 +247,17 @@ fn only_decisions_and_sessions_are_primary_and_picker_remains_available() {
                 .iter()
                 .map(|(_, v, _)| *v)
                 .collect::<Vec<_>>(),
-            vec![View::DecisionOverview, View::Sessions]
+            vec![View::Plan, View::Steps]
         );
         assert!(app.areas.files.is_empty());
-        if width >= 88 {
-            assert!(
-                app.areas
-                    .tabs
-                    .iter()
-                    .all(|(r, _, _)| r.right() <= app.areas.reader.x)
-            );
-        }
-        let rect = app.areas.tabs[1].0;
-        app.mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: rect.x,
-            row: rect.y,
-            modifiers: KeyModifiers::NONE,
-        })
-        .unwrap();
+        assert!(
+            app.areas
+                .tabs
+                .iter()
+                .all(|(r, _, _)| r.bottom() <= app.areas.reader.y)
+        );
+        // Session work is reached as a drill-down (o / /transcript), not a tab.
+        app.change_view(View::Sessions).unwrap();
         assert_eq!(app.document.kind, View::SessionWork);
         assert!(text(&app.document).contains("YOU"));
         assert!(!text(&app.document).contains("Implementation flow"));
@@ -295,96 +287,6 @@ fn only_decisions_and_sessions_are_primary_and_picker_remains_available() {
         assert!(text(&app.document).contains("persist(job)"));
         assert!(app.job.is_none());
     }
-}
-#[test]
-fn session_navigation_supports_click_keyboard_scrolling_and_narrow_terminals() {
-    let (_dir, mut app) = app();
-    let base = app.sessions[0].clone();
-    for index in 0..30 {
-        let mut session = base.clone();
-        session["id"] = json!(format!("older-{index}"));
-        let key = crate::session_work::snapshot_key(&session);
-        app.review["sessions"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({"storage_key":key,"id":session["id"],"agent":session["agent"]}));
-        app.sessions.push(session);
-    }
-    app.rebuild_session_navigation();
-    assert_eq!(app.navigation_sessions().len(), 31);
-    assert_eq!(app.navigation_sessions()[0].1, "coding");
-    // Navigation must use cached metadata, even without loaded transcripts.
-    let entries = app.navigation_sessions().to_vec();
-    app.sessions.clear();
-    assert_eq!(app.navigation_sessions(), entries.as_slice());
-    let mut terminal = Terminal::new(TestBackend::new(120, 18)).unwrap();
-    terminal.draw(|f| app.draw(f)).unwrap();
-    let rect = app.areas.sessions;
-    assert!(!rect.is_empty());
-    assert!(rect.right() <= app.areas.reader.x);
-    app.mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: rect.x,
-        row: rect.y,
-        modifiers: KeyModifiers::NONE,
-    })
-    .unwrap();
-    assert_eq!(app.document.kind, View::SessionWork);
-    assert!(!text(&app.document).contains("Open conversation"));
-    assert!(!text(&app.document).contains("Original context"));
-    assert!(!text(&app.document).contains("Capture details"));
-    assert!(text(&app.document).contains("Tool activity"));
-    app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-    app.key(KeyCode::End, KeyModifiers::NONE).unwrap();
-    terminal.draw(|f| app.draw(f)).unwrap();
-    assert_eq!(app.session_nav.selected(), Some(9));
-    assert!(app.session_nav.offset() > 0);
-    let selection = app.selected_work.as_ref().unwrap()["session"]["id"].clone();
-    let next = app
-        .areas
-        .sources
-        .iter()
-        .find(|(_, link)| *link == Link::SessionPage(1))
-        .unwrap()
-        .0;
-    app.mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: next.x,
-        row: next.y,
-        modifiers: KeyModifiers::NONE,
-    })
-    .unwrap();
-    assert_eq!(app.session_page, 1);
-    assert_eq!(app.session_nav.selected(), Some(0));
-    app.key(KeyCode::PageDown, KeyModifiers::NONE).unwrap();
-    app.key(KeyCode::PageDown, KeyModifiers::NONE).unwrap();
-    assert_eq!(app.session_page, 3);
-    app.key(KeyCode::End, KeyModifiers::NONE).unwrap();
-    assert_eq!(app.session_nav.selected(), Some(0));
-    terminal.draw(|f| app.draw(f)).unwrap();
-    assert!(
-        !app.areas
-            .sources
-            .iter()
-            .any(|(_, link)| *link == Link::SessionPage(4))
-    );
-    assert_eq!(
-        app.selected_work.as_ref().unwrap()["session"]["id"],
-        selection
-    );
-    app.key(KeyCode::PageUp, KeyModifiers::NONE).unwrap();
-    assert_eq!(app.session_page, 2);
-    app.change_session_page(0);
-    app.key(KeyCode::Home, KeyModifiers::NONE).unwrap();
-    app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-    assert!(!app.session_nav_focus);
-    assert_eq!(app.document.kind, View::SessionWork);
-    let mut narrow = Terminal::new(TestBackend::new(60, 18)).unwrap();
-    narrow.draw(|f| app.draw(f)).unwrap();
-    assert!(app.areas.sessions.is_empty());
-    app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-    narrow.draw(|f| app.draw(f)).unwrap();
-    assert!(!app.areas.sessions.is_empty());
 }
 #[test]
 fn clean_tree_does_not_erase_session_work_and_missing_history_never_uses_today() {
@@ -431,7 +333,8 @@ fn session_catalog_has_no_twenty_session_cap_and_loads_only_the_selection() {
     }
     let mut app = Workspace::new(&root).unwrap();
     assert_eq!(app.navigation_sessions().len(), 26);
-    assert_eq!(app.sessions.len(), 1);
+    // Evidence candidates are bounded; the catalog itself is not.
+    assert_eq!(app.sessions.len(), Workspace::EVIDENCE_CANDIDATES);
     assert_eq!(
         app.selected_work.as_ref().unwrap()["session"]["id"],
         "session-25"
@@ -443,7 +346,7 @@ fn session_catalog_has_no_twenty_session_cap_and_loads_only_the_selection() {
     assert!(reference["source_entry"].is_object());
     let key = s(&reference["storage_key"]).to_owned();
     app.select_session(&key).unwrap();
-    assert_eq!(app.sessions.len(), 1);
+    assert_eq!(app.sessions.len(), Workspace::EVIDENCE_CANDIDATES + 1);
     assert_eq!(
         app.selected_work.as_ref().unwrap()["session"]["id"],
         "session-1"
@@ -485,9 +388,11 @@ fn startup_selects_latest_capture_and_refresh_preserves_explicit_selection() {
     assert!(!text(&app.document).contains("Persist background jobs"));
     assert_eq!(
         app.sessions.len(),
-        1,
-        "Only the selected transcript is loaded"
+        2,
+        "Both candidates are imported as evidence"
     );
+    // Neither session's edits match the dirty tree: the latest is the fallback, not a claim.
+    assert!(app.evidence.len() == 1 && app.pinned_session.is_none());
     let old = arr(&app.review["sessions"])
         .iter()
         .find(|s| s["id"] == "coding")
@@ -851,11 +756,8 @@ fn session_and_request_panes_resize_and_persist_without_changing_detail() {
     let selected = app.request_position();
     let mut terminal = Terminal::new(TestBackend::new(160, 32)).unwrap();
     terminal.draw(|f| app.draw(f)).unwrap();
-    for (divider, delta) in [(Divider::Sessions, 8i16), (Divider::Requests, -8)] {
-        let rect = match divider {
-            Divider::Sessions => app.areas.session_divider,
-            _ => app.areas.request_divider,
-        };
+    for (_divider, delta) in [(Divider::Requests, -8i16)] {
+        let rect = app.areas.request_divider;
         assert_eq!(rect.width, 1);
         let target = rect.x.saturating_add_signed(delta);
         for (kind, column) in [
@@ -871,10 +773,7 @@ fn session_and_request_panes_resize_and_persist_without_changing_detail() {
             .unwrap();
         }
         terminal.draw(|f| app.draw(f)).unwrap();
-        let moved = match divider {
-            Divider::Sessions => app.areas.session_divider,
-            _ => app.areas.request_divider,
-        };
+        let moved = app.areas.request_divider;
         assert_eq!(moved.x, target);
         app.mouse(MouseEvent {
             kind: MouseEventKind::Up(MouseButton::Left),
@@ -887,7 +786,6 @@ fn session_and_request_panes_resize_and_persist_without_changing_detail() {
         assert!(app.areas.reader.width >= 40);
     }
     let saved = PaneSizes::load(dir.path()).unwrap();
-    assert_eq!(saved.sessions, app.pane_sizes.sessions);
     assert_eq!(saved.requests, app.pane_sizes.requests);
     app.key(KeyCode::BackTab, KeyModifiers::NONE).unwrap();
     let width = app.pane_sizes.requests.unwrap();
@@ -1049,4 +947,119 @@ fn working_tree_changes_are_explicitly_unassigned_to_selected_session() {
     assert!(app.document.title.contains("attribution unknown"));
     assert!(text(&app.document).contains("not assigned to the selected session"));
     assert_eq!(crate::decisions::scope_key(&app.decision_scope()), scope);
+}
+
+#[test]
+fn assessed_brief_leads_with_quote_implications_attribution_and_coverage() {
+    let (_dir, app) = app();
+    let mut brief = (*app.document.artifact.clone().unwrap()).clone();
+    brief["mode"] = json!("assessment");
+    brief["agent"] = json!("codex");
+    brief["changed_files"] = json!(3);
+    let packet = arr(&brief["packet"]["evidence"]).to_vec();
+    let edit = packet.iter().find(|e| e["kind"] == "session_edit").unwrap();
+    let statement = packet
+        .iter()
+        .find(|e| e["kind"] == "session" && s(&e["text"]).contains("survive restarts"))
+        .unwrap();
+    brief["decisions"] = json!([
+        {"choice":"Persist jobs in PostgreSQL","reason":"Durable storage reusing existing infra",
+         "significance":"Affects durability","implications":["Workers poll the database"],
+         "status":"recorded","files":["worker.rs"],"alternatives":["Redis"],"tradeoffs":["Polling overhead"],
+         "evidence_ids":[edit["id"],statement["id"]],"quote":"Jobs must survive restarts","quote_id":statement["id"]},
+        {"choice":"Jobs table in app migrations","reason":"Keeps schema versioned",
+         "significance":"Deploy ordering","implications":[],"status":"unknown","files":["worker.rs"],
+         "alternatives":[],"tradeoffs":[],"evidence_ids":[edit["id"]],"quote":"","quote_id":""}
+    ]);
+    let overview = text(&app.decision_document(Arc::new(brief.clone())));
+    assert!(overview.contains("2 consequential choices · identified by codex"));
+    assert!(overview.contains("Recorded rationale"));
+    assert!(overview.contains("Unknown rationale"));
+    assert!(overview.contains("Trade-off: Polling overhead"));
+    assert!(overview.contains("⚠ 1 of 3 files had code evidence"));
+    assert!(overview.contains("Regenerate decision brief"));
+    assert!(!overview.contains("Generate with:"));
+    assert!(overview.contains("Capture details"));
+
+    let brief = Arc::new(brief);
+    let recorded = text(&decision_views::detail(brief.clone(), 0).unwrap());
+    let why = recorded.find("Why").unwrap();
+    assert!(recorded[why..].starts_with("Why\n“Jobs must survive restarts”"));
+    assert!(recorded.contains("open original statement"));
+    assert!(recorded.contains("What this means\n• Workers poll the database"));
+    assert!(recorded.contains("Alternatives · assessed, not recorded"));
+    assert!(recorded.contains("Trade-offs · assessed, not recorded"));
+    assert!(recorded.find("Evidence").unwrap() < recorded.find("Original context").unwrap());
+
+    let unknown = text(&decision_views::detail(brief, 1).unwrap());
+    assert!(unknown.contains("Not captured. No statement in this work explains the choice."));
+    assert!(unknown.contains("Possible rationale · assessment\nKeeps schema versioned"));
+    assert!(unknown.contains("What this means\nDeploy ordering"));
+    assert!(unknown.contains("No statement in this work mentions these files."));
+    assert!(!unknown.contains("“"));
+}
+
+#[test]
+fn empty_assessment_shows_the_models_reason_once() {
+    let (_dir, app) = app();
+    let mut brief = (*app.document.artifact.clone().unwrap()).clone();
+    brief["mode"] = json!("assessment");
+    brief["decisions"] = json!([]);
+    brief["unknowns"] = json!(["Changes only adjust copy and spacing."]);
+    let doc = app.decision_document(Arc::new(brief));
+    let flat = text(&doc);
+    assert!(flat.contains("No consequential choices identified"));
+    assert_eq!(
+        flat.matches("Changes only adjust copy and spacing.")
+            .count(),
+        1
+    );
+    assert!(flat.contains("Regenerate decision brief"));
+}
+
+#[test]
+fn preview_decision_screens() {
+    let Some(dir) = std::env::var_os("WY_TUI_PREVIEW_DIR") else {
+        return;
+    };
+    let (_dir, app) = app();
+    let mut brief = (*app.document.artifact.clone().unwrap()).clone();
+    brief["mode"] = json!("assessment");
+    brief["agent"] = json!("codex");
+    let packet = arr(&brief["packet"]["evidence"]).to_vec();
+    let edit = packet.iter().find(|e| e["kind"] == "session_edit").unwrap();
+    let statement = packet
+        .iter()
+        .find(|e| e["kind"] == "session" && s(&e["text"]).contains("survive restarts"))
+        .unwrap();
+    brief["decisions"] = json!([
+        {"choice":"Persist jobs in PostgreSQL","reason":"Jobs must survive restarts and Postgres is already deployed.",
+         "significance":"Determines durability of background work.","implications":["Workers poll the database for new jobs."],
+         "status":"recorded","files":["worker.rs"],"alternatives":["Redis","In-memory queue"],"tradeoffs":["Reuses existing infrastructure; adds polling load."],
+         "evidence_ids":[edit["id"],statement["id"]],"quote":"Jobs must survive restarts","quote_id":statement["id"]},
+        {"choice":"Jobs table owned by app migrations","reason":"Keeps schema changes reviewable and versioned.",
+         "significance":"Deploying the worker before migrations fails at first poll.","implications":[],"status":"unknown","files":["worker.rs"],
+         "alternatives":[],"tradeoffs":[],"evidence_ids":[edit["id"]],"quote":"","quote_id":""}
+    ]);
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, doc) in [
+        (
+            "overview-not-generated.txt",
+            app.decision_document(app.document.artifact.clone().unwrap()),
+        ),
+        (
+            "overview-assessed.txt",
+            app.decision_document(Arc::new(brief.clone())),
+        ),
+        (
+            "detail-recorded.txt",
+            decision_views::detail(Arc::new(brief.clone()), 0).unwrap(),
+        ),
+        (
+            "detail-unknown.txt",
+            decision_views::detail(Arc::new(brief.clone()), 1).unwrap(),
+        ),
+    ] {
+        std::fs::write(std::path::Path::new(&dir).join(name), text(&doc)).unwrap();
+    }
 }

@@ -9,6 +9,9 @@ mod history_views;
 mod layout;
 mod markdown;
 mod navigation;
+#[cfg(test)]
+mod plan_tests;
+mod plan_views;
 mod render;
 mod selection;
 mod session_flow;
@@ -70,6 +73,8 @@ enum Input {
     Command,
     Question,
     Filter,
+    /// Reviewer's note on a judgment question.
+    Note,
 }
 enum Update {
     Progress(String),
@@ -150,6 +155,23 @@ struct Workspace {
     /// Resolved request scope, bound to its immutable snapshot.
     selected_decision_work: Option<Value>,
     decision_errors: std::collections::HashMap<String, String>,
+    /// The hunk spine: HEAD→working-tree hunks attributed to the selected session.
+    hunks: Vec<Value>,
+    /// The account lens: the selected session's work in intent-sized steps.
+    steps: Vec<Value>,
+    judgment_brief: Option<Arc<Value>>,
+    judgment_errors: std::collections::HashMap<String, String>,
+    verdicts: std::collections::BTreeMap<String, Value>,
+    /// Question index whose note is being edited.
+    note_target: Option<usize>,
+    /// Plan rows the reviewer has opened this run; feeds the Progress box.
+    opened: std::collections::HashSet<String>,
+    /// Sessions whose captured edits match the diff: (session, work, edit offset).
+    evidence: Vec<(Value, Value, usize)>,
+    /// Every evidence session's edits, concatenated; hunks and steps index into it.
+    edits: Vec<Value>,
+    /// A session the reviewer chose by hand overrides automatic evidence selection.
+    pinned_session: Option<String>,
     sessions: Vec<Value>,
     session_nav: ratatui::widgets::ListState,
     session_page: usize,
@@ -213,7 +235,13 @@ impl Workspace {
         // The secondary current-file browser must not mix in earlier sessions.
         app.review["recent_code"] = serde_json::json!([]);
         app.explorer.rebuild(&app.review);
-        app.decision_home();
+        app.rebuild_lenses();
+        // A dirty tree is the thing you are about to accept: start there.
+        if app.hunks.is_empty() {
+            app.decision_home();
+        } else {
+            app.plan_home();
+        }
         app.back.clear();
         Ok(app)
     }
@@ -239,6 +267,16 @@ impl Workspace {
             selected_work: None,
             selected_decision_work: None,
             decision_errors: std::collections::HashMap::new(),
+            hunks: vec![],
+            steps: vec![],
+            judgment_brief: None,
+            judgment_errors: std::collections::HashMap::new(),
+            verdicts: std::collections::BTreeMap::new(),
+            note_target: None,
+            opened: std::collections::HashSet::new(),
+            evidence: vec![],
+            edits: vec![],
+            pinned_session: None,
             sessions: vec![],
             session_nav: ratatui::widgets::ListState::default(),
             session_page: 0,
@@ -274,7 +312,23 @@ impl Workspace {
     }
     /// Primary section, retained when opening a decision's cited evidence.
     fn section(&self) -> View {
-        if matches!(
+        if matches!(self.document.kind, View::Plan | View::Worry)
+            || self
+                .document
+                .artifact
+                .as_ref()
+                .is_some_and(|a| a["context"] == "judgment_brief")
+        {
+            View::Plan
+        } else if matches!(self.document.kind, View::Steps | View::Step)
+            || self
+                .document
+                .artifact
+                .as_ref()
+                .is_some_and(|a| a["context"] == "account")
+        {
+            View::Steps
+        } else if matches!(
             self.document.kind,
             View::DecisionOverview | View::DecisionDetail
         ) || self
@@ -285,7 +339,8 @@ impl Workspace {
         {
             View::DecisionOverview
         } else if self.document.historical() {
-            View::Sessions
+            // Transcripts, decisions and commit history are evidence: they sit under Steps.
+            View::Steps
         } else {
             View::Recorded
         }
@@ -380,7 +435,36 @@ impl Workspace {
         if let Some(key) = selected {
             self.sessions = vec![self.resolve_session(&key)?];
         }
+        self.load_evidence_candidates();
         Ok(())
+    }
+    /// Evidence is chosen by matching the diff against captured edits, so the most
+    /// recent sessions are imported up front. Bounded; failures are warnings.
+    const EVIDENCE_CANDIDATES: usize = 8;
+    /// At most this many sessions become evidence, newest first by marginal explanation.
+    const EVIDENCE_SESSIONS: usize = 4;
+    fn load_evidence_candidates(&mut self) {
+        let keys: Vec<String> = arr(&self.review["sessions"])
+            .iter()
+            .map(|r| s(&r["storage_key"]).to_owned())
+            .filter(|k| !k.is_empty())
+            .take(Self::EVIDENCE_CANDIDATES)
+            .collect();
+        for key in keys {
+            let loaded = self.sessions.iter().any(|sn| {
+                crate::session_work::snapshot_key(sn) == key
+                    || arr(&self.review["sessions"]).iter().any(|r| {
+                        r["storage_key"] == key && r["id"] == sn["id"] && r["agent"] == sn["agent"]
+                    })
+            });
+            if loaded {
+                continue;
+            }
+            match self.resolve_session(&key) {
+                Ok(session) => self.sessions.push(session),
+                Err(error) => self.fail(format!("Could not import a session: {error}")),
+            }
+        }
     }
     fn select_latest_work(&mut self) {
         self.rebuild_session_navigation();
@@ -569,12 +653,19 @@ impl Workspace {
         let snapshot = crate::session_work::snapshot_key(&session);
         let key = snapshot.as_str();
         let work = crate::session_work::build(&self.review, &session);
-        if self.review["lazy_sessions"] == true {
-            self.sessions = vec![session];
+        if self.review["lazy_sessions"] == true
+            && !self
+                .sessions
+                .iter()
+                .any(|sn| sn["id"] == session["id"] && sn["agent"] == session["agent"])
+        {
+            self.sessions.push(session);
         }
         self.decision_brief = crate::decisions::saved(&self.root, &work)?.map(Arc::new);
         self.selected_work = Some(work);
         self.selected_decision_work = None;
+        self.pinned_session = Some(key.to_owned());
+        self.rebuild_lenses();
         if let Some(index) = self
             .navigation_sessions()
             .iter()
@@ -761,6 +852,381 @@ impl Workspace {
         }
         self.message("Decisions ready");
     }
+    // ---- Judgment and Account lenses -------------------------------------
+
+    fn evidence_sessions(&self) -> Vec<Value> {
+        self.evidence.iter().map(|(sn, _, _)| sn.clone()).collect()
+    }
+    fn session_key(&self) -> String {
+        crate::judgment::evidence_key(&self.evidence_sessions())
+    }
+    fn judgment_key(&self) -> String {
+        crate::judgment::scope_key(&self.review, &self.hunks, &self.session_key())
+    }
+    /// Pick the evidence: every loaded session whose captured edits match at least
+    /// one hunk; the pinned session alone when the reviewer chose one; the latest
+    /// session when the tree is clean or nothing matches. Then rebuild hunks, merged
+    /// steps, saved questions and verdicts. Never called while drawing.
+    fn rebuild_lenses(&mut self) {
+        let works: Vec<(Value, Value)> = self
+            .sessions
+            .iter()
+            .map(|sn| (sn.clone(), crate::session_work::build(&self.review, sn)))
+            .collect();
+        let chosen: Vec<(Value, Value)> = if let Some(pinned) = &self.pinned_session {
+            works
+                .iter()
+                .filter(|(sn, _)| crate::session_work::snapshot_key(sn) == *pinned)
+                .cloned()
+                .collect()
+        } else {
+            // Newest first; a session is evidence only if it explains hunks no newer
+            // session already does. Overlapping attempts at the same files collapse
+            // to the one that produced the code in the tree. Bounded.
+            let mut by_age: Vec<&(Value, Value)> = works.iter().collect();
+            by_age.sort_by_key(|(sn, _)| {
+                std::cmp::Reverse(
+                    chrono::DateTime::parse_from_rfc3339(s(&crate::insights::session_dates(sn).1))
+                        .ok()
+                        .map(|d| d.timestamp_millis()),
+                )
+            });
+            let mut explained: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut chosen: Vec<(Value, Value)> = vec![];
+            for (sn, work) in by_age {
+                if chosen.len() >= Self::EVIDENCE_SESSIONS {
+                    break;
+                }
+                let probe = crate::hunks::spine(&self.review, arr(&work["edits"]));
+                let adds: Vec<String> = probe
+                    .iter()
+                    .filter(|h| h["attribution"] != "none" && !explained.contains(s(&h["id"])))
+                    .map(|h| s(&h["id"]).to_owned())
+                    .collect();
+                if !adds.is_empty() {
+                    explained.extend(adds);
+                    chosen.push((sn.clone(), work.clone()));
+                }
+            }
+            if chosen.is_empty()
+                && let Some(latest) = crate::session_work::latest(&self.sessions)
+            {
+                chosen = works
+                    .iter()
+                    .filter(|(sn, _)| sn["id"] == latest["id"] && sn["agent"] == latest["agent"])
+                    .cloned()
+                    .collect();
+            }
+            chosen
+        };
+        // Oldest first, so merged steps and edit offsets read chronologically.
+        let mut chosen = chosen;
+        chosen.sort_by_key(|(sn, _)| {
+            chrono::DateTime::parse_from_rfc3339(s(&crate::insights::session_dates(sn).1))
+                .ok()
+                .map(|d| d.timestamp_millis())
+        });
+        self.evidence.clear();
+        self.edits.clear();
+        for (sn, work) in chosen {
+            let offset = self.edits.len();
+            self.edits.extend(arr(&work["edits"]).iter().cloned());
+            self.evidence.push((sn, work, offset));
+        }
+        self.hunks = crate::hunks::spine(&self.review, &self.edits);
+        self.steps = crate::steps::merged(&self.evidence);
+        // The transcript, decision brief and comparison views follow the newest evidence session.
+        self.selected_work = self.evidence.last().map(|(_, w, _)| w.clone());
+        self.selected_decision_work = None;
+        let key = self.judgment_key();
+        let session_key = self.session_key();
+        let saved = crate::judgment::saved(&self.root, &key)
+            .ok()
+            .flatten()
+            .map(Arc::new);
+        // Keep an earlier assessment for the same evidence so the plan can say
+        // "stale" instead of pretending nothing was ever formed.
+        self.judgment_brief = saved.or_else(|| {
+            self.judgment_brief.take().filter(|b| {
+                b["mode"] == "assessment" && b["session_key"] == serde_json::json!(session_key)
+            })
+        });
+        self.verdicts = crate::verdicts::load(&self.root).unwrap_or_default();
+    }
+    fn judgment_state(&self, brief: &Value) -> plan_views::PlanState {
+        use plan_views::PlanState;
+        let key = format!("judgment:{}", self.judgment_key());
+        if self.hunks.is_empty() {
+            PlanState::NoChanges
+        } else if self.job.as_ref().is_some_and(|job| job.key == key) {
+            PlanState::Generating
+        } else if let Some(error) = self.judgment_errors.get(&key) {
+            PlanState::Failed(error.clone())
+        } else if brief["mode"] != "assessment" {
+            PlanState::NotGenerated
+        } else if brief["scope_key"] != serde_json::json!(self.judgment_key()) {
+            PlanState::Stale
+        } else {
+            PlanState::Ready
+        }
+    }
+    fn plan_document(&self) -> Document {
+        let brief = self.judgment_brief.clone().unwrap_or_else(|| {
+            Arc::new(crate::judgment::empty(
+                &self.review,
+                &self.hunks,
+                &self.session_key(),
+            ))
+        });
+        let state = self.judgment_state(&brief);
+        plan_views::plan(
+            brief,
+            &self.hunks,
+            &self.steps,
+            &self.verdicts,
+            &self.opened,
+            state,
+            &self.agent,
+            &self.evidence,
+            self.pinned_session.is_some(),
+        )
+    }
+    fn plan_home(&mut self) {
+        self.remember_section();
+        if self.selected_work.is_none() {
+            self.select_latest_work();
+        }
+        let doc = self.plan_document();
+        self.open(doc);
+        self.sidebar = false;
+        self.code = None;
+    }
+    /// Re-render the plan in place (status rows, progress) without moving the reader.
+    fn update_plan_status(&mut self) {
+        if self.document.kind == View::Plan && self.editing.is_none() {
+            let (scroll, selection) = (self.document.scroll, self.document.source_selection);
+            self.document = self.plan_document();
+            self.document.scroll = scroll;
+            self.document.source_selection = selection.filter(|i| *i < self.document.sources.len());
+        }
+    }
+    fn steps_home(&mut self) {
+        self.remember_section();
+        if self.selected_work.is_none() {
+            self.select_latest_work();
+        }
+        let doc = plan_views::steps(
+            &self.steps,
+            &self.hunks,
+            &self.evidence,
+            self.judgment_brief.as_deref(),
+        );
+        self.open(doc);
+        self.sidebar = false;
+        self.code = None;
+    }
+    fn mark_opened(&mut self, key: String) {
+        self.opened.insert(key);
+    }
+    fn open_question(&mut self, index: usize) -> Result<()> {
+        let brief = self
+            .judgment_brief
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No worries formed yet · open the ? row on the plan"))?;
+        let doc = plan_views::worry(brief, index, &self.hunks, &self.steps, &self.verdicts)
+            .ok_or_else(|| anyhow::anyhow!("Worry not found"))?;
+        self.mark_opened(format!("question-{index}"));
+        self.open(doc);
+        self.code = None;
+        Ok(())
+    }
+    fn open_change(&mut self, ordinal: usize) -> Result<()> {
+        let doc = plan_views::change(
+            &self.steps,
+            ordinal,
+            &self.hunks,
+            self.judgment_brief.as_deref(),
+        )
+        .ok_or_else(|| anyhow::anyhow!("Change not found"))?;
+        self.mark_opened(format!("change-{ordinal}"));
+        self.open(doc);
+        self.code = None;
+        Ok(())
+    }
+    fn open_gap(&mut self, key: &str) {
+        let doc = plan_views::gap(key, &self.hunks, &self.steps);
+        self.mark_opened(format!("gap-{key}"));
+        self.open(doc);
+        self.code = None;
+    }
+    fn open_tests(&mut self) {
+        let doc = plan_views::tests(&self.steps);
+        self.mark_opened("tests".into());
+        self.open(doc);
+        self.code = None;
+    }
+    fn open_step(&mut self, index: usize) -> Result<()> {
+        let doc = plan_views::step(
+            &self.steps,
+            index,
+            &self.hunks,
+            &self.edits,
+            self.judgment_brief.as_deref(),
+        )
+        .ok_or_else(|| anyhow::anyhow!("Step not found"))?;
+        self.open(doc);
+        self.code = None;
+        Ok(())
+    }
+    /// The raw conversation for one request: the session reader, paged to that turn.
+    fn open_transcript(&mut self, turn: usize) -> Result<()> {
+        self.session_flow();
+        if self.document.kind == View::SessionWork {
+            self.follow(Link::Page(turn))?;
+        }
+        Ok(())
+    }
+    fn current_question(&self) -> Option<usize> {
+        if self.document.kind != View::Worry {
+            return None;
+        }
+        let title = &self.document.title;
+        title
+            .split(" · ")
+            .next()?
+            .trim()
+            .parse::<usize>()
+            .ok()?
+            .checked_sub(1)
+    }
+    fn set_verdict(&mut self, index: usize, state: Option<&str>, note: Option<&str>) -> Result<()> {
+        let brief = self
+            .judgment_brief
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No questions to judge"))?;
+        let question = arr(&brief["questions"])
+            .get(index)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Question not found"))?;
+        let verdict = crate::verdicts::set(&self.root, &question, &self.hunks, state, note)?;
+        self.verdicts
+            .insert(s(&verdict["question_key"]).to_owned(), verdict.clone());
+        // Re-render in place, keeping the reading position.
+        if self.document.kind == View::Worry {
+            let scroll = self.document.scroll;
+            if let Some(mut doc) =
+                plan_views::worry(brief, index, &self.hunks, &self.steps, &self.verdicts)
+            {
+                doc.scroll = scroll;
+                self.document = doc;
+            }
+        } else if self.document.kind == View::Plan {
+            let scroll = self.document.scroll;
+            self.document = self.plan_document();
+            self.document.scroll = scroll;
+        }
+        self.message(format!(
+            "{} · {}",
+            security::short(s(&question["question"]), 50),
+            crate::verdicts::label(s(&verdict["state"]))
+        ));
+        Ok(())
+    }
+    /// Review-by-you export: verdicts first, the agent's account for reference.
+    fn review_export(&self) -> Document {
+        let brief = self.judgment_brief.clone().unwrap_or_else(|| {
+            Arc::new(crate::judgment::empty(
+                &self.review,
+                &self.hunks,
+                &self.session_key(),
+            ))
+        });
+        let title = self
+            .selected_work
+            .as_ref()
+            .map(|w| s(&w["session"]["title"]).to_owned())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| "uncommitted changes".into());
+        let text = crate::verdicts::export(
+            &self.review,
+            &brief,
+            &self.steps,
+            &self.hunks,
+            &self.verdicts,
+            &title,
+        );
+        let mut doc = Document::new(View::Export, "Export preview · your review");
+        doc.text("Written in your voice: push-backs first so they can be pasted back to the agent. /export save writes this to .wy; nothing is uploaded. Redaction is best-effort — read it first.", AMBER);
+        doc.text(&text, TEXT);
+        doc.artifact = Some(Arc::new(
+            serde_json::json!({"export_text": text, "review_id": self.review["id"]}),
+        ));
+        doc
+    }
+    fn generate_questions(&mut self) {
+        if self.job.is_some() {
+            self.message(
+                "Wait for the current request or cancel it with x before forming questions",
+            );
+            return;
+        }
+        if self.hunks.is_empty() {
+            self.message("No uncommitted changes to question");
+            return;
+        }
+        let key = format!("judgment:{}", self.judgment_key());
+        self.judgment_errors.remove(&key);
+        let root = self.root.clone();
+        let review = self.review.clone();
+        let hunks = self.hunks.clone();
+        let steps = self.steps.clone();
+        let sessions = self.evidence_sessions();
+        let agent = self.agent.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let (sender, receiver) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let result = crate::judgment::run(
+                &root,
+                &review,
+                &hunks,
+                &steps,
+                &sessions,
+                &agent,
+                &worker_cancel,
+                |p| {
+                    let _ = sender.send(Update::Progress(p.into()));
+                },
+            );
+            let _ = sender.send(Update::Done(result));
+        });
+        self.job = Some(Job {
+            receiver,
+            cancel,
+            handle,
+            started: Instant::now(),
+            scope: "judgment questions".into(),
+            key,
+            file: None,
+            progress: "Preparing the diff and the agent's account…".into(),
+        });
+        self.update_plan_status();
+        self.message("Forming questions · the diff hunks, steps and statements are sent to your reasoning CLI · keep browsing");
+    }
+    fn finish_judgment(&mut self, artifact: Arc<Value>) {
+        if artifact["scope_key"] != serde_json::json!(self.judgment_key()) {
+            self.message("Questions saved for another capture · current tree unchanged");
+            return;
+        }
+        self.judgment_errors
+            .remove(&format!("judgment:{}", self.judgment_key()));
+        self.judgment_brief = Some(artifact);
+        if self.document.kind == View::Plan && self.document.scroll == 0 && self.editing.is_none() {
+            self.document = self.plan_document();
+        }
+        self.message("Questions ready · Enter opens one · y/n/m record your verdict");
+    }
+
     fn message(&mut self, message: impl Into<String>) {
         self.status = message.into();
         self.error = false;
@@ -831,6 +1297,9 @@ impl Workspace {
         if document::is_recorded(artifact)
             || artifact["scope_kind"] == "session"
             || artifact["context"] == "session_work"
+            || artifact["context"] == "judgment_brief"
+            || artifact["context"] == "plan"
+            || artifact["context"] == "steps"
         {
             return;
         }
@@ -1104,12 +1573,20 @@ impl Workspace {
                 Ok(artifact) if artifact["context"] == "decision_brief" => {
                     self.finish_decisions(Arc::new(artifact))
                 }
+                Ok(artifact) if artifact["context"] == "judgment_brief" => {
+                    self.finish_judgment(Arc::new(artifact))
+                }
                 Ok(artifact) => self.finish_answer(&job.key, Arc::new(artifact)),
                 Err(error) => {
                     if job.key.starts_with("decision-brief:") {
                         self.decision_errors
                             .insert(job.key.clone(), format!("{error:#}"));
                         self.update_decision_status();
+                    }
+                    if job.key.starts_with("judgment:") {
+                        self.judgment_errors
+                            .insert(job.key.clone(), format!("{error:#}"));
+                        self.update_plan_status();
                     }
                     self.fail(format!("{}: {error:#}", job.scope));
                 }
@@ -1211,6 +1688,12 @@ impl Workspace {
             self.message("Filter applied · f edits it · Esc clears it in files");
             return Ok(());
         }
+        if mode == Some(Input::Note) {
+            if let Some(index) = self.note_target.take() {
+                self.set_verdict(index, None, Some(&input))?;
+            }
+            return Ok(());
+        }
         if input.is_empty() {
             return Ok(());
         }
@@ -1226,6 +1709,11 @@ impl Workspace {
         let rest = rest.trim();
         match name {
             "/coverage" => self.open(history_views::coverage(&self.review, &self.sessions)),
+            "/plan" if rest.is_empty() => self.plan_home(),
+            "/plan" if rest == "ask" => self.generate_questions(),
+            "/steps" => self.steps_home(),
+            "/transcript" => self.session_flow(),
+            "/explanation" => self.saved_explanation()?,
             "/sessions" => self.session_picker(),
             "/changes" => self.open(session_views::working_changes(&self.review)),
             "/decisions" if rest.is_empty() => self.decision_home(),
@@ -1334,7 +1822,11 @@ impl Workspace {
                     ));
                 } else {
                     ensure!(rest.is_empty(), "Use /export, then /export save");
-                    self.open(history_views::export(&self.review, &self.sessions));
+                    if self.hunks.is_empty() {
+                        self.open(history_views::export(&self.review, &self.sessions));
+                    } else {
+                        self.open(self.review_export());
+                    }
                 }
             }
             "/commits" => self.open_commits()?,
@@ -1461,6 +1953,67 @@ impl Workspace {
     }
     fn follow(&mut self, link: Link) -> Result<()> {
         match link {
+            Link::PlanHome => {
+                self.plan_home();
+                Ok(())
+            }
+            Link::Question(index) => self.open_question(index),
+            Link::Change(ordinal) => self.open_change(ordinal),
+            Link::Gap(key) => {
+                self.open_gap(&key);
+                Ok(())
+            }
+            Link::Tests => {
+                self.open_tests();
+                Ok(())
+            }
+            Link::Transcript(turn) => self.open_transcript(turn),
+            Link::Evidence => {
+                let doc = plan_views::evidence(
+                    &self.evidence,
+                    &self.sessions,
+                    &self.hunks,
+                    self.pinned_session.as_deref(),
+                );
+                self.mark_opened("evidence".into());
+                self.open(doc);
+                Ok(())
+            }
+            Link::AutoEvidence => {
+                self.pinned_session = None;
+                self.rebuild_lenses();
+                self.plan_home();
+                self.message("Evidence chosen automatically from the diff");
+                Ok(())
+            }
+            Link::GenerateQuestions => {
+                self.generate_questions();
+                Ok(())
+            }
+            Link::StepsHome => {
+                self.steps_home();
+                Ok(())
+            }
+            Link::Step(index) => self.open_step(index),
+            Link::Verdict(index, state) => self.set_verdict(index, Some(&state), None),
+            Link::Note(index) => {
+                self.note_target = Some(index);
+                self.focus = Focus::Reader;
+                self.edit(Input::Note);
+                Ok(())
+            }
+            Link::Hunk(id) => {
+                let hunk = crate::hunks::find(&self.hunks, &id)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("This hunk is no longer in the working tree"))?;
+                let target = Target {
+                    file: s(&hunk["file"]).into(),
+                    symbol: None,
+                    line: n(&hunk["start"]),
+                };
+                self.open(document::diff(&self.review, target));
+                Ok(())
+            }
             Link::DecisionHome => {
                 self.decision_home();
                 Ok(())
@@ -1516,10 +2069,6 @@ impl Workspace {
             Link::Session(key) => self.select_session(&key),
             Link::SessionPicker => {
                 self.session_picker();
-                Ok(())
-            }
-            Link::SessionPage(page) => {
-                self.change_session_page(page);
                 Ok(())
             }
             Link::SessionEdit(reference) => {
@@ -1605,6 +2154,20 @@ impl Workspace {
         self.input = match mode {
             Input::Command => "/".into(),
             Input::Question => String::new(),
+            Input::Note => self
+                .note_target
+                .and_then(|i| {
+                    self.judgment_brief
+                        .as_ref()
+                        .map(|b| arr(&b["questions"]).get(i).cloned())
+                })
+                .flatten()
+                .and_then(|q| {
+                    self.verdicts
+                        .get(&crate::judgment::question_key(&q))
+                        .map(|v| s(&v["note"]).to_owned())
+                })
+                .unwrap_or_default(),
             Input::Filter => self.explorer.filter.clone(),
         };
         if mode == Input::Filter {
@@ -1661,6 +2224,8 @@ impl Workspace {
             .clone()
             .or_else(|| self.explorer.target());
         match view {
+            View::Plan => self.plan_home(),
+            View::Steps => self.steps_home(),
             View::DecisionOverview => self.decision_home(),
             View::Diff | View::Recorded => {
                 if let Some(target) = target {
@@ -1756,7 +2321,12 @@ impl Workspace {
             crate::decisions::saved(&self.root, &self.decision_scope())?.map(Arc::new);
         self.review["recent_code"] = serde_json::json!([]);
         self.explorer.rebuild(&self.review);
-        self.decision_home();
+        self.rebuild_lenses();
+        if self.hunks.is_empty() {
+            self.decision_home();
+        } else {
+            self.plan_home();
+        }
         self.back.clear();
         self.message("Changes refreshed");
         Ok(())
@@ -1843,8 +2413,14 @@ impl Workspace {
         if modifiers.contains(KeyModifiers::CONTROL)
             && matches!(code, KeyCode::Left | KeyCode::Right)
         {
-            let tabs = [View::DecisionOverview, View::Sessions];
-            let current = tabs.iter().position(|v| *v == self.section()).unwrap_or(0);
+            let tabs = [View::Plan, View::Steps];
+            // Everything that is not the plan sits under Steps in the navigation.
+            let section = if self.section() == View::Plan {
+                View::Plan
+            } else {
+                View::Steps
+            };
+            let current = tabs.iter().position(|v| *v == section).unwrap_or(0);
             let next = if code == KeyCode::Right {
                 (current + 1) % tabs.len()
             } else {
@@ -1997,9 +2573,20 @@ impl Workspace {
             }
             KeyCode::Char('/') => self.edit(Input::Command),
             KeyCode::Char('g') => self.open_commits()?,
+            KeyCode::Char('i') if self.document.kind == View::Worry => {
+                if let Some(i) = self.current_question() {
+                    self.note_target = Some(i);
+                    self.focus = Focus::Reader;
+                    self.edit(Input::Note);
+                }
+            }
             KeyCode::Char('i') => {
                 if self.document.artifact.as_ref().is_some_and(|a| {
-                    a["context"] == "decision_brief" || a["context"] == "session_work"
+                    a["context"] == "decision_brief"
+                        || a["context"] == "session_work"
+                        || a["context"] == "judgment_brief"
+                        || a["context"] == "plan"
+                        || a["context"] == "steps"
                 }) {
                     self.message(
                         "Inspect captured evidence, or open Decisions to request an assessment",
@@ -2147,6 +2734,37 @@ impl Workspace {
                 });
             }
             KeyCode::Char('d') => self.decision_home(),
+            KeyCode::Char('p') => self.plan_home(),
+            KeyCode::Char('t') => self.steps_home(),
+            KeyCode::Char('y') if self.document.kind == View::Worry => {
+                if let Some(i) = self.current_question() {
+                    self.set_verdict(i, Some("accept"), None)?;
+                }
+            }
+            KeyCode::Char('n') if self.document.kind == View::Worry => {
+                if let Some(i) = self.current_question() {
+                    self.set_verdict(i, Some("push_back"), None)?;
+                }
+            }
+            KeyCode::Char('m') if self.document.kind == View::Worry => {
+                if let Some(i) = self.current_question() {
+                    self.set_verdict(i, Some("unsure"), None)?;
+                }
+            }
+            KeyCode::Char('e')
+                if matches!(
+                    self.document.kind,
+                    View::Plan
+                        | View::PlanChange
+                        | View::PlanGap
+                        | View::PlanTests
+                        | View::Worry
+                        | View::Steps
+                        | View::Step
+                ) =>
+            {
+                self.generate_questions()
+            }
             KeyCode::Char('e')
                 if matches!(
                     self.document.kind,
@@ -2164,7 +2782,7 @@ impl Workspace {
             KeyCode::Char('o') => self.change_view(View::Recorded)?,
             KeyCode::Char('v') if self.session_context() => self.decision_home(),
             KeyCode::Char('v') => self.change_view(View::Explanation)?,
-            KeyCode::Char('t') => self.change_view(View::Sessions)?,
+            KeyCode::Char('T') => self.change_view(View::Sessions)?,
             KeyCode::Char('x') => self.cancel(),
             KeyCode::Char('s') if !self.document.sources.is_empty() => self.select_source(0),
             KeyCode::Char('R')
@@ -2176,7 +2794,7 @@ impl Workspace {
                 self.discover_decisions()
             }
             KeyCode::Char('R') => self.why_change(true),
-            KeyCode::Char('p') => self.saved_explanation()?,
+            KeyCode::Char('P') => self.saved_explanation()?,
             KeyCode::Char('m') => self.mark(),
             KeyCode::Char('r') => {
                 if self.job.is_none() {
@@ -2201,6 +2819,10 @@ impl Workspace {
                         View::SessionWork
                             | View::SessionImplementation
                             | View::SessionComparison
+                            | View::Plan
+                            | View::Worry
+                            | View::Steps
+                            | View::Step
                             | View::DecisionOverview
                             | View::DecisionDetail
                             | View::Recorded
@@ -2234,7 +2856,17 @@ impl Workspace {
             }
             KeyCode::Char(c @ '1'..='9') => {
                 let index = c.to_digit(10).unwrap() as usize - 1;
-                if self.document.kind == View::DecisionOverview {
+                if self.document.kind == View::Plan {
+                    let link = self
+                        .document
+                        .sources
+                        .get(index)
+                        .map(|(_, link)| link.clone())
+                        .ok_or_else(|| anyhow::anyhow!("No row at this position"))?;
+                    self.follow(link)?;
+                } else if self.document.kind == View::Steps {
+                    self.follow(Link::Step(index))?;
+                } else if self.document.kind == View::DecisionOverview {
                     self.follow(Link::Decision(index))?;
                 } else if self.document.kind == View::DecisionDetail {
                     let link = self
@@ -2266,6 +2898,8 @@ impl Workspace {
                     self.document = doc;
                     self.code = code;
                     self.focus = if !self.sidebar { Focus::Reader } else { focus };
+                    // Coming back to the plan: progress and verdict marks may have changed.
+                    self.update_plan_status();
                 }
             }
             KeyCode::Char('?') | KeyCode::F(1) => self.open(document::help()),

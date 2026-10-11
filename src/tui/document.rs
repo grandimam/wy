@@ -10,6 +10,13 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum View {
     Empty,
+    Plan,
+    PlanChange,
+    PlanGap,
+    PlanTests,
+    Worry,
+    Steps,
+    Step,
     DecisionOverview,
     DecisionDetail,
     SessionWork,
@@ -37,13 +44,35 @@ pub(super) enum View {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Link {
     Page(usize),
+    PlanHome,
+    /// One plain-language change group on the plan.
+    Change(usize),
+    /// An evidence gap row on the plan (file with no record, shell write, derived).
+    Gap(String),
+    /// Every build/test run, in order.
+    Tests,
+    /// Original conversation for a step's request.
+    Transcript(usize),
+    /// Which sessions explain the diff, and how to change that.
+    Evidence,
+    /// Drop a hand-picked session and let the diff choose the evidence again.
+    AutoEvidence,
+    Question(usize),
+    GenerateQuestions,
+    StepsHome,
+    Step(usize),
+    /// Record a verdict (accept / push_back / unsure) for a question.
+    Verdict(usize, String),
+    /// Edit the reviewer's note for a question.
+    Note(usize),
+    /// Open the full current diff for the file containing a hunk.
+    Hunk(String),
     DecisionHome,
     Decision(usize),
     DiscoverDecisions,
     RequestDecisions(usize),
     SessionDecisions,
     SessionPicker,
-    SessionPage(usize),
     SessionEdit(Value),
     CompareSessionEdit(Value),
     Explain,
@@ -233,12 +262,41 @@ impl Document {
     /// Always-visible conversation card. Borders are drawn at layout time so prose
     /// wraps inside the current pane width, including while scrolling and resizing.
     pub fn message_panel(&mut self, title: &str, request: bool, body: impl FnOnce(&mut Self)) {
+        self.panel(
+            title,
+            if request { ACCENT } else { GREEN },
+            request,
+            true,
+            None,
+            body,
+        );
+    }
+    /// A bordered box whose title row may itself be a link. Neutral border.
+    pub fn boxed(&mut self, title: &str, link: Option<Link>, body: impl FnOnce(&mut Self)) {
+        self.panel(title, TEXT, false, false, link, body);
+    }
+    fn panel(
+        &mut self,
+        title: &str,
+        color: Color,
+        request: bool,
+        padded: bool,
+        link: Option<Link>,
+        body: impl FnOnce(&mut Self),
+    ) {
         self.gap();
         let first = self.lines.len();
-        self.text(title, if request { ACCENT } else { GREEN });
-        self.lines.push(Line::default());
+        if let Some(link) = link {
+            self.sources.push((first, link));
+        }
+        self.text(title, color);
+        if padded {
+            self.lines.push(Line::default());
+        }
         body(self);
-        self.lines.push(Line::default());
+        if padded {
+            self.lines.push(Line::default());
+        }
         self.lines.push(Line::default());
         self.message_panels
             .push((first, self.lines.len() - 1, request));
@@ -297,7 +355,14 @@ impl Document {
     pub fn historical(&self) -> bool {
         matches!(
             self.kind,
-            View::SessionWork
+            View::Plan
+                | View::PlanChange
+                | View::PlanGap
+                | View::PlanTests
+                | View::Worry
+                | View::Steps
+                | View::Step
+                | View::SessionWork
                 | View::SessionImplementation
                 | View::SessionComparison
                 | View::DecisionOverview
@@ -1569,10 +1634,29 @@ pub(super) fn commit_context(context: &Value) -> Document {
 }
 
 pub(super) fn help() -> Document {
-    let mut doc = Document::new(View::Help, "Decisions, evidence and original context");
+    let mut doc = Document::new(View::Help, "Plan, Steps and the evidence beneath them");
     for (title, body) in [
         (
-            "Start with decisions",
+            "Plan (p) — before you accept the uncommitted diff",
+            "What changed     plain-language groups of what the agent did · Enter opens one
+What to worry    questions a domain expert would ask (Enter on the ? row asks your CLI;
+                 nothing runs on its own) plus files with no record of why
+Was it tested    every build/test run in order, and which changes had none
+Progress         what you have read and decided · /export writes your review
+Each row opens its evidence. ✓ marks rows you have opened.
+In a worry: y / n / m  accept · push back · unsure   i  your note
+Verdicts persist; if the cited code changes they are flagged stale, never cleared.",
+        ),
+        (
+            "Steps (t) — what the agent did, in order",
+            "One box per step: Why (its own words, or 'no reason given'), Check (build/test
+runs), Gap (shell writes, unconfirmed captures), Plan (worries it raises).
+Enter opens the step with its code and a link to the original conversation.
+Not explained by this session lists hunks no captured edit matches.
+Steps are a heuristic grouping; a larger step is preferred over an invented split.",
+        ),
+        (
+            "Decisions (captured session)",
             "d  decisions for the selected captured session
 The latest dated captured session is selected initially, not assumed active.
 ↑/↓ and Enter  open a decision; read why, alternatives and trade-offs
@@ -1621,7 +1705,7 @@ Ctrl+Y  optional terminal-native copy mode; Esc restores navigation.",
         ),
         (
             "Navigate",
-            "Ctrl+←/→  cycle Decisions / Sessions · d / t  jump directly
+            "Ctrl+←/→  cycle Plan / Steps · p / t  jump directly · o  original conversation · d  decisions
 Tab  session work · b  session picker
 Alt+←/→  previous / next page · z  collapse / expand code
 ↑/↓ or j/k  select links or scroll · ←/→ or h/l  pan code
@@ -1642,7 +1726,10 @@ q / Ctrl+Q / Ctrl+C  quit",
 /decisions discover — explicitly request a prioritized AI brief
 /decisions FILE:SYMBOL — recorded file context, tests, and gaps
 /setup then /setup save — optional decision-record template
-/export then /export save — export the working-tree review (not the session brief)
+/plan · /steps — the two screens
+/plan ask — explicitly form the worries (same as Enter on the ? row, or e)
+/transcript — the original conversation · /explanation — last saved current-code answer
+/export then /export save — your review: push-backs first, then the agent's steps
 /why FILE:SYMBOL QUESTION
 /ask QUESTION
 /reason QUESTION — question about all changes

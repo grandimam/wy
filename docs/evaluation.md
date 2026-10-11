@@ -8,6 +8,38 @@ Automated checks establish implementation behavior, not real-world explanation a
 
 Session-code checks cover committed files with a clean Git diff, captured code surviving later deletion, static wrapped patches, Claude writes and edits, failed tool calls, private-path exclusion, redaction, recency bounds and Codex event IDs. Workspace checks also cover separate answers for a diff and its historical edit, code beside prose, clickable and keyboard-selected sources, and narrow-terminal access to both panes.
 
+## Plan and Steps
+
+`tests/judgment.rs` covers the hunk spine (matched / partial / none, derived files,
+current-tree coordinates, stable ids, no session ⇒ nothing attributed), step
+segmentation (announce + disjoint files splits, decision records split, edit → failed
+test → fix stays together, validation outcomes, shell-write gaps, hunk ↔ step links),
+question validation (verbatim quotes only, quotes from the step that produced the
+cited code only, unknown carries no evidence, inferred needs some, citations and
+check lines inside the diff, scope-key invalidation by tree, HEAD and session) and
+verdicts (persist across regeneration, stale by hunk hash, export ordering and
+content). `src/tui/plan_tests.rs` covers the dirty-tree default with every plan row openable
+and nothing running, progress marks after returning, the gap and tests details, two
+tabs at 40/80/140 columns, Steps boxes with Why / Check / Gap / Plan rows and the
+transcript drill-down, worry details with hunk markers and step cross-links, y/n/m
+and notes re-rendering in place, stale flags on both screens, export preview,
+asking as a row with mismatched-scope and failed results, and the clean-tree state.
+
+**Does wy actually build judgment?** That is not established by these tests.
+Evaluate it with representative dirty trees in domains the reviewer does not know:
+
+1. Independently have a domain expert list the questions that must be answered
+   before accepting the diff. Do not show them wy's output first.
+2. Give a developer with no background in the domain the diff and wy. Let them form
+   the questions, work through them, and record verdicts.
+3. Measure: how many of the expert's questions wy surfaced (coverage); how many the
+   newcomer could then answer correctly (comprehension); how many wy answered
+   **wrongly with confidence**—a `recorded` or `inferred` status, an expert view or
+   a consequence note that the expert rejects. The last number must be near zero;
+   it matters more than coverage.
+4. Track whether the newcomer, on a later diff in the same domain, asks the
+   questions before running wy. That is the outcome.
+
 ## Decision visibility milestone
 
 Request-scope regression checks cover overlapping files with separate rationale,

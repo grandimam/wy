@@ -7,6 +7,7 @@
         "choice":{"type":"string","minLength":1,"maxLength":300},
         "reason":{"type":"string","minLength":1,"maxLength":1200},
         "significance":{"type":"string","minLength":1,"maxLength":500},
+        "implications":{"type":"array","maxItems":3,"items":{"type":"string","minLength":1,"maxLength":400}},
         "status":{"type":"string","enum":["recorded","inferred","unknown"]},
         "files":{"type":"array","minItems":1,"maxItems":20,"uniqueItems":true,"items":{"type":"string"}},
         "alternatives":{"type":"array","maxItems":4,"items":{"type":"string","maxLength":600}},

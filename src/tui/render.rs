@@ -55,34 +55,10 @@ impl Workspace {
         } else {
             0
         };
-        let body = if narrow && !self.session_nav_focus {
-            self.draw_navigation(frame, rows[1], false);
-            rows[2]
-        } else {
-            let resizable = !narrow && self.section() != View::Recorded;
-            let width = if self.section() == View::Recorded {
-                14
-            } else if narrow {
-                20
-            } else {
-                self.pane_sizes.sessions.unwrap_or(28).clamp(
-                    16,
-                    area.width.saturating_sub(reserved_requests + 45).max(16),
-                )
-            };
-            let columns = Layout::horizontal([
-                Constraint::Length(width),
-                Constraint::Length(u16::from(resizable)),
-                Constraint::Min(0),
-            ])
-            .split(rows[2]);
-            self.draw_navigation(frame, columns[0], true);
-            if resizable {
-                self.areas.session_divider = columns[1];
-                self.draw_divider(frame, columns[1]);
-            }
-            columns[2]
-        };
+        // Navigation is one row: Plan · Steps. Evidence sessions are chosen from the
+        // diff and shown on the plan, not as a pane you have to pick from.
+        self.draw_navigation(frame, rows[1], false);
+        let body = rows[2];
         let body = if show_requests {
             let resizable = area.width >= 110;
             let width = if resizable {
@@ -302,27 +278,19 @@ impl Workspace {
             area,
         );
     }
-    fn draw_navigation(&mut self, frame: &mut Frame, area: Rect, vertical: bool) {
-        let horizontal = Layout::horizontal([Constraint::Ratio(1, 2); 2]).split(area);
-        for (index, (label, view)) in [
-            ("Decisions", View::DecisionOverview),
-            ("Sessions", View::Sessions),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let rect = if vertical {
-                Rect::new(
-                    area.x,
-                    area.y + index as u16 * 2,
-                    area.width.saturating_sub(1),
-                    1,
-                )
-            } else {
-                horizontal[index]
-            };
-            let selected = self.section() == view
-                || (view == View::Sessions && self.section() == View::Recorded);
+    fn draw_navigation(&mut self, frame: &mut Frame, area: Rect, _vertical: bool) {
+        let tabs = [("Plan", View::Plan), ("Steps", View::Steps)];
+        let mut x = area.x;
+        for (label, view) in tabs {
+            let text = format!(" {label} ");
+            let width = (text.len() as u16).min(area.width.saturating_sub(x - area.x));
+            if width == 0 {
+                break;
+            }
+            let rect = Rect::new(x, area.y, width, 1);
+            // Everything that is not the plan is evidence, and lives under Steps.
+            let selected =
+                self.section() == view || (view == View::Steps && self.section() != View::Plan);
             let style = if selected {
                 Style::default()
                     .fg(ACCENT)
@@ -331,111 +299,17 @@ impl Workspace {
             } else {
                 Style::default().fg(TEXT)
             };
-            frame.render_widget(Paragraph::new(format!(" {label}")).style(style), rect);
+            frame.render_widget(Paragraph::new(text).style(style), rect);
             self.areas.tabs.push((rect, view, Focus::Reader));
+            x += width + 1;
         }
-        if vertical && area.height > 4 {
-            let rect = Rect::new(
-                area.x,
-                area.y + 4,
-                area.width.saturating_sub(1),
-                area.height - 4,
-            );
-            let rows = Layout::vertical([
-                Constraint::Min(0),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ])
-            .split(rect);
-            self.areas.sessions = rows[0];
-            if self.session_nav.selected().is_none() {
-                self.step_session_navigation(0);
-            }
-            let entries = self.navigation_sessions();
-            if entries.is_empty() {
-                frame.render_widget(
-                    Paragraph::new("  No captured sessions").style(Style::default().fg(MUTED)),
-                    rect,
-                );
-                return;
-            }
-            let count = entries.len();
-            let size = session_views::SESSIONS_PER_PAGE;
-            let page = self.session_page;
-            let pages = count.div_ceil(size).max(1);
-            let items: Vec<_> = entries
-                .iter()
-                .skip(page * size)
-                .take(size)
-                .map(|(key, id)| {
-                    let selected = self
-                        .selected_work
-                        .as_ref()
-                        .is_some_and(|w| w["session"]["storage_key"] == *key);
-                    ListItem::new(format!(
-                        " {} {}",
-                        if selected { "›" } else { " " },
-                        fit(id, rect.width.saturating_sub(4) as usize)
-                    ))
-                    .style(Style::default().fg(if selected {
-                        ACCENT
-                    } else {
-                        MUTED
-                    }))
-                })
-                .collect();
-            let highlight = if self.session_nav_focus {
-                Style::default().add_modifier(Modifier::REVERSED)
-            } else {
-                Style::default()
+        if area.width > x - area.x + 4 {
+            let rest = Rect::new(x + 1, area.y, area.width - (x - area.x) - 1, 1);
+            let hint = match self.section() {
+                View::Plan => "Enter opens a row · t steps · ? help",
+                _ => "p plan · o conversation · Esc back",
             };
-            frame.render_stateful_widget(
-                List::new(items).highlight_style(highlight),
-                rows[0],
-                &mut self.session_nav,
-            );
-            frame.render_widget(
-                Paragraph::new(format!(
-                    "{count} {} · {}/{pages}",
-                    if self.review["lazy_sessions"] == true {
-                        "sessions"
-                    } else {
-                        "captured"
-                    },
-                    page + 1
-                ))
-                .style(Style::default().fg(MUTED)),
-                rows[1],
-            );
-            let controls = Layout::horizontal([Constraint::Ratio(1, 2); 2]).split(rows[2]);
-            if page > 0 {
-                frame.render_widget(
-                    Paragraph::new("← Previous").style(Style::default().fg(ACCENT)),
-                    controls[0],
-                );
-                self.areas
-                    .sources
-                    .push((controls[0], Link::SessionPage(page - 1)));
-            }
-            if page + 1 < pages {
-                frame.render_widget(
-                    Paragraph::new("Next →").style(Style::default().fg(ACCENT)),
-                    controls[1],
-                );
-                self.areas
-                    .sources
-                    .push((controls[1], Link::SessionPage(page + 1)));
-            }
-            frame.render_widget(
-                Paragraph::new(if self.review["lazy_sessions"] == true {
-                    "Load on selection"
-                } else {
-                    "Capture limits: /coverage"
-                })
-                .style(Style::default().fg(MUTED)),
-                rows[3],
-            );
+            frame.render_widget(Paragraph::new(hint).style(Style::default().fg(MUTED)), rest);
         }
     }
     fn draw_requests(&mut self, frame: &mut Frame, area: Rect) {
@@ -885,6 +759,39 @@ impl Workspace {
         let reasons = if self.brief { "reasons" } else { "brief" };
         let keys: Vec<(&str, &str)> = if reader && self.document.kind == View::Commits {
             vec![("↑↓", "commits"), ("Enter", "open"), ("Esc", "back")]
+        } else if reader && self.document.kind == View::Plan {
+            vec![
+                ("↑↓", "move"),
+                ("Enter", "open"),
+                ("t", "steps"),
+                ("?", "help"),
+            ]
+        } else if reader && self.document.kind == View::Worry {
+            vec![
+                ("y/n/m", "accept/push back/unsure"),
+                ("i", "note"),
+                ("s", "code"),
+                ("Esc", "back"),
+            ]
+        } else if reader && self.document.kind == View::Steps {
+            vec![
+                ("↑↓", "move"),
+                ("Enter", "open step"),
+                ("p", "plan"),
+                ("?", "help"),
+            ]
+        } else if reader
+            && matches!(
+                self.document.kind,
+                View::Step | View::PlanChange | View::PlanGap | View::PlanTests
+            )
+        {
+            vec![
+                ("↑↓", "read"),
+                ("s", "links"),
+                ("p", "plan"),
+                ("Esc", "back"),
+            ]
         } else if reader && self.document.kind == View::DecisionOverview {
             vec![
                 ("↑↓", "decisions"),
@@ -960,6 +867,7 @@ impl Workspace {
             Input::Command => " / ".to_owned(),
             Input::Question => format!(" Ask {} · {} › ", self.agent, self.question_scope()),
             Input::Filter => " Filter › ".to_owned(),
+            Input::Note => " Your note · Enter saves · Esc cancels › ".to_owned(),
         };
         let label_width = Line::from(label.as_str()).width() as u16;
         let room = area.width.saturating_sub(label_width + 1) as usize;

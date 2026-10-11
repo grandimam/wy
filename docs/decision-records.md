@@ -30,7 +30,9 @@ never edits those instructions automatically):
 > explanation, not a request for private chain-of-thought. Include repository-relative
 > file paths and symbol names so history can link it to the affected code. Describe
 > evidence you actually observed; do not invent references or retroactive reasons.
-> Update the record if tests or requirements change the decision.
+> Update the record if tests or requirements change the decision. Say what you
+> considered and rejected, and what you did not verify: those two fields are what
+> a reviewer who does not know the domain needs most.
 >
 Use **JSON**, not a bullet list, after each `WY_DECISION` marker:
 
@@ -86,9 +88,15 @@ choices across files and returns at most eight decisions ordered by assessed
 consequence. No captured edits means discovery is unavailable: current source code
 is never substituted for missing historical code.
 
-Each detail shows why, significance, alternatives, trade-offs, captured code and
-original context. Recorded/inferred/unknown rationale stays visible. Alternatives
-are assessments unless explicitly attributed to a cited record. Every affected
+Each detail opens with the rationale provenance. **Why** shows the exact original
+assistant quote for recorded rationale (with a link to the statement), the model's
+retrospective explanation for inferred rationale, or "Not captured" plus a clearly
+labelled *Possible rationale · assessment* for unknown rationale. **What this means**
+lists up to three concrete consequences (`implications`) for operating, changing
+or using the software. Alternatives and trade-offs are headed *assessed, not
+recorded* for generated briefs and *self-reported* for offline records; empty
+sections read "Not established". Evidence lines name the cited edit's operation
+and whether execution was confirmed. Every affected
 file must cite a captured edit from the selected session. Recorded rationale
 requires an exact original assistant quote; validation checks references, not
 semantic truth. An input with unconfirmed execution is not a proven implementation.

@@ -4,7 +4,7 @@
 
 # wy
 
-### Understand the decisions behind your changes—with evidence on demand.
+### Form a judgment about AI-written changes in a domain you don't know—before you commit them.
 
 [![Experimental](https://img.shields.io/badge/Status-Experimental-E7B66D?style=flat-square&labelColor=182335)](#status)
 [![History support](https://img.shields.io/badge/History-Codex_%2B_Claude_%2B_pi_%2B_OpenCode-78DCCE?style=flat-square&labelColor=182335)](#how-it-works)
@@ -13,23 +13,37 @@
 
 </div>
 
-Your agent changed 40 files. What consequential choices explain those changes?
-wy starts with decisions for the **latest captured coding session**.
-Open a choice to understand its rationale, alternatives and trade-offs; inspect
-code evidence next, and original agent context only when you need it.
+You handed a problem to an agent because you couldn't solve it yourself. Now it has
+changed 40 files, and the consequential choices were made without you. wy turns the
+**uncommitted diff** into the questions you'd need to be able to answer to accept
+it—and shows you which of them the agent's own record actually answers.
 
-A session defines the work being inspected; one decision can span several files.
-Captured edits remain available after commits, later changes, or file deletion.
-Today's code is an optional comparison—not a substitute for historical evidence.
-wy cannot reliably identify a live agent, so it says **latest captured**, not current.
+Two screens on the same hunks:
+
+- **Plan**: the first screen. Four boxes—**What changed** (plain-language groups),
+  **What to worry about** (questions a domain expert would ask, plus files with no
+  record of why), **Was it tested**, and **Progress**. Every row opens its evidence.
+  A worry carries what the agent chose, what it **said** (an exact quote, or an honest
+  **unknown**), the code with markers, where to look yourself, and your verdict:
+  accept · push back · unsure.
+- **Steps**: the audit trail. The captured session as intent-sized steps, each with
+  Why (verbatim or "no reason given"), Check, Gap, and the worries it raises; the
+  original conversation is one link deeper.
+
+Your verdicts persist and export as a review in your voice—push-backs first, so they
+paste straight back to the agent as the next instruction. That loop is the point:
+judgment formed → fed back → better next iteration, until you can ask the questions
+yourself before the agent runs.
 
 It imports existing local **Codex, Claude Code, pi, and OpenCode** history. No
-recorder has to be running first. Missing evidence stays missing—wy does not turn
-a nearby message into a proven reason for a change.
+recorder has to be running first. Attribution is a textual match between a hunk and
+a captured edit, or nothing—wy never assigns today's diff to a session because the
+tree happens to be dirty. Missing evidence stays missing; a nearby message is not a
+proven reason. Nothing calls a model until you open the **?** row on the plan.
 
 ![wy terminal UI: files beside captured conversation and diff hunks](docs/assets/terminal-preview.png)
 
-*The screenshot illustrates the secondary file/history reader. The default screen is now the decision overview.*
+*The screenshot illustrates the secondary file/history reader. The default screen is the plan.*
 
 ## Get started
 
@@ -41,15 +55,13 @@ cd /path/to/your/repo
 wy
 ```
 
-- **Decisions (`d`):** inspect choices for the selected work, with recorded/inferred/unknown rationale.
-- **Explain this request’s decisions:** open a request-scoped overview from Detail, without a model call. Use `/decisions requests 2-4` to include adjacent requests, or `/decisions session` for the whole session.
-- **Generate decision brief (`e`):** explicitly request a cited assessment of the displayed scope; in request Detail, assesses that request only. No model runs automatically.
-- **Sessions (`t`):** bordered requests, collapsible agent responses and notes, and chronological change groups. Open an edit to read its captured code.
-- **Compare with current code:** optional, inside an edit. Partial or unconfirmed captures cannot establish a full historical file.
-- **Choose another session (`b` or `/sessions`):** older sessions appear only in the picker.
+- **Plan (`p`):** the opening screen. **What changed** lists what the agent did, in plain words, one row per change group. **What to worry about** lists the questions you need to be able to answer (opening the `?` row forms them with your reasoning CLI—explicitly, never on its own) and the files no captured edit explains. **Was it tested** is one line of fact and one of what was not. **Progress** says what you have read and decided. `Enter` on any row opens its evidence; in a worry `y`/`n`/`m` record accept / push back / unsure and `i` adds a note.
+- **Steps (`t`):** one bordered box per step, in order: **Why** in the agent's own words or "no reason given", **Check** (build/test runs, fail → fixed), **Gap** (shell writes, unconfirmed captures), **Plan** (the worries it raises). `Enter` opens the step with its hunks and a link to the original conversation. **Not explained by this session** lists hunks no captured edit matches.
+- **Beneath Steps:** the original transcript (`o`), the session decision brief (`d`), captured-edit comparison with current code, and commit history. These are drill-downs, not sections.
+- **Evidence is chosen from the diff.** Every captured session whose edit text matches a hunk counts, newest first, bounded to four; the plan's evidence line says "1 session, …" or "N sessions explain X of Y files". Open it to see which, to hand-pick a different one, or to let the diff choose again. No list to scan, no guessing by date.
 - **Refresh (`r`):** recapture history offline, keeping the selected session when available.
 
-**Decisions / Sessions** form the left navigation; narrow terminals use a compact top row. Original conversations are a final drill-down, not a separate History section. **As implemented** shows captured code, including explicit execution and truncation gaps. A clean Git tree does not erase session work. No history means no session reconstruction—not an automatic fallback to today's diff.
+**Plan / Steps** is the whole navigation—one row at the top, full width for the content. Original conversations are a final drill-down, not a separate History section. **As implemented** shows captured code, including explicit execution and truncation gaps. A clean Git tree does not erase session work. No history means no session reconstruction—not an automatic fallback to today's diff.
 
 **Ctrl+Left/Right** switches sections · **s** selects links · **?** opens help.
 
@@ -61,6 +73,9 @@ more. Navigation panes are excluded—no keyboard mode switch needed.
 
 | Command | What it shows |
 |---|---|
+| `/plan` · `/steps` | The two screens (also **p** / **t**) |
+| `/plan ask` | Explicitly form the worries (same as opening the `?` row) |
+| `/transcript` | The original conversation for the selected session (also **o**) |
 | `/coverage` | Per-tool discovery/capture counts, exclusions, warnings, and unmatched hunks |
 | `/sessions` | Session picker; selecting one scopes both decisions and implementation flow |
 | `/timeline [FILE:SYMBOL]` | Chronological turns associated with a file or explicitly mentioned symbol |
@@ -71,7 +86,7 @@ more. Navigation panes are excluded—no keyboard mode switch needed.
 | `/source all` | Include all four tools; `both` remains a compatibility alias |
 | `/source pi` | Select one history tool; press **r** to refresh |
 | `/setup` then `/setup save` | Preview and save optional decision-record instructions; does not modify agent configuration |
-| `/export` then `/export save` | Export the working-tree review (not the session brief); preview first, nothing uploaded |
+| `/export` then `/export save` | Your review: push-backs, unsure, accepted, not reviewed, hunks in no question, then the agent's steps; preview first, nothing uploaded |
 
 Omitting `FILE:SYMBOL` from `/timeline` uses the selected file/symbol; `/decisions` without an argument opens the selected-session overview. Symbol filtering is based on
 explicit text/record matches, not semantic causality. A timeline preserves tool and
@@ -86,15 +101,15 @@ unknown rather than inferred from transcript file modification times.
 
 1. Discover supported local histories whose recorded working directory belongs to this Git repository.
 2. Capture up to 20 sessions / 40 MB, alternating between tools; `/coverage` explains exclusions.
-3. Select the latest dated captured session. Preserve each supported edit in source order, rather than keeping only the latest edit per file.
-4. Group explicit decision records within that session, linking them to captured edits. File association is not proof of causal intent.
-5. On explicit request, identify and prioritize decisions using only bounded evidence from the pinned session snapshot. Validate session identity, captured-edit citations and recorded-reason quotes.
-6. Compare with today's code only on demand. Complete, successful final captured writes can establish textual differences; partial patches are never replayed onto today's code to invent a historical base.
+3. Import the most recent captured sessions (up to 8) and preserve each supported edit in source order. **Evidence** is every session whose edit text matches a hunk in the diff, newest first, each only if it explains hunks no newer session already does (at most 4). With a clean tree, or no match, the latest session is the fallback—and the plan says so.
+4. **Hunk spine.** Parse the HEAD→working-tree diff into hunks with current line ranges. Attribute each to captured edits by textual match: `matched`, `partial` (something else also touched it), or `none`. Lockfiles are derived and never questioned.
+5. **Steps.** Segment each evidence session into intent-sized steps and merge them chronologically at request boundaries, decision records, and announced moves to disjoint files (optionally after a build/test run). Edit → failed test → fix stays one step. Each step keeps verbatim reasons, tentative rationale, checks and gaps.
+6. **Questions** (on explicit request only). Send hunks, steps, verbatim requests and assistant statements. Validate every returned question: cited hunks must exist; `recorded` needs a verbatim quote from a statement in a step that produced the cited code; `inferred` needs cited hunks/steps and no quote; `unknown` carries nothing; check lines must fall inside their hunk. Failures are rejected and counted.
+7. **Verdicts** are stored apart from the brief, keyed by question text + hunk ids, with a hash of each cited hunk. Changed code flags them stale; nothing is cleared.
 
-Briefs are cached by repository and session snapshot, not the current Git HEAD or
-file hashes. New session content invalidates the brief; later commits and unrelated
-working-tree changes do not. Tool invocation supports Codex and Claude only.
-The picker covers captured sessions, not every session that may exist on disk.
+Question briefs are keyed by repository, HEAD, exact hunk text and session snapshot:
+editing the tree, committing, or capturing new session content invalidates them.
+Tool invocation supports Codex and Claude only.
 
 ## What the evidence means
 
@@ -104,6 +119,8 @@ The picker covers captured sessions, not every session that may exist on disk.
 - **Compaction summary:** secondary context, not original speech.
 - **Inferred explanation:** a new model assessment, separate from historical intent.
 - **Unknown:** evidence was not captured or cannot establish the claim.
+- **Assessment:** wy's own view of what an expert would want, or a plausible inferred reason. Never presented as the agent's intent.
+- **Stale verdict:** your decision on code that has since changed; kept and flagged, not cleared.
 
 Encrypted/redacted hidden reasoning cannot be recovered. Shell commands, formatters,
 and manual changes often have no supported edit records. A missing record does
@@ -116,9 +133,11 @@ for sensitive content before sharing**.
 
 ## Status
 
-**Experimental (0.2.0).** Useful for reviewing substantial local agent changes and
-returning to unfamiliar code. Not a replacement for code review or a guarantee of
-original intent. Older OpenCode JSON storage is detected but not imported. Some
+**Experimental (0.2.0).** Useful for forming a judgment about substantial agent
+changes in a domain you are new to, and for returning to unfamiliar code. Not a
+replacement for code review, a correctness verdict, or a guarantee of original
+intent. Steps are a heuristic grouping; questions are an assessment whose
+citations—not whose semantics—are checked. Older OpenCode JSON storage is detected but not imported. Some
 provider formats and shell-driven edits remain unsupported.
 
 Automated tests establish implementation behavior, not explanation accuracy or

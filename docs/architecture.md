@@ -1,23 +1,67 @@
 # Architecture
 
 wy is a repo-first observer of coding-agent history, not the interface that launches
-an agent. The primary scope is a selected captured session. It defaults to the
-latest known source-event date, never claims live-session detection, and never
-uses today's Git diff to assign edits to a session.
+an agent. When the working tree is dirty the primary scope is the HEAD→working-tree
+diff—the thing you are about to accept—and its **evidence** is the set of captured
+sessions whose edit text matches it (newest first, each only if it explains hunks no
+newer session already does, at most four). When the tree is clean, or nothing
+matches, the latest session is the fallback and the plan says so. A hand-picked
+session overrides the automatic choice until released. wy defaults to the latest known source-event date, never claims live-session
+detection, and never *assigns* today's diff to a session: attribution is a textual
+match between a hunk and a captured edit, or nothing.
 
 ```mermaid
 flowchart LR
+  G[HEAD → working tree] --> X[Hunk spine]
   H[Local agent history] --> E[Normalized events]
   E --> DB[(Pinned session snapshots)]
   DB --> W[Selected session work]
-  W --> D[Recorded decisions and implementation flow]
-  W --> A[Explicit session assessment]
-  A --> V[Session and citation validation]
+  W --> X
+  W --> S[Steps: what · why said · checked · gaps]
+  X --> S
+  X --> Q[Questions: explicit model request]
+  S --> Q
+  Q --> V[Citation validation]
   V --> DB
-  D --> C[Captured edit evidence]
-  C --> P[Optional current-code comparison]
-  G[Current repository files] --> P
+  X --> J[Plan]
+  S --> A[Steps]
+  J <--> A
+  J --> R[Verdicts + export]
+  W --> D[Recorded decisions and implementation flow]
 ```
+
+## Hunk spine, steps, questions and verdicts
+
+- `hunks.rs` parses each changed file's unified diff into hunks with current-tree
+  line ranges and stable ids (file digest + ordinal, so an insertion above a hunk
+  flags a verdict stale instead of orphaning it). `attribute` compares a hunk's added
+  lines, whitespace-normalised, with the lines each captured edit introduced:
+  complete writes contribute every line, patches only their additions. `matched` /
+  `partial` / `none` is all the spine will ever claim. Lockfiles are `derived`.
+- `steps.rs` segments the selected session into intent-sized steps from the pinned
+  snapshot, offline. Boundaries: a new user request; an assistant message carrying a
+  `WY_DECISION` record; an announcing message followed by edits to files disjoint
+  from the current step; after a build/test run, an edit to a file the step has not
+  touched. Repeated edits to one file (edit → failed test → fix) never split. Each
+  step records verbatim reason statements (sentences with reason markers, or decision
+  records), tentative rationale, nearby text, validation runs with outcomes, and
+  gaps (shell commands that write files, truncated or unconfirmed captures, no
+  checks). Hunk ↔ step links go through edit indices in both directions.
+- `judgment.rs` builds a bounded packet (hunk diffs with limited context, steps,
+  verbatim requests, assistant statements), sends it only on explicit request, and
+  validates every question before display: cited hunks must exist in the diff;
+  `recorded` requires a verbatim substring of a supplied statement whose step
+  produced a cited hunk; `inferred` requires `inferred_from` hunks or steps and no
+  quote; `unknown` carries nothing; `check` lines fall inside their hunk;
+  self-reported alternatives cite a statement. Rejections are counted on screen.
+  Ranking is consequence tier, then unknown before inferred before recorded. The
+  scope key is repository + HEAD + exact hunk text + session snapshot + analysis
+  version, so tree edits, commits and new session content all invalidate.
+- `verdicts.rs` stores accept / push_back / unsure plus a note per question key
+  (question text + sorted hunk ids), with a hash of each cited hunk at decision
+  time. Staleness is detected by hash, flagged, never cleared. `export` writes the
+  review in the reviewer's voice: push back, unsure, accepted, not reviewed, hunks
+  in no question, then the agent's account for reference.
 
 ## Session work and decisions
 
@@ -57,16 +101,27 @@ flowchart LR
 
 ## User interface
 
-`tui.rs` owns selected-session state, reading history and cancellable background
-jobs. The navigation has **Decisions / Sessions**, displayed on the left or in a
-compact top row on narrow terminals. Session selection changes both the decision
-scope and implementation flow. Older sessions appear only in the picker. Refresh
-retains the selected tool/session identity when still captured, otherwise falls
-back to the latest available capture.
+`tui.rs` owns selected-session state, the hunk spine, steps, saved questions,
+verdicts and the set of plan rows opened this run (`rebuild_lenses`, recomputed when
+the review snapshot or selected session changes), reading history and cancellable
+background jobs. The navigation is one row, **Plan / Steps**; there is no
+session pane. `rebuild_lenses` picks the evidence, concatenates its sessions' edits
+(each session at an offset), attributes hunks against that list, and merges steps
+(`steps::merged`) so hunk ↔ step links hold across sessions. Everything that
+is not the plan—steps, transcript, decision brief, commit history—sits under Steps.
 
-`tui/decision_views.rs` presents choices, rationale, alternatives and trade-offs,
-then captured code evidence and original context. Metadata and general caveats are
-collapsed; missing evidence and rationale provenance remain visible.
+`tui/plan_views.rs` renders both screens. Plan: four bordered boxes. *What changed*
+is one row per step that produced code, titled in the imperative (announcing
+preamble and reason clause stripped). *What to worry about* mixes formed questions
+(consequence tier, said-status, verdict glyph) with offline gap rows (files no edit
+explains, shell writes, derived files) and one state row that asks, retries or
+re-forms. *Was it tested* summarises validation runs and names change groups with
+none. *Progress* counts rows opened and verdicts given. Each row opens a detail:
+change group (what, why in the agent's words, checked, worries, hunks), gap, tests,
+or worry (domain why, chosen, said, hunks with `◄` markers, how to check, expert
+view as assessment, verdict and note). Steps: one bordered box per step with Why /
+Check / Gap / Plan rows and a link row title; step detail adds rationale, superseded
+captured edits, the worries it raises and a link to the original conversation.
 
 `tui/session_views.rs` renders the picker, chronological implementation flow,
 captured edits and optional current-code comparison. Flow pages contain 20 edits;

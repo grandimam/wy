@@ -25,6 +25,10 @@ WY_DECISION
 }
 ```
 
+Two fields matter most to a reviewer who does not know the domain: `alternatives`
+(what you considered and rejected, and why) and `validation` (what you did NOT
+verify, as well as what you did). State plainly when something was not checked.
+
 Use repository-relative file paths. For multiple affected files, emit a record for
 each significant boundary. Report validation results afterward; revise the record
 if the implementation changes. Records are self-reported statements, not proof.

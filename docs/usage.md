@@ -16,26 +16,32 @@ Requires Rust 1.88+, Git and a C toolchain. Run `wy` inside your repository, or
 `wy --repo /path/to/repository`. `cargo run --` runs the checkout without installing.
 The workspace requires an interactive terminal; there are no subcommands.
 
-## Decisions and Sessions
+## Plan and Steps
 
-The left navigation has two sections:
+The navigation is one row with two sections:
 
-- **Decisions (`d`)**: consequential choices from the selected captured session.
-- **Sessions (`t`)**: that session's requests and chronological recorded edits.
+- **Plan (`p`)**: the first screen. What changed, what to worry about, was it
+  tested, and your progress. Every row opens its evidence.
+- **Steps (`t`)**: what the selected session's agent did, in order, one box per
+  step. The original transcript, the session decision brief and commit history
+  are drill-downs beneath it.
 
 On narrow terminals, these become a compact top row. Ctrl+Left/Right switches
 sections. Original conversations are available within a session—not in a separate
 History section. Captured sessions appear beneath **Sessions** in the left navigation.
 The session picker remains available through **b** or `/sessions`.
 
-At startup wy selects the latest captured session using known source-event dates.
-It does not claim that session is currently active: wy observes agent history,
-not the interface that launched the agent. Unknown dates remain unknown; file
-modification times are never used to invent recency. The picker identifies the
-latest dated capture and the selected session.
+At startup wy imports the most recent captured sessions (bounded) and chooses the
+**evidence** from the diff: every session whose captured edit text matches a hunk
+in the working tree, newest first, keeping each only if it explains hunks no newer
+session already does. The plan's evidence line names the session, or says how many
+sessions explain how many files; open it to see each session's share, hand-pick a
+different one, or let the diff choose again. With a clean tree or no match the
+latest session is the fallback, and the plan says so. wy never claims a session
+is currently active and never assigns the diff to a session by date or proximity.
 
-Refreshing with **r** captures history again offline and retains the selected
-session by tool and session ID when available. If the source filter or capture
+Refreshing with **r** captures history again offline and re-chooses the evidence,
+retaining a hand-picked session when it is still available. If the source filter or capture
 budget excludes it, wy selects another available session. No model runs on startup,
 refresh, section changes, or session selection.
 
@@ -54,6 +60,46 @@ permission required, including over SSH). Plain **Ctrl+C** still quits wy.
 **Ctrl+Y** remains an optional terminal-native copy mode: it isolates the main
 content and releases mouse capture. Use the terminal's copy shortcut in that
 mode, then **Esc** to return to the normal layout.
+
+## The plan
+
+Four bordered boxes:
+
+- **What changed** — one row per change group, in plain words ("Persist the event
+  id"), with a file count. Enter opens: what it does, why in the agent's own words
+  (or "no reason given"), what was checked, the worries about it, and the hunks.
+- **What to worry about** — the questions you need to be able to answer, each with
+  a consequence tier (HIGH / MED / LOW) and whether the agent's record answers it
+  (recorded / inferred / no reason), followed by evidence gaps: files no captured
+  edit explains, steps that wrote files through the shell, derived files. The `?`
+  row forms the questions with your configured CLI when you open it—nothing runs on
+  its own; it becomes a retry row on failure and a re-form row when the tree changes.
+  Formed questions whose citations fail validation are rejected and counted.
+- **Was it tested** — one line of fact (runs, failures, last outcome) and one line
+  naming change groups with no test run. Enter lists every run in order.
+- **Progress** — changes read, worries decided, push-backs. `/export` writes the
+  review in your voice; the push-back section is phrased for pasting back to the
+  agent.
+
+Opening a worry shows why it matters here, what the agent chose, what it said (an
+exact quote with its source, "inferred from …", or "Nothing"), the cited hunks with
+current line numbers and `◄` markers, how to check it yourself, what an expert would
+want (labelled as wy's assessment), and your verdict: `y` accept, `n` push back,
+`m` unsure, `i` note. Verdicts are stored apart from the brief; regenerating keeps
+them, and changed code flags them stale rather than clearing them.
+
+## Steps
+
+One box per step, in order, titled with what the step did and the files it
+touched; with several evidence sessions the steps merge chronologically and each
+box carries its session. Steps with no edits or checks (discussion) are counted
+and hidden. Rows: **Why** (verbatim, or "no reason given · nearby: …"), **Check**
+(build/test runs, with ✗ → fixed shown as one sequence), **Gap** (shell writes,
+truncated or unconfirmed captures, no checks), **Plan** (the worries this step
+raises). Enter opens the step with its code, captured edits no longer in the tree,
+and a link to the original conversation for that request. **Not explained by this
+session** lists hunks no captured edit matches. Steps are a heuristic grouping; when
+unsure wy does not split.
 
 ## Read decisions
 
@@ -219,9 +265,10 @@ has been opened.
 
 ## Working-tree changes are separate
 
-`/changes` shows HEAD-to-working-tree changes, including staged, unstaged and
-eligible untracked content, with **attribution unknown**. These changes are not
-assigned to the newest or selected session. Multiple sessions, manual edits and
+`/changes` shows the raw HEAD-to-working-tree diff, including staged, unstaged and
+eligible untracked content. Plan and Steps attribute each hunk to
+captured edits only by textual match (`matched`, `partial`, `none`); the diff is never
+assigned to the newest or selected session by proximity. Multiple sessions, manual edits and
 formatters may all have contributed. The view is bounded to 40 files and 400
 rendered lines per file, with captured raw patches available in Technical details.
 
@@ -232,14 +279,18 @@ tree does not establish that the selected session owns those changes.
 
 | Key | Action |
 | --- | --- |
-| `d` / `t` | Decisions / selected session work |
+| `p` / `t` | Plan / Steps |
+| `o` / `d` | Original conversation / session decision brief |
+| `y` / `n` / `m` | In a question: accept / push back / unsure |
+| `i` | In a question: add or edit your note |
 | Ctrl+Left / Ctrl+Right | Switch primary sections |
-| `b` or `/sessions` | Choose another captured session |
+| Enter on the evidence line | See which sessions explain the diff; hand-pick or let the diff choose |
+| `b` or `/sessions` | The full session picker |
 | Up/Down or `j`/`k` | Select links or scroll |
 | Enter | Select/open a link |
 | `s` | Enter link selection |
 | `1`–`9` | Open a decision or a numbered source |
-| `e` / `R` | Explicitly discover/refresh session decisions |
+| `e` / `R` | Explicitly form the worries (plan/steps) or discover session decisions |
 | `z` | Fold/unfold code blocks |
 | Left/Right or `h`/`l` | Pan code horizontally |
 | PageUp/PageDown, Home/End | Navigate the reader |

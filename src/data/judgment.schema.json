@@ -1,0 +1,48 @@
+{
+  "type": "object", "additionalProperties": false,
+  "properties": {
+    "questions": {"type": "array", "maxItems": 10, "items": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "question": {"type": "string", "minLength": 1, "maxLength": 200},
+        "domain_why": {"type": "string", "minLength": 1, "maxLength": 700},
+        "consequence": {"type": "string", "enum": ["high", "medium", "low"]},
+        "consequence_note": {"type": "string", "maxLength": 300},
+        "chosen": {"type": "string", "minLength": 1, "maxLength": 300},
+        "said": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "status": {"type": "string", "enum": ["recorded", "inferred", "unknown"]},
+            "quote": {"type": "string", "maxLength": 1800},
+            "quote_id": {"type": "string", "maxLength": 200},
+            "inferred_from": {"type": "array", "maxItems": 8, "items": {"type": "string", "maxLength": 200}}
+          },
+          "required": ["status", "quote", "quote_id", "inferred_from"]
+        },
+        "check": {"type": "array", "maxItems": 4, "items": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "hunk": {"type": "string", "maxLength": 120},
+            "line": {"type": "integer", "minimum": 0},
+            "note": {"type": "string", "minLength": 1, "maxLength": 240}
+          },
+          "required": ["hunk", "line", "note"]
+        }},
+        "expert_view": {"type": "string", "maxLength": 700},
+        "alternatives": {"type": "array", "maxItems": 3, "items": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "text": {"type": "string", "minLength": 1, "maxLength": 400},
+            "attributed": {"type": "string", "enum": ["self-reported", "assessed"]},
+            "quote_id": {"type": "string", "maxLength": 200}
+          },
+          "required": ["text", "attributed", "quote_id"]
+        }},
+        "hunks": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "maxLength": 120}}
+      },
+      "required": ["question", "domain_why", "consequence", "consequence_note", "chosen", "said", "check", "expert_view", "alternatives", "hunks"]
+    }},
+    "unknowns_not_asked": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 800}}
+  },
+  "required": ["questions", "unknowns_not_asked"]
+}

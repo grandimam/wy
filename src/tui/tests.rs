@@ -115,7 +115,6 @@ fn drag_copies_only_reader_text_and_keeps_rows_while_scrolling() {
     assert_eq!(app.selection.pending.take().unwrap(), expected);
     assert!(!app.selection.active);
     assert!(!app.text_selection);
-    assert_ne!(app.areas.sessions, Rect::default());
 }
 
 #[test]
@@ -564,7 +563,7 @@ fn saved_explanations_and_back_check_for_edits_after_generation() {
         .put("reasoning", "latest", &answer)
         .unwrap();
     let mut app = Workspace::from_review(root.path(), saved);
-    press(&mut app, KeyCode::Char('p'));
+    press(&mut app, KeyCode::Char('P'));
     assert!(app.document.notice.as_ref().unwrap().0.contains("matches"));
     app.open(document::help());
     std::fs::write(root.path().join("lib.rs"), "fn changed() {}\n").unwrap();
@@ -578,7 +577,7 @@ fn saved_explanations_and_back_check_for_edits_after_generation() {
             .contains("SOURCE CHANGED")
     );
     assert!(screen(&mut app, 100, 30).0.contains("SOURCE CHANGED"));
-    press(&mut app, KeyCode::Char('p'));
+    press(&mut app, KeyCode::Char('P'));
     assert!(
         app.document
             .notice
@@ -1149,7 +1148,8 @@ fn restarting_restores_completed_enrichments_without_a_request() {
     store.put("reasoning", "latest", &answer).unwrap();
     assert_eq!(store.recent("reasoning", 40).unwrap().len(), 2);
     let mut app = Workspace::new(dir.path()).unwrap();
-    assert_eq!(app.document.kind, View::DecisionOverview);
+    // An untracked file is an uncommitted change: the judgment lens opens first.
+    assert_eq!(app.document.kind, View::Plan);
     assert!(!app.sidebar);
     assert!(app.job.is_none());
     assert_eq!(app.answers.len(), 1);
@@ -1881,22 +1881,11 @@ fn sections_are_visible_without_answers_and_inline_explanation_button_queues_the
     app.preview_selection();
     app.focus = Focus::Reader;
     let (text, _) = screen(&mut app, 120, 32);
-    assert!(text.contains("Decisions"));
-    assert!(text.contains("Sessions"));
+    assert!(text.contains("Plan"));
+    assert!(text.contains("Steps"));
     assert_eq!(app.areas.tabs.len(), 2);
-    let history = app
-        .areas
-        .tabs
-        .iter()
-        .find(|(_, view, _)| *view == View::Sessions)
-        .unwrap()
-        .0;
-    mouse_at(
-        &mut app,
-        MouseEventKind::Down(MouseButton::Left),
-        history.x + 1,
-        history.y,
-    );
+    // The transcript is a drill-down, not a tab.
+    app.change_view(View::Sessions).unwrap();
     assert_eq!(app.document.kind, View::SessionWork);
     assert!(app.job.is_none());
     press(&mut app, KeyCode::Char('v'));
@@ -2042,7 +2031,8 @@ fn sections_cycle_without_requests_and_history_keeps_its_reading_position() {
     app.focus = Focus::Reader;
     app.root = dir.path().canonicalize().unwrap();
     app.review["root"] = json!(app.root);
-    app.key(KeyCode::Right, KeyModifiers::CONTROL).unwrap();
+    // Transcript (session work) is a drill-down that lives under Steps.
+    app.change_view(View::Sessions).unwrap();
     assert_eq!(app.document.kind, View::SessionWork);
     assert!(app.job.is_none());
     app.document.scroll = 4;
@@ -2051,8 +2041,8 @@ fn sections_cycle_without_requests_and_history_keeps_its_reading_position() {
     app.change_view(View::Sessions).unwrap();
     assert_eq!(app.back.len(), depth);
     app.key(KeyCode::Left, KeyModifiers::CONTROL).unwrap();
-    assert_eq!(app.document.kind, View::DecisionOverview);
-    app.key(KeyCode::Right, KeyModifiers::CONTROL).unwrap();
+    assert_eq!(app.document.kind, View::Plan);
+    app.change_view(View::Sessions).unwrap();
     assert_eq!(app.document.scroll, 4);
     assert!(
         app.document
@@ -2062,8 +2052,10 @@ fn sections_cycle_without_requests_and_history_keeps_its_reading_position() {
     );
     assert!(app.job.is_none());
     app.key(KeyCode::Right, KeyModifiers::CONTROL).unwrap();
-    assert_eq!(app.document.kind, View::DecisionOverview);
+    assert_eq!(app.document.kind, View::Plan);
     app.key(KeyCode::Right, KeyModifiers::CONTROL).unwrap();
+    assert_eq!(app.document.kind, View::Steps);
+    app.change_view(View::Sessions).unwrap();
     assert_eq!(app.document.kind, View::SessionWork);
     app.sidebar = false;
     for width in [40, 80, 140] {
@@ -2075,12 +2067,9 @@ fn sections_cycle_without_requests_and_history_keeps_its_reading_position() {
             .filter(|(_, _, focus)| *focus == Focus::Reader)
             .collect();
         assert_eq!(tabs.len(), 2);
-        assert!(tabs.windows(2).all(|pair| if width >= 88 {
-            pair[0].0.bottom() <= pair[1].0.y
-        } else {
-            pair[0].0.right() <= pair[1].0.x
-        }));
-        assert!(tabs.iter().all(|(rect, _, _)| rect.width >= 8));
+        // One row at every width: Plan then Steps, left to right.
+        assert!(tabs.windows(2).all(|pair| pair[0].0.right() <= pair[1].0.x));
+        assert!(tabs.iter().all(|(rect, _, _)| rect.width >= 6));
     }
     app.edit(Input::Command);
     app.key(KeyCode::Right, KeyModifiers::CONTROL).unwrap();

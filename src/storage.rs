@@ -74,6 +74,18 @@ impl Store {
         }
         Ok(result)
     }
+    /// Every artifact of one kind, bounded. Used for small per-repository tables.
+    pub fn all(&self, kind: &str) -> Result<Vec<Value>> {
+        let mut query = self
+            .connection
+            .prepare("SELECT data FROM artifacts WHERE kind=? ORDER BY rowid LIMIT 1000")?;
+        let rows = query.query_map(params![kind], |r| r.get::<_, String>(0))?;
+        let mut result = vec![];
+        for row in rows {
+            result.push(serde_json::from_str(&row?)?);
+        }
+        Ok(result)
+    }
     pub fn put(&self, kind: &str, id: &str, data: &Value) -> Result<()> {
         self.connection.execute(
             "INSERT OR REPLACE INTO artifacts VALUES (?,?,?)",
