@@ -27,7 +27,12 @@ pub(super) fn discover_opencode(root: &Path) -> (Vec<Value>, Vec<String>) {
         if !path.try_exists().unwrap_or(true) {
             continue;
         }
-        match discover_db(root,&path){Ok(entries)=>result.extend(entries),Err(_)=>warnings.push(format!("OpenCode {name} could not be read; database may be busy, inaccessible, or use an unsupported schema"))}
+        match discover_db(root, &path) {
+            Ok(entries) => result.extend(entries),
+            Err(_) => warnings.push(format!(
+                "OpenCode {name} could not be read; database may be busy, inaccessible, or use an unsupported schema"
+            ))
+        }
     }
     (result, warnings)
 }
@@ -46,7 +51,13 @@ fn discover_db(root: &Path, path: &Path) -> Result<Vec<Value>> {
     for row in rows {
         let (id, cwd, time) = row?;
         if belongs(&cwd, root) {
-            result.push(json!({"id":id,"cwd":cwd,"timestamp":stamp(time),"path":path.canonicalize()?,"agent":"opencode"}));
+            result.push(json!({
+                "id": id,
+                "cwd": cwd,
+                "timestamp": stamp(time),
+                "path": path.canonicalize()?,
+                "agent": "opencode"
+            }));
         }
     }
     Ok(result)
@@ -97,7 +108,12 @@ fn tool(name: &str, input: &Value, id: &Value) -> Value {
         "glob" | "find" => "Glob",
         other => other,
     };
-    json!({"type":"tool_use","name":name,"input":input,"id":id})
+    json!({
+        "type": "tool_use",
+        "name": name,
+        "input": input,
+        "id": id
+    })
 }
 fn row(
     header: &Value,
@@ -107,7 +123,17 @@ fn row(
     content: Value,
     model: &Value,
 ) -> Value {
-    json!({"type":role,"sessionId":header["id"],"cwd":header["cwd"],"uuid":id,"timestamp":time,"message":{"model":model,"content":content}})
+    json!({
+        "type": role,
+        "sessionId": header["id"],
+        "cwd": header["cwd"],
+        "uuid": id,
+        "timestamp": time,
+        "message": {
+            "model": model,
+            "content": content
+        }
+    })
 }
 fn finish(
     path: &Path,
@@ -207,20 +233,45 @@ pub(super) fn pi(path: &Path, raw: &str) -> Result<Value> {
         let m = &r["message"];
         let role = s(&m["role"]);
         let mut blocks = vec![];
-        match s(&r["type"]){
-            "compaction"|"branch_summary"=>blocks.push(json!({"type":"compaction","content":r["summary"]})),
-            "message"=>match role {
-                "user"|"assistant"=>{
-                    if m["content"].is_string(){blocks.push(json!({"type":"text","text":m["content"]}));}
-                    for b in arr(&m["content"]){match s(&b["type"]){
-                        "text"=>blocks.push(json!({"type":"text","text":b["text"]})),
-                        "thinking"=>blocks.push(json!({"type":"thinking","thinking":b["thinking"]})), 
-                        "toolCall"=>blocks.push(tool(s(&b["name"]),&b["arguments"],&b["id"])),_=>{}}
+        match s(&r["type"]) {
+            "compaction" | "branch_summary" => blocks.push(json!({
+                "type": "compaction",
+                "content": r["summary"]
+            })),
+            "message" => match role {
+                "user" | "assistant" => {
+                    if m["content"].is_string() {
+                        blocks.push(json!({
+                            "type": "text",
+                            "text": m["content"]
+                        }));
                     }
-                },
-                "toolResult"=>blocks.push(json!({"type":"tool_result","tool_use_id":m["toolCallId"],"content":m["content"],"is_error":m["isError"]})),
-                _=>{}
-            },_=>{}
+                    for b in arr(&m["content"]) {
+                        match s(&b["type"]) {
+                            "text" => blocks.push(json!({
+                                "type": "text",
+                                "text": b["text"]
+                            })),
+                            "thinking" => blocks.push(json!({
+                                "type": "thinking",
+                                "thinking": b["thinking"]
+                            })),
+                            "toolCall" => {
+                                blocks.push(tool(s(&b["name"]), &b["arguments"], &b["id"]))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                "toolResult" => blocks.push(json!({
+                    "type": "tool_result",
+                    "tool_use_id": m["toolCallId"],
+                    "content": m["content"],
+                    "is_error": m["isError"]
+                })),
+                _ => {}
+            },
+            _ => {}
         }
         let role = if role == "user" || role == "toolResult" {
             "user"
@@ -252,8 +303,18 @@ fn opencode(path: &Path, id: &str) -> Result<Value> {
         [id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    let header = json!({"id":id,"cwd":cwd,"timestamp":stamp(time)});
-    let mut query=tx.prepare("SELECT p.id,p.time_created,m.data,p.data FROM part p JOIN message m ON p.message_id=m.id AND p.session_id=m.session_id WHERE p.session_id=? ORDER BY m.time_created,m.id,p.time_created,p.id")?;
+    let header = json!({
+        "id": id,
+        "cwd": cwd,
+        "timestamp": stamp(time)
+    });
+    let mut query = tx.prepare(
+        "SELECT p.id, p.time_created, m.data, p.data
+         FROM part p
+         JOIN message m ON p.message_id = m.id AND p.session_id = m.session_id
+         WHERE p.session_id = ?
+         ORDER BY m.time_created, m.id, p.time_created, p.id",
+    )?;
     let items = query.query_map([id], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -279,11 +340,20 @@ fn opencode(path: &Path, id: &str) -> Result<Value> {
         let mut blocks = vec![];
         match s(&p["type"]) {
             "text" => blocks.push(if m["summary"] == true || p["synthetic"] == true {
-                json!({"type":"compaction","content":p["text"]})
+                json!({
+                    "type": "compaction",
+                    "content": p["text"]
+                })
             } else {
-                json!({"type":"text","text":p["text"]})
+                json!({
+                    "type": "text",
+                    "text": p["text"]
+                })
             }),
-            "reasoning" => blocks.push(json!({"type":"thinking","thinking":p["text"]})),
+            "reasoning" => blocks.push(json!({
+                "type": "thinking",
+                "thinking": p["text"]
+            })),
             "tool" => {
                 blocks.push(tool(s(&p["tool"]), &p["state"]["input"], &p["callID"]));
                 rows.push(row(
@@ -296,7 +366,15 @@ fn opencode(path: &Path, id: &str) -> Result<Value> {
                 ));
                 blocks = vec![];
                 if ["completed", "error"].contains(&s(&p["state"]["status"])) {
-                    blocks.push(json!({"type":"tool_result","tool_use_id":p["callID"],"is_error":p["state"]["status"]=="error","content":p["state"].get("output").or_else(||p["state"].get("error")).unwrap_or(&Value::Null)}));
+                    blocks.push(json!({
+                        "type": "tool_result",
+                        "tool_use_id": p["callID"],
+                        "is_error": p["state"]["status"] == "error",
+                        "content": p["state"]
+                            .get("output")
+                            .or_else(|| p["state"].get("error"))
+                            .unwrap_or(&Value::Null)
+                    }));
                     rows.push(row(
                         &header,
                         &json!(format!("{part}-result")),

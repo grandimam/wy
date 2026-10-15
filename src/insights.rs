@@ -125,7 +125,9 @@ fn parse_decision(body: &str) -> Option<Value> {
     {
         return None;
     }
-    let mut result = json!({"file":file});
+    let mut result = json!({
+        "file": file,
+    });
     for field in [
         "symbol",
         "decision",
@@ -222,19 +224,56 @@ pub fn timeline(root: &Path, sessions: &[Value], file: &str, symbol: Option<&str
             let records: Vec<_> = turn
                 .iter()
                 .flat_map(|e| {
-                    decisions(e)
-                        .into_iter()
-                        .map(|r| json!({"record":r,"event_id":e["id"]}))
+                    decisions(e).into_iter().map(|r| {
+                        json!({
+                            "record": r,
+                            "event_id": e["id"],
+                        })
+                    })
                 })
                 .filter(|r| r["record"]["file"] == file)
                 .collect();
-            let outcomes:Vec<_>=turn.iter().filter(|e|e["kind"]=="test").map(|test|{
-                let output=turn.iter().find(|e|e["kind"]=="tool_output"&&test["call_id"].is_string()&&e["call_id"]==test["call_id"]);
-                json!({"event_id":test["id"],"command":test["text"],"outcome":if test["failed"]==true||output.is_some_and(|e|e["failed"]==true){"tool reported failure"}else if output.is_some(){"output recorded; inspect assertions and exit status"}else{"completion/result not captured"},"output":output})
-            }).collect();
-            result.push(json!({"agent":session["agent"],"session_id":session["id"],"session_path":session["path"],
-                "timestamp":events[start]["timestamp"],"anchor":events[start]["id"],"match":if related.is_empty(){"explicit file mention"}else{"recorded edit to file"},
-                "events":turn,"edits":related,"records":records,"validation":outcomes}));
+            let outcomes: Vec<_> = turn
+                .iter()
+                .filter(|e| e["kind"] == "test")
+                .map(|test| {
+                    let output = turn.iter().find(|e| {
+                        e["kind"] == "tool_output"
+                            && test["call_id"].is_string()
+                            && e["call_id"] == test["call_id"]
+                    });
+                    json!({
+                        "event_id": test["id"],
+                        "command": test["text"],
+                        "outcome": if test["failed"] == true
+                            || output.is_some_and(|e| e["failed"] == true)
+                        {
+                            "tool reported failure"
+                        } else if output.is_some() {
+                            "output recorded; inspect assertions and exit status"
+                        } else {
+                            "completion/result not captured"
+                        },
+                        "output": output,
+                    })
+                })
+                .collect();
+            result.push(json!({
+                "agent": session["agent"],
+                "session_id": session["id"],
+                "session_path": session["path"],
+                "timestamp": events[start]["timestamp"],
+                "anchor": events[start]["id"],
+                "match": if related.is_empty() {
+                    "explicit file mention"
+                } else {
+                    "recorded edit to file"
+                },
+                "events": turn,
+                "edits": related,
+                "records": records,
+                "validation": outcomes,
+            }));
         }
     }
     result.sort_by(|a, b| {
@@ -257,7 +296,16 @@ pub fn brief(review: &Value, sessions: &[Value]) -> String {
     );
     text.push_str("## History coverage\n");
     for row in arr(&review["coverage"]) {
-        text.push_str(&format!("- {}: enabled={}, discovered={}, captured={}, budget exclusions={}, unreadable={}, scope/identity exclusions={}\n",s(&row["agent"]),row["enabled"],row["discovered"],row["captured"],row["skipped_budget"],row["skipped_unreadable"],row["skipped_scope"]));
+        text.push_str(&format!(
+            "- {}: enabled={}, discovered={}, captured={}, budget exclusions={}, unreadable={}, scope/identity exclusions={}\n",
+            s(&row["agent"]),
+            row["enabled"],
+            row["discovered"],
+            row["captured"],
+            row["skipped_budget"],
+            row["skipped_unreadable"],
+            row["skipped_scope"]
+        ));
     }
     if arr(&review["coverage"]).is_empty() {
         text.push_str("Coverage diagnostics unavailable for this older capture.\n");
@@ -284,7 +332,10 @@ pub fn brief(review: &Value, sessions: &[Value]) -> String {
             .iter()
             .filter(|h| h["status"] == "none")
             .count();
-        text.push_str(&format!("{} diff hunks; {unmatched} without matching edit records. Text overlap does not prove authorship.\n",arr(&changes["hunks"]).len()));
+        text.push_str(&format!(
+            "{} diff hunks; {unmatched} without matching edit records. Text overlap does not prove authorship.\n",
+            arr(&changes["hunks"]).len()
+        ));
         let contexts = timeline(root, sessions, file, None);
         let records: Vec<_> = contexts
             .iter()
@@ -295,7 +346,17 @@ pub fn brief(review: &Value, sessions: &[Value]) -> String {
         }
         for (context, r) in records.iter().rev().take(8) {
             let record = &r["record"];
-            text.push_str(&format!("- Recorded decision (self-reported): {}\n  Reason: {}\n  Requirement: {}\n  Symbol: {}\n  Timing: {}\n  Source: {} session {}, event {}\n",security::short(s(&record["decision"]),500),security::short(s(&record["reason"]),800),security::short(s(&record["requirement"]),400),s(&record["symbol"]),s(&record["timing"]),s(&context["agent"]),s(&context["session_id"]),s(&r["event_id"])));
+            text.push_str(&format!(
+                "- Recorded decision (self-reported): {}\n  Reason: {}\n  Requirement: {}\n  Symbol: {}\n  Timing: {}\n  Source: {} session {}, event {}\n",
+                security::short(s(&record["decision"]), 500),
+                security::short(s(&record["reason"]), 800),
+                security::short(s(&record["requirement"]), 400),
+                s(&record["symbol"]),
+                s(&record["timing"]),
+                s(&context["agent"]),
+                s(&context["session_id"]),
+                s(&r["event_id"])
+            ));
         }
         if records.len() > 8 {
             text.push_str("- Additional decision records omitted from this bounded brief.\n");

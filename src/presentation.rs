@@ -14,7 +14,25 @@ pub struct Paragraph {
     pub tone: Tone,
 }
 fn judgments(result: &Value) -> Vec<Value> {
-    arr(&result["judgments"]).iter().map(|j|json!({"text":format!("{}\n{}{}",s(&j["choice"]),s(&j["reason"]),if s(&j["quote"]).is_empty(){String::new()}else{format!("\nRecorded statement: “{}”",s(&j["quote"]))}),"basis":j["status"],"evidence_ids":j["evidence_ids"]})).collect()
+    arr(&result["judgments"])
+        .iter()
+        .map(|j| {
+            json!({
+                "text": format!(
+                    "{}\n{}{}",
+                    s(&j["choice"]),
+                    s(&j["reason"]),
+                    if s(&j["quote"]).is_empty() {
+                        String::new()
+                    } else {
+                        format!("\nRecorded statement: “{}”", s(&j["quote"]))
+                    }
+                ),
+                "basis": j["status"],
+                "evidence_ids": j["evidence_ids"],
+            })
+        })
+        .collect()
 }
 /// Stable numbered references, including focused answers.
 pub fn citations(artifact: &Value) -> Vec<Value> {
@@ -72,7 +90,10 @@ pub fn reasoning(artifact: &Value) -> Vec<Paragraph> {
         });
     }
     if !arr(&artifact["stale_files"]).is_empty() || artifact["stale_head"] == true {
-        out.push(Paragraph{text:"EARLIER SNAPSHOT · files or Git HEAD changed during generation. Explain again for the latest state.".into(),tone:Tone::Warning});
+        out.push(Paragraph {
+            text: "EARLIER SNAPSHOT · files or Git HEAD changed during generation. Explain again for the latest state.".into(),
+            tone: Tone::Warning,
+        });
     }
     let js = judgments(result);
     let mut reasons = if js.is_empty() {

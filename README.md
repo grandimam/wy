@@ -147,4 +147,7 @@ user value. See the [evaluation protocol](docs/evaluation.md) for measuring thos
 
 [Usage](docs/usage.md) · [Decision records](docs/decision-records.md) · [Architecture](docs/architecture.md) · [Security](docs/security.md) · [Codex formats](docs/codex-formats.md) · [Releasing](docs/releasing.md)
 
-Development: `cargo test --locked`. Licensed under [MIT](LICENSE).
+Development: `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings`,
+and `cargo test --locked`.
+Expand JSON macro fields and nested expressions for readability; rustfmt does not
+format every macro body. Licensed under [MIT](LICENSE).

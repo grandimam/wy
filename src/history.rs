@@ -66,23 +66,35 @@ fn metadata(path: &Path, agent: &str) -> Option<Value> {
                 .or_else(|| p.get("session_id"))
                 .cloned()
                 .unwrap_or(json!(path.file_stem()?.to_string_lossy()));
-            return Some(
-                json!({"id":id,"path":path.canonicalize().ok()?,"cwd":p["cwd"],"timestamp":p["timestamp"],"agent":agent}),
-            );
+            return Some(json!({
+                "id": id,
+                "path": path.canonicalize().ok()?,
+                "cwd": p["cwd"],
+                "timestamp": p["timestamp"],
+                "agent": agent
+            }));
         }
         if agent == "pi"
             && row["type"] == "session"
             && row["cwd"].is_string()
             && row["id"].is_string()
         {
-            return Some(
-                json!({"id":row["id"],"path":path.canonicalize().ok()?,"cwd":row["cwd"],"timestamp":row["timestamp"],"agent":agent}),
-            );
+            return Some(json!({
+                "id": row["id"],
+                "path": path.canonicalize().ok()?,
+                "cwd": row["cwd"],
+                "timestamp": row["timestamp"],
+                "agent": agent
+            }));
         }
         if agent == "claude" && row["cwd"].is_string() && row["sessionId"].is_string() {
-            return Some(
-                json!({"id":row["sessionId"],"path":path.canonicalize().ok()?,"cwd":row["cwd"],"timestamp":row["timestamp"],"agent":agent}),
-            );
+            return Some(json!({
+                "id": row["sessionId"],
+                "path": path.canonicalize().ok()?,
+                "cwd": row["cwd"],
+                "timestamp": row["timestamp"],
+                "agent": agent
+            }));
         }
     }
     None
@@ -170,7 +182,9 @@ pub fn discover_report(
         warnings.extend(issues);
     }
     if unrecognized > 0 {
-        warnings.push(format!("{unrecognized} unreadable or unrecognized transcript candidates; their repository scope is unknown"));
+        warnings.push(format!(
+            "{unrecognized} unreadable or unrecognized transcript candidates; their repository scope is unknown"
+        ));
     }
     warnings.sort();
     warnings.dedup();
@@ -266,7 +280,19 @@ fn collect_raw(path: &Path, raw: &str) -> Result<Value> {
         !agent.is_empty(),
         "Unrecognized session format; expected a Codex or Claude Code JSONL transcript"
     );
-    let mut session = json!({"id":path.file_stem().unwrap_or_default().to_string_lossy(),"path":path.canonicalize()?,"cwd":null,"agent":agent,"format":if agent=="codex"{"codex-rollout"}else{"claude-code-jsonl"},"events":[],"warnings":[]});
+    let mut session = json!({
+        "id": path.file_stem().unwrap_or_default().to_string_lossy(),
+        "path": path.canonicalize()?,
+        "cwd": null,
+        "agent": agent,
+        "format": if agent == "codex" {
+            "codex-rollout"
+        } else {
+            "claude-code-jsonl"
+        },
+        "events": [],
+        "warnings": []
+    });
     let mut events = vec![];
     let mut warnings = vec![];
     let mut seen = HashSet::new();
@@ -345,7 +371,10 @@ fn collect_raw(path: &Path, raw: &str) -> Result<Value> {
             }
             let content = &row["message"]["content"];
             let blocks = if content.is_string() {
-                vec![json!({"type":"text","text":content})]
+                vec![json!({
+                    "type": "text",
+                    "text": content
+                })]
             } else {
                 arr(content).to_vec()
             };
@@ -539,7 +568,31 @@ fn collect_raw(path: &Path, raw: &str) -> Result<Value> {
                     }
                 }
                 let provenance = provenance::classify(&row, &kind, &text, &turn);
-                events.push(json!({"id":id,"kind":if provenance["source_type"]=="compaction_summary"{"summary"}else if code_edits.is_empty(){kind.as_str()}else{"change"},"text":redact(&text),"source_line":i+1,"tool":tool,"call_id":call_id,"files":files,"timestamp":row["timestamp"],"failed":failed,"code_edits":code_edits,"provenance":provenance,"model":if model.is_empty(){Value::Null}else{json!(model)},"truncated":false}));
+                events.push(json!({
+                    "id": id,
+                    "kind": if provenance["source_type"] == "compaction_summary" {
+                        "summary"
+                    } else if code_edits.is_empty() {
+                        kind.as_str()
+                    } else {
+                        "change"
+                    },
+                    "text": redact(&text),
+                    "source_line": i + 1,
+                    "tool": tool,
+                    "call_id": call_id,
+                    "files": files,
+                    "timestamp": row["timestamp"],
+                    "failed": failed,
+                    "code_edits": code_edits,
+                    "provenance": provenance,
+                    "model": if model.is_empty() {
+                        Value::Null
+                    } else {
+                        json!(model)
+                    },
+                    "truncated": false
+                }));
             }
         }
     }

@@ -36,10 +36,28 @@ pub fn event_evidence(session: &Value, event: &Value) -> Value {
         event["text"],
         super::provenance::metadata(event)
     ]);
-    json!({"id":format!("event-{}-{}-{}",s(&session["agent"]),&security::digest(&identity.to_string())[..16],s(&event["id"])),
-        "kind":"session","agent":session["agent"],"session_id":session["id"],"event_id":event["id"],
-        "role":event["kind"],"model":event["model"],"file":session["path"],"start_line":event["source_line"],"text":event["text"],
-        "timestamp":event["timestamp"],"call_id":event["call_id"],"provenance":super::provenance::metadata(event),"lineage":session["lineage"],"truncated":event["truncated"]==true})
+    json!({
+        "id": format!(
+            "event-{}-{}-{}",
+            s(&session["agent"]),
+            &security::digest(&identity.to_string())[..16],
+            s(&event["id"])
+        ),
+        "kind": "session",
+        "agent": session["agent"],
+        "session_id": session["id"],
+        "event_id": event["id"],
+        "role": event["kind"],
+        "model": event["model"],
+        "file": session["path"],
+        "start_line": event["source_line"],
+        "text": event["text"],
+        "timestamp": event["timestamp"],
+        "call_id": event["call_id"],
+        "provenance": super::provenance::metadata(event),
+        "lineage": session["lineage"],
+        "truncated": event["truncated"] == true
+    })
 }
 pub fn note_evidence(root: &Path, reference: &Value) -> Result<Value> {
     let session = Store::open(root)?.get("session", s(&reference["session_key"]))?;
@@ -152,7 +170,10 @@ pub fn notes(review: &Value, sessions: &[Value], file: &str, edit: Option<&Value
         recent.sort_unstable();
         for i in recent {
             evidence.push(event_evidence(session, &events[i]));
-            refs.push(json!({"session_key":key,"event_id":events[i]["id"]}));
+            refs.push(json!({
+                "session_key": key,
+                "event_id": events[i]["id"]
+            }));
         }
     }
     for item in &mut evidence {
@@ -175,13 +196,20 @@ pub fn notes(review: &Value, sessions: &[Value], file: &str, edit: Option<&Value
     let mut gaps = vec![];
     if assistant.is_empty() {
         if evidence.iter().any(|e| !super::provenance::original(e)) {
-            gaps.push("Original turn unavailable or unverified. Original rationale unknown; a summary cannot establish the agent's original reason.");
+            gaps.push(
+                "Original turn unavailable or unverified. Original rationale unknown; a summary cannot establish the agent's original reason."
+            );
         }
         gaps.push(
             "An agent explanation of this change was not found in the captured conversation.",
         );
     }
-    json!({"evidence":evidence,"note_refs":refs,"gaps":gaps,"matched":!assistant.is_empty()})
+    json!({
+        "evidence": evidence,
+        "note_refs": refs,
+        "gaps": gaps,
+        "matched": !assistant.is_empty()
+    })
 }
 
 #[cfg(test)]
