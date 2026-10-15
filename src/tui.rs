@@ -3122,10 +3122,10 @@ pub fn run(root: &Path) -> Result<()> {
                     dirty = true;
                 }
                 dirty |= resized;
-                if let Some(text) = app.selection.pending.take() {
-                    if let Err(error) = selection::copy(&text) {
-                        app.fail(format!("Could not copy selection: {error}"));
-                    }
+                if let Some(text) = app.selection.pending.take()
+                    && let Err(error) = selection::copy(&text)
+                {
+                    app.fail(format!("Could not copy selection: {error}"));
                 }
                 match result {
                     Ok(true) => break,

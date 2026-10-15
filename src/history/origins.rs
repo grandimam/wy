@@ -192,8 +192,18 @@ pub fn enrich(root: &Path, evidence: &mut Value) -> Result<()> {
                     s(&metadata["message_id"]),
                     s(&event["kind"])
                 );
-                let resolved = json!({"session_key":key,"agent":agent,"session_id":session_id,"event_id":event["id"],"turn_id":metadata["turn_id"],"message_id":metadata["message_id"],
-                    "content_hash":provenance::content_hash(event),"relation":reference["relation"],"file":session["path"],"source_line":event["source_line"]});
+                let resolved = json!({
+                    "session_key": key,
+                    "agent": agent,
+                    "session_id": session_id,
+                    "event_id": event["id"],
+                    "turn_id": metadata["turn_id"],
+                    "message_id": metadata["message_id"],
+                    "content_hash": provenance::content_hash(event),
+                    "relation": reference["relation"],
+                    "file": session["path"],
+                    "source_line": event["source_line"]
+                });
                 if let Some(previous) = matches.get(&identity) {
                     let previous: &Value = previous;
                     if previous["content_hash"] != resolved["content_hash"] {
@@ -272,8 +282,18 @@ pub fn status(evidence: &Value) -> Option<String> {
         return None;
     }
     Some(match s(&evidence["origin_status"]) {
-        "available" => "Original turns available · source links preserve context, not proof of every summary claim".into(),
-        "partial" => format!("Some original turns unavailable — {}. Original rationale unknown where sources are missing.",s(&evidence["origin_reason"])),
-        _ => format!("Original turn unavailable — {}. Original rationale unknown.",evidence["origin_reason"].as_str().unwrap_or("no verified source reference")),
+        "available" =>
+            "Original turns available · source links preserve context, not proof of every summary claim"
+                .into(),
+        "partial" => format!(
+            "Some original turns unavailable — {}. Original rationale unknown where sources are missing.",
+            s(&evidence["origin_reason"])
+        ),
+        _ => format!(
+            "Original turn unavailable — {}. Original rationale unknown.",
+            evidence["origin_reason"]
+                .as_str()
+                .unwrap_or("no verified source reference")
+        ),
     })
 }

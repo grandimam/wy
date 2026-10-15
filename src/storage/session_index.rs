@@ -7,13 +7,25 @@ use serde_json::{Value, json};
 impl Store {
     /// Read headers only; never deserialize every saved transcript to populate navigation.
     pub fn saved_session_catalog(&self) -> Result<(Vec<Value>, usize)> {
-        let mut query = self.connection.prepare("SELECT id, json_extract(data,'$.id'), json_extract(data,'$.agent'), json_extract(data,'$.cwd'), json_extract(data,'$.path'), json_extract(data,'$.events[#-1].timestamp'), json_extract(data,'$.started_at') FROM artifacts WHERE kind='session' ORDER BY rowid DESC")?;
+        let mut query = self.connection.prepare(
+            "SELECT id,
+                    json_extract(data,'$.id'),
+                    json_extract(data,'$.agent'),
+                    json_extract(data,'$.cwd'),
+                    json_extract(data,'$.path'),
+                    json_extract(data,'$.events[#-1].timestamp'),
+                    json_extract(data,'$.started_at')
+             FROM artifacts WHERE kind='session' ORDER BY rowid DESC",
+        )?;
         let rows = query.query_map([], |r| {
             Ok(json!({
-                "storage_key":r.get::<_,String>(0)?, "id":r.get::<_,Option<String>>(1)?,
-                "agent":r.get::<_,Option<String>>(2)?, "cwd":r.get::<_,Option<String>>(3)?,
-                "path":r.get::<_,Option<String>>(4)?, "last_event":r.get::<_,Option<String>>(5)?,
-                "source_timestamp":r.get::<_,Option<String>>(6)?
+                "storage_key": r.get::<_, String>(0)?,
+                "id": r.get::<_, Option<String>>(1)?,
+                "agent": r.get::<_, Option<String>>(2)?,
+                "cwd": r.get::<_, Option<String>>(3)?,
+                "path": r.get::<_, Option<String>>(4)?,
+                "last_event": r.get::<_, Option<String>>(5)?,
+                "source_timestamp": r.get::<_, Option<String>>(6)?
             }))
         })?;
         let mut seen = std::collections::HashSet::new();
@@ -50,8 +62,14 @@ impl Store {
             return Ok(());
         }
         let tx = self.connection.unchecked_transaction()?;
-        let header = json!({"scope_kind":"session", "root":work["root"], "id":work["id"],
-            "session":work["session"], "warnings":work["warnings"], "request_count":arr(&work["turns"]).len()});
+        let header = json!({
+            "scope_kind": "session",
+            "root": work["root"],
+            "id": work["id"],
+            "session": work["session"],
+            "warnings": work["warnings"],
+            "request_count": arr(&work["turns"]).len()
+        });
         for (ordinal, turn) in arr(&work["turns"]).iter().enumerate() {
             let edits: Vec<_> = arr(&turn["edit_indices"])
                 .iter()
@@ -60,9 +78,16 @@ impl Store {
                 .collect();
             let mut local = turn.clone();
             local["edit_indices"] = json!((0..edits.len()).collect::<Vec<_>>());
-            let data = json!({"turn":local,"edits":edits});
-            tx.execute("INSERT INTO session_requests(session_key,ordinal,request_id,data) VALUES (?,?,?,?)",
-                params![key, ordinal as i64, s(&turn["request"]["id"]), serde_json::to_string(&data)?])?;
+            let data = json!({"turn": local, "edits": edits});
+            tx.execute(
+                "INSERT INTO session_requests(session_key,ordinal,request_id,data) VALUES (?,?,?,?)",
+                params![
+                    key,
+                    ordinal as i64,
+                    s(&turn["request"]["id"]),
+                    serde_json::to_string(&data)?
+                ],
+            )?;
         }
         tx.execute(
             "INSERT INTO session_work_headers(session_key,data) VALUES (?,?)",
@@ -93,10 +118,16 @@ impl Store {
         first: usize,
         count: usize,
     ) -> Result<Vec<Value>> {
-        let mut query = self.connection.prepare("SELECT ordinal,request_id FROM session_requests WHERE session_key=? AND ordinal>=? ORDER BY ordinal LIMIT ?")?;
+        let mut query = self.connection.prepare(
+            "SELECT ordinal,request_id FROM session_requests
+             WHERE session_key=? AND ordinal>=? ORDER BY ordinal LIMIT ?",
+        )?;
         Ok(query
             .query_map(params![key, first as i64, count as i64], |r| {
-                Ok(json!({"ordinal":r.get::<_,i64>(0)?, "request":{"id":r.get::<_,String>(1)?}}))
+                Ok(json!({
+                    "ordinal": r.get::<_, i64>(0)?,
+                    "request": {"id": r.get::<_, String>(1)?}
+                }))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }

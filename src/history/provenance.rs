@@ -6,7 +6,11 @@ use crate::{
 use serde_json::{Value, json};
 
 pub fn unknown() -> Value {
-    json!({"source_type":"unknown","basis":"legacy_or_unclassified","original_refs":[]})
+    json!({
+        "source_type": "unknown",
+        "basis": "legacy_or_unclassified",
+        "original_refs": []
+    })
 }
 pub fn metadata(event: &Value) -> Value {
     event
@@ -74,12 +78,35 @@ pub fn classify(row: &Value, kind: &str, text: &str, turn: &str) -> Value {
         .unwrap_or(&Value::Null));
     for r in references {
         if r["turn_id"].is_string() || r["message_id"].is_string() {
-            refs.push(json!({"session_id":r["session_id"],"turn_id":r["turn_id"],"message_id":r["message_id"],"relation":"source"}));
+            refs.push(json!({
+                "session_id": r["session_id"],
+                "turn_id": r["turn_id"],
+                "message_id": r["message_id"],
+                "relation": "source"
+            }));
         }
     }
-    json!({"source_type":source,"basis":if kind=="rationale" {"provider_exposed_rationale_not_verified_decision"} else if summary {"provider_compaction_marker"} else if source=="unknown" {"suspected_summary"} else {"native_event"},
-        "turn_id":if turn_id.is_empty(){Value::Null}else{json!(turn_id)},"message_id":message,
-        "parent_message_id":row["parentUuid"],"original_refs":refs,"references_truncated":false})
+    json!({
+        "source_type": source,
+        "basis": if kind == "rationale" {
+            "provider_exposed_rationale_not_verified_decision"
+        } else if summary {
+            "provider_compaction_marker"
+        } else if source == "unknown" {
+            "suspected_summary"
+        } else {
+            "native_event"
+        },
+        "turn_id": if turn_id.is_empty() {
+            Value::Null
+        } else {
+            json!(turn_id)
+        },
+        "message_id": message,
+        "parent_message_id": row["parentUuid"],
+        "original_refs": refs,
+        "references_truncated": false
+    })
 }
 
 pub fn observe(row: &Value, session: &mut Value, turn: &mut String) {
@@ -98,8 +125,20 @@ pub fn observe(row: &Value, session: &mut Value, turn: &mut String) {
                 .or_else(|| p.get("lastTurnId"))
                 .cloned()
                 .unwrap_or(Value::Null);
-            session["lineage"] = json!({"relation":if resumed.is_some(){"resume"}else{"fork"},"parent_session_id":parent,"through_turn_id":boundary,
-                "status":if boundary.is_string(){"boundary_recorded"}else{"boundary_unavailable"}});
+            session["lineage"] = json!({
+                "relation": if resumed.is_some() {
+                    "resume"
+                } else {
+                    "fork"
+                },
+                "parent_session_id": parent,
+                "through_turn_id": boundary,
+                "status": if boundary.is_string() {
+                    "boundary_recorded"
+                } else {
+                    "boundary_unavailable"
+                }
+            });
         }
     }
 }
@@ -134,11 +173,30 @@ pub fn compaction(row: &Value, session: &Value, line: usize, turn: &str) -> Vec<
             if text.is_empty() || suspected_summary(text) {
                 continue;
             }
-            let reference = json!({"session_id":session["id"],"turn_id":item["turn_id"],"message_id":item["message_id"],"relation":"retained_context"});
+            let reference = json!({
+                "session_id": session["id"],
+                "turn_id": item["turn_id"],
+                "message_id": item["message_id"],
+                "relation": "retained_context"
+            });
             refs.push(reference);
-            events.push(json!({"id":format!("event-{line}-retained-{role}-{index}"),"kind":role,"text":redact(text),"source_line":line,
-                "timestamp":row["timestamp"],"files":[],"code_edits":[],"provenance":{"source_type":"original_turn","basis":"complete_retained_message",
-                "turn_id":item["turn_id"],"message_id":item["message_id"],"original_refs":[]},"truncated":false}));
+            events.push(json!({
+                "id": format!("event-{line}-retained-{role}-{index}"),
+                "kind": role,
+                "text": redact(text),
+                "source_line": line,
+                "timestamp": row["timestamp"],
+                "files": [],
+                "code_edits": [],
+                "provenance": {
+                    "source_type": "original_turn",
+                    "basis": "complete_retained_message",
+                    "turn_id": item["turn_id"],
+                    "message_id": item["message_id"],
+                    "original_refs": []
+                },
+                "truncated": false
+            }));
         }
     }
     let replacement_summary = arr(&p["replacement_history"])
@@ -164,8 +222,21 @@ pub fn compaction(row: &Value, session: &Value, line: usize, turn: &str) -> Vec<
         .as_array_mut()
         .unwrap()
         .extend(refs);
-    events.push(json!({"id":format!("event-{line}"),"kind":"summary","text":if text.is_empty(){"Compaction recorded; readable summary text was not retained.".into()}else{redact(text)},
-        "source_line":line,"timestamp":row["timestamp"],"files":[],"code_edits":[],"provenance":provenance,"truncated":false}));
+    events.push(json!({
+        "id": format!("event-{line}"),
+        "kind": "summary",
+        "text": if text.is_empty() {
+            "Compaction recorded; readable summary text was not retained.".into()
+        } else {
+            redact(text)
+        },
+        "source_line": line,
+        "timestamp": row["timestamp"],
+        "files": [],
+        "code_edits": [],
+        "provenance": provenance,
+        "truncated": false
+    }));
     events
 }
 

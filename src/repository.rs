@@ -197,9 +197,19 @@ pub fn location(file: &str, text: &str, line: usize) -> Value {
         .filter(|s| s.start <= line && line <= s.end)
         .min_by_key(|s| s.end - s.start);
     if let Some(s) = found {
-        json!({"file":file,"symbol":s.name,"start_line":s.start,"end_line":s.end})
+        json!({
+            "file": file,
+            "symbol": s.name,
+            "start_line": s.start,
+            "end_line": s.end,
+        })
     } else {
-        json!({"file":file,"symbol":"<module>","start_line":line,"end_line":line})
+        json!({
+            "file": file,
+            "symbol": "<module>",
+            "start_line": line,
+            "end_line": line,
+        })
     }
 }
 pub fn changed_file(c: &Change, text: &str) -> Value {
@@ -212,8 +222,32 @@ pub fn changed_file(c: &Change, text: &str) -> Value {
     let symbols: Vec<_> = source::outline(&c.file, text)
         .iter()
         .filter(|s| lines.iter().any(|n| s.start <= *n && *n <= s.end))
-        .map(|s| json!({"file":c.file,"symbol":s.name,"start_line":s.start,"end_line":s.end}))
+        .map(|s| {
+            json!({
+                "file": c.file,
+                "symbol": s.name,
+                "start_line": s.start,
+                "end_line": s.end,
+            })
+        })
         .collect();
     let patch = redact(&c.patch);
-    json!({"file":c.file,"hunks":c.hunks.iter().map(|(a,b)|json!({"file":c.file,"symbol":"<module>","start_line":a,"end_line":b})).collect::<Vec<_>>(),"symbols":symbols,"added_lines":c.additions.keys().collect::<Vec<_>>(),"removed_line_count":c.removed.len(),"diff":patch,"diff_truncated":false})
+    json!({
+        "file": c.file,
+        "hunks": c
+            .hunks
+            .iter()
+            .map(|(a, b)| json!({
+                "file": c.file,
+                "symbol": "<module>",
+                "start_line": a,
+                "end_line": b,
+            }))
+            .collect::<Vec<_>>(),
+        "symbols": symbols,
+        "added_lines": c.additions.keys().collect::<Vec<_>>(),
+        "removed_line_count": c.removed.len(),
+        "diff": patch,
+        "diff_truncated": false,
+    })
 }

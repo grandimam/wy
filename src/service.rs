@@ -40,9 +40,13 @@ pub fn workspace_review(path: &Path, opts: &ReviewOptions) -> Result<Value> {
         .iter()
         .map(|entry| {
             json!({
-                "id":entry["id"], "agent":entry["agent"], "path":entry["path"], "cwd":entry["cwd"],
-                "storage_key":format!("source:{}:{}", s(&entry["agent"]), s(&entry["id"])),
-                "source_entry":entry, "source_timestamp":entry["timestamp"]
+                "id": entry["id"],
+                "agent": entry["agent"],
+                "path": entry["path"],
+                "cwd": entry["cwd"],
+                "storage_key": format!("source:{}:{}", s(&entry["agent"]), s(&entry["id"])),
+                "source_entry": entry,
+                "source_timestamp": entry["timestamp"],
             })
         })
         .collect();
@@ -69,11 +73,25 @@ pub fn workspace_review(path: &Path, opts: &ReviewOptions) -> Result<Value> {
             .ok(),
         )
     });
-    let coverage: Vec<_> = history::AGENTS.iter().map(|agent| json!({"agent":agent,
-        "enabled":history::source_matches(&opts.source, agent),
-        "discovered":entries.iter().filter(|entry| entry["agent"] == *agent).count(),
-        "captured":0,"skipped_budget":0,"skipped_unreadable":0,"skipped_scope":0,"duplicates":0,"issues":[]
-    })).collect();
+    let coverage: Vec<_> = history::AGENTS
+        .iter()
+        .map(|agent| {
+            json!({
+                "agent": agent,
+                "enabled": history::source_matches(&opts.source, agent),
+                "discovered": entries
+                    .iter()
+                    .filter(|entry| entry["agent"] == *agent)
+                    .count(),
+                "captured": 0,
+                "skipped_budget": 0,
+                "skipped_unreadable": 0,
+                "skipped_scope": 0,
+                "duplicates": 0,
+                "issues": [],
+            })
+        })
+        .collect();
     result["sessions"] = json!(refs);
     result["coverage"] = json!(coverage);
     result["history_source"] = json!(opts.source);
@@ -82,7 +100,9 @@ pub fn workspace_review(path: &Path, opts: &ReviewOptions) -> Result<Value> {
     warnings.retain(|w| !s(w).starts_with("No agent history captured"));
     warnings.extend(issues.into_iter().map(Value::String));
     if skipped_headers > 0 {
-        warnings.push(json!(format!("Skipped {skipped_headers} saved session headers with unsupported or incomplete metadata. Stored snapshots were not modified; available source transcripts can still be rediscovered.")));
+        warnings.push(json!(format!(
+            "Skipped {skipped_headers} saved session headers with unsupported or incomplete metadata. Stored snapshots were not modified; available source transcripts can still be rediscovered."
+        )));
     }
     Store::open(Path::new(s(&result["root"])))?.save_review(&result)?;
     Ok(result)
@@ -119,8 +139,17 @@ pub fn review(path: &Path, opts: &ReviewOptions) -> Result<Value> {
             (vec![], vec![])
         };
         warnings.extend(issues.iter().map(|w| format!("{agent}: {w}")));
-        coverage.push(json!({"agent":agent,"enabled":enabled,"discovered":entries.len(),"captured":0,
-            "skipped_budget":0,"skipped_unreadable":0,"skipped_scope":0,"duplicates":0,"issues":issues}));
+        coverage.push(json!({
+            "agent": agent,
+            "enabled": enabled,
+            "discovered": entries.len(),
+            "captured": 0,
+            "skipped_budget": 0,
+            "skipped_unreadable": 0,
+            "skipped_scope": 0,
+            "duplicates": 0,
+            "issues": issues,
+        }));
         queues.push(entries);
     }
     let mut entries = vec![];
@@ -198,7 +227,13 @@ pub fn review(path: &Path, opts: &ReviewOptions) -> Result<Value> {
             &digest(&session.to_string())[..12]
         );
         store.put("session", &key, &session)?;
-        refs.push(json!({"id":session["id"],"agent":session["agent"],"path":session["path"],"cwd":session["cwd"],"storage_key":key}));
+        refs.push(json!({
+            "id": session["id"],
+            "agent": session["agent"],
+            "path": session["path"],
+            "cwd": session["cwd"],
+            "storage_key": key,
+        }));
         sessions.push(session);
     }
     if coverage
@@ -210,7 +245,39 @@ pub fn review(path: &Path, opts: &ReviewOptions) -> Result<Value> {
     if sessions.is_empty() {
         warnings.push("No agent history captured; explanations use repository evidence only. Use /coverage to inspect discovery.".into());
     }
-    let result = json!({"schema_version":1,"id":id("review"),"root":root,"created_at":now(),"head":head,"baseline_id":null,"session_id":if sessions.len()==1{sessions[0]["id"].clone()}else{Value::Null},"sessions":refs,"coverage":coverage,"recent_code":history::recent_code(&root,&sessions),"decisions":[],"changes":changes.iter().map(|c|repository::changed_file(c,sources.texts.get(&c.file).map(String::as_str).unwrap_or(""))).collect::<Vec<_>>(),"warnings":warnings,"file_hashes":sources.hashes,"input_tokens":0,"output_tokens":0,"provider":"offline","comparison_base":head,"history_source":opts.source});
+    let result = json!({
+        "schema_version": 1,
+        "id": id("review"),
+        "root": root,
+        "created_at": now(),
+        "head": head,
+        "baseline_id": null,
+        "session_id": if sessions.len() == 1 {
+            sessions[0]["id"].clone()
+        } else {
+            Value::Null
+        },
+        "sessions": refs,
+        "coverage": coverage,
+        "recent_code": history::recent_code(&root, &sessions),
+        "decisions": [],
+        "changes": changes
+            .iter()
+            .map(|c| {
+                repository::changed_file(
+                    c,
+                    sources.texts.get(&c.file).map(String::as_str).unwrap_or(""),
+                )
+            })
+            .collect::<Vec<_>>(),
+        "warnings": warnings,
+        "file_hashes": sources.hashes,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "provider": "offline",
+        "comparison_base": head,
+        "history_source": opts.source,
+    });
     store.save_review(&result)?;
     Ok(result)
 }

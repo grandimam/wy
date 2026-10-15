@@ -127,8 +127,13 @@ pub fn hunk_sources(diff: &str, edits: &[Value]) -> Vec<Value> {
             } else {
                 "partial"
             };
-            json!({"line":line,"status":status,"covered":covered.len(),"total":total,
-                "edit":best.map(|(i, _)| edits[i].clone())})
+            json!({
+                "line": line,
+                "status": status,
+                "covered": covered.len(),
+                "total": total,
+                "edit": best.map(|(i, _)| edits[i].clone())
+            })
         })
         .collect()
 }
@@ -272,10 +277,20 @@ pub fn reasons(root: &Path, sessions: &[Value], file: &str, diff: Option<&str>) 
     if let Some(diff) = diff {
         let sources = hunk_sources(diff, &edits);
         for ((line, text), source) in hunk_blocks(diff).into_iter().zip(sources) {
-            let (added, removed) = edit_size(&json!({"format":"patch","text":text}));
+            let (added, removed) = edit_size(&json!({
+                "format": "patch",
+                "text": text
+            }));
             let header = text.lines().next().unwrap_or("");
-            let change = json!({"id":format!("{file}:{line}"),"label":hunk_label(header),"text":text,
-                "format":"patch","added":added,"removed":removed,"status":source["status"]});
+            let change = json!({
+                "id": format!("{file}:{line}"),
+                "label": hunk_label(header),
+                "text": text,
+                "format": "patch",
+                "added": added,
+                "removed": removed,
+                "status": source["status"]
+            });
             pairs.push((
                 source["edit"].as_object().map(|_| source["edit"].clone()),
                 change,
@@ -284,8 +299,15 @@ pub fn reasons(root: &Path, sessions: &[Value], file: &str, diff: Option<&str>) 
     } else {
         for edit in &edits {
             let (added, removed) = edit_size(edit);
-            let change = json!({"id":format!("{file}:{}",s(&edit["id"])),"label":"recorded edit",
-                "text":edit["text"],"format":edit["format"],"added":added,"removed":removed,"status":"recorded"});
+            let change = json!({
+                "id": format!("{file}:{}", s(&edit["id"])),
+                "label": "recorded edit",
+                "text": edit["text"],
+                "format": edit["format"],
+                "added": added,
+                "removed": removed,
+                "status": "recorded"
+            });
             pairs.push((Some(edit.clone()), change));
         }
     }
@@ -353,8 +375,22 @@ pub fn reasons(root: &Path, sessions: &[Value], file: &str, diff: Option<&str>) 
                     .take_while(|e| e["id"] != edit["event_id"])
                     .filter(|e| e["provenance"]["source_type"] == "compaction_summary")
                     .count();
-                groups.push(json!({"key":key,"agent":session["agent"],"model":model,"session_id":session["id"],
-                    "message":message,"rationale":turn[..at].iter().rev().find(|e|e["kind"]=="rationale"),"request":request,"prior_request":prior,"after":after,"edit":edit,"compactions":compactions}));
+                groups.push(json!({
+                    "key": key,
+                    "agent": session["agent"],
+                    "model": model,
+                    "session_id": session["id"],
+                    "message": message,
+                    "rationale": turn[..at]
+                        .iter()
+                        .rev()
+                        .find(|e| e["kind"] == "rationale"),
+                    "request": request,
+                    "prior_request": prior,
+                    "after": after,
+                    "edit": edit,
+                    "compactions": compactions
+                }));
                 groups.len() - 1
             }
         };
@@ -362,7 +398,10 @@ pub fn reasons(root: &Path, sessions: &[Value], file: &str, diff: Option<&str>) 
         change["first"] = json!(!hunks.iter().any(|h: &Value| h["reason"] == json!(index)));
         hunks.push(change);
     }
-    json!({"reasons":groups,"hunks":hunks})
+    json!({
+        "reasons": groups,
+        "hunks": hunks
+    })
 }
 
 #[cfg(test)]

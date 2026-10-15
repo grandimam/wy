@@ -103,7 +103,18 @@ pub(super) fn coverage(review: &Value, sessions: &[Value]) -> Document {
                 "not selected"
             }
         ));
-        doc.text(format!("Discovered {} · Captured {} · Budget exclusions {} · Unreadable {} · Scope/identity exclusions {} · Duplicates {}",n(&row["discovered"]),n(&row["captured"]),n(&row["skipped_budget"]),n(&row["skipped_unreadable"]),n(&row["skipped_scope"]),n(&row["duplicates"])),TEXT);
+        doc.text(
+            format!(
+                "Discovered {} · Captured {} · Budget exclusions {} · Unreadable {} · Scope/identity exclusions {} · Duplicates {}",
+                n(&row["discovered"]),
+                n(&row["captured"]),
+                n(&row["skipped_budget"]),
+                n(&row["skipped_unreadable"]),
+                n(&row["skipped_scope"]),
+                n(&row["duplicates"])
+            ),
+            TEXT,
+        );
         if row["enabled"] == true && n(&row["discovered"]) == 0 {
             doc.text("No matching sessions found in the supported default/configured stores. This is not proof that no agent was used.",MUTED);
         }

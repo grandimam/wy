@@ -78,7 +78,9 @@ pub fn scoped(review: &Value, session: &Value, selection: WorkSelection) -> Resu
     work["changes"] = json!(
         files
             .into_iter()
-            .map(|file| json!({"file":file}))
+            .map(|file| json!({
+                "file": file
+            }))
             .collect::<Vec<_>>()
     );
     Ok(work)
@@ -139,14 +141,43 @@ pub fn build(review: &Value, session: &Value) -> Value {
             .map(|d| s(&d["file"]).to_owned()),
     );
     let turns = request_turns(session, &edits);
-    let steps:Vec<_>=turns.iter().flat_map(|turn|arr(&turn["edit_indices"]).iter().map(|index| {
-        let request=&turn["request"];
-        json!({"edit":edits[crate::n(index)],"request":if history::provenance::original(request){json!(security::short(s(&request["text"]),700))}else{Value::Null},"request_id":request["id"]})
-    })).collect();
-    json!({"scope_kind":"session","id":review["id"],"root":review["root"],
-        "session":{"storage_key":key,"id":session["id"],"agent":session["agent"],"title":title(session),"last_event":insights::session_dates(session).1},
-        "changes":files.into_iter().map(|f|json!({"file":f})).collect::<Vec<_>>(),
-        "edits":edits,"steps":steps,"turns":turns,"warnings":session["warnings"]})
+    let steps: Vec<_> = turns
+        .iter()
+        .flat_map(|turn| {
+            arr(&turn["edit_indices"]).iter().map(|index| {
+                let request = &turn["request"];
+                json!({
+                    "edit": edits[crate::n(index)],
+                    "request": if history::provenance::original(request) {
+                        json!(security::short(s(&request["text"]), 700))
+                    } else {
+                        Value::Null
+                    },
+                    "request_id": request["id"],
+                })
+            })
+        })
+        .collect();
+    json!({
+        "scope_kind": "session",
+        "id": review["id"],
+        "root": review["root"],
+        "session": {
+            "storage_key": key,
+            "id": session["id"],
+            "agent": session["agent"],
+            "title": title(session),
+            "last_event": insights::session_dates(session).1,
+        },
+        "changes": files
+            .into_iter()
+            .map(|f| json!({ "file": f }))
+            .collect::<Vec<_>>(),
+        "edits": edits,
+        "steps": steps,
+        "turns": turns,
+        "warnings": session["warnings"],
+    })
 }
 
 /// Keep every user-bounded turn, including planning/notes with no edits. Unknown
@@ -159,7 +190,15 @@ fn request_turns(session: &Value, edits: &[Value]) -> Vec<Value> {
             .or_default()
             .push(i);
     }
-    let blank = || json!({"request":null,"prior_request":null,"messages":[],"activity":[],"edit_indices":[]});
+    let blank = || {
+        json!({
+            "request": null,
+            "prior_request": null,
+            "messages": [],
+            "activity": [],
+            "edit_indices": [],
+        })
+    };
     let mut current = blank();
     let mut turns = vec![];
     let mut prior = Value::Null;
@@ -214,7 +253,17 @@ fn request_turns(session: &Value, edits: &[Value]) -> Vec<Value> {
 }
 
 pub fn empty(review: &Value) -> Value {
-    json!({"scope_kind":"session","id":review["id"],"root":review["root"],"session":null,"changes":[],"edits":[],"steps":[],"turns":[],"warnings":[]})
+    json!({
+        "scope_kind": "session",
+        "id": review["id"],
+        "root": review["root"],
+        "session": null,
+        "changes": [],
+        "edits": [],
+        "steps": [],
+        "turns": [],
+        "warnings": [],
+    })
 }
 
 pub fn load(root: &Path, work: &Value) -> Result<Value> {
@@ -236,10 +285,27 @@ pub fn load(root: &Path, work: &Value) -> Result<Value> {
 }
 
 pub fn edit_evidence(edit: &Value) -> Value {
-    json!({"id":format!("session-edit-{}",s(&edit["id"])),"kind":"session_edit","file":edit["file"],"format":edit["format"],
-        "text":edit["text"],"state":edit["state"],"operation":edit["operation"],"truncated":edit["truncated"],
-        "session_key":edit["session_key"],"session_id":edit["session_id"],"agent":edit["agent"],"event_id":edit["event_id"],"timestamp":edit["timestamp"],
-        "edit_ref":history::edit_ref(edit),"provenance":{"source_type":"tool_record","basis":"captured_edit","original_refs":[]}})
+    json!({
+        "id": format!("session-edit-{}", s(&edit["id"])),
+        "kind": "session_edit",
+        "file": edit["file"],
+        "format": edit["format"],
+        "text": edit["text"],
+        "state": edit["state"],
+        "operation": edit["operation"],
+        "truncated": edit["truncated"],
+        "session_key": edit["session_key"],
+        "session_id": edit["session_id"],
+        "agent": edit["agent"],
+        "event_id": edit["event_id"],
+        "timestamp": edit["timestamp"],
+        "edit_ref": history::edit_ref(edit),
+        "provenance": {
+            "source_type": "tool_record",
+            "basis": "captured_edit",
+            "original_refs": [],
+        },
+    })
 }
 
 /// Bounded selected-session evidence only. No current source reads or other sessions.
@@ -279,8 +345,15 @@ pub fn packet(work: &Value, session: &Value) -> Value {
         e["session_key"] = work["session"]["storage_key"].clone();
         evidence.push(e);
     }
-    json!({"scope_kind":"session","session":work["session"],"selection":work["selection"],"evidence":evidence,"omitted_items":omitted,"warnings":work["warnings"],
-        "limitations":"Captured edits are historical excerpts, not reconstructed complete files. Recorded tool inputs may not have executed. Shell, manual, failed and unsupported edits may be missing. No current code or other sessions were used."})
+    json!({
+        "scope_kind": "session",
+        "session": work["session"],
+        "selection": work["selection"],
+        "evidence": evidence,
+        "omitted_items": omitted,
+        "warnings": work["warnings"],
+        "limitations": "Captured edits are historical excerpts, not reconstructed complete files. Recorded tool inputs may not have executed. Shell, manual, failed and unsupported edits may be missing. No current code or other sessions were used.",
+    })
 }
 
 /// Whole-file comparison is justified only for a complete, successful final write.
@@ -306,6 +379,10 @@ pub fn compare(root: &Path, work: &Value, edit: &Value) -> Value {
     } else {
         "Changed since captured edit"
     };
-    json!({"status":status,"current":current,"truncated":false,
-        "note":"Comparison uses redacted text and ignores final newlines; it does not establish reversal, supersession or authorship."})
+    json!({
+        "status": status,
+        "current": current,
+        "truncated": false,
+        "note": "Comparison uses redacted text and ignores final newlines; it does not establish reversal, supersession or authorship.",
+    })
 }

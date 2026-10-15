@@ -39,11 +39,33 @@ impl Store {
         opts.open(&database)?;
         let connection = Connection::open(&database)?;
         connection.busy_timeout(Duration::from_secs(10))?;
-        connection.execute_batch("CREATE TABLE IF NOT EXISTS artifacts (kind TEXT, id TEXT, data TEXT, PRIMARY KEY(kind,id));
-            CREATE TABLE IF NOT EXISTS commit_reviews (commit_hash TEXT NOT NULL, review_id TEXT NOT NULL, created_at TEXT NOT NULL, association TEXT NOT NULL, PRIMARY KEY(commit_hash,review_id));
-            CREATE TABLE IF NOT EXISTS session_work_headers (session_key TEXT PRIMARY KEY, data TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS session_requests (session_key TEXT NOT NULL, ordinal INTEGER NOT NULL, request_id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(session_key,ordinal));
-            PRAGMA user_version=3;")?;
+        connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS artifacts (
+                kind TEXT,
+                id TEXT,
+                data TEXT,
+                PRIMARY KEY(kind,id)
+            );
+            CREATE TABLE IF NOT EXISTS commit_reviews (
+                commit_hash TEXT NOT NULL,
+                review_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                association TEXT NOT NULL,
+                PRIMARY KEY(commit_hash,review_id)
+            );
+            CREATE TABLE IF NOT EXISTS session_work_headers (
+                session_key TEXT PRIMARY KEY,
+                data TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS session_requests (
+                session_key TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                request_id TEXT NOT NULL,
+                data TEXT NOT NULL,
+                PRIMARY KEY(session_key,ordinal)
+            );
+            PRAGMA user_version=3;",
+        )?;
         Ok(Self {
             connection,
             directory,
@@ -94,7 +116,13 @@ impl Store {
         Ok(())
     }
     pub fn session_snapshots(&self, agent: &str, session: &str) -> Result<Vec<(String, Value)>> {
-        let mut query=self.connection.prepare("SELECT id,data FROM artifacts WHERE kind='session' AND json_extract(data,'$.agent')=? AND json_extract(data,'$.id')=? ORDER BY rowid DESC LIMIT 21")?;
+        let mut query = self.connection.prepare(
+            "SELECT id,data FROM artifacts
+             WHERE kind='session'
+               AND json_extract(data,'$.agent')=?
+               AND json_extract(data,'$.id')=?
+             ORDER BY rowid DESC LIMIT 21",
+        )?;
         let rows = query.query_map(params![agent, session], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })?;
@@ -112,15 +140,37 @@ impl Store {
         Ok(result)
     }
     pub fn link_review(&self, commit: &str, review_id: &str, association: &str) -> Result<()> {
-        self.connection.execute("INSERT INTO commit_reviews VALUES (?,?,?,?) ON CONFLICT(commit_hash,review_id) DO UPDATE SET association='explicit' WHERE excluded.association='explicit'",params![commit,review_id,crate::now(),association])?;
+        self.connection.execute(
+            "INSERT INTO commit_reviews VALUES (?,?,?,?)
+             ON CONFLICT(commit_hash,review_id) DO UPDATE SET association='explicit'
+             WHERE excluded.association='explicit'",
+            params![commit, review_id, crate::now(), association],
+        )?;
         Ok(())
     }
     pub fn linked_reviews(&self, commit: &str) -> Result<Vec<Value>> {
-        let mut query=self.connection.prepare("SELECT review_id,association FROM commit_reviews WHERE commit_hash=? ORDER BY created_at,review_id")?;
-        Ok(query.query_map([commit],|r|Ok(serde_json::json!({"review_id":r.get::<_,String>(0)?,"association":r.get::<_,String>(1)?})))?.collect::<rusqlite::Result<Vec<Value>>>()?)
+        let mut query = self.connection.prepare(
+            "SELECT review_id,association FROM commit_reviews
+             WHERE commit_hash=? ORDER BY created_at,review_id",
+        )?;
+        Ok(query
+            .query_map([commit], |r| {
+                Ok(serde_json::json!({
+                    "review_id": r.get::<_, String>(0)?,
+                    "association": r.get::<_, String>(1)?
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<Value>>>()?)
     }
     pub fn reviews_at_base(&self, base: Option<&str>) -> Result<Vec<Value>> {
-        let mut query=self.connection.prepare("SELECT data FROM artifacts WHERE kind='review' AND id<>'latest' AND json_extract(data,'$.head') IS ? AND json_extract(data,'$.comparison_base') IS ? AND json_extract(data,'$.baseline_id') IS NULL ORDER BY rowid")?;
+        let mut query = self.connection.prepare(
+            "SELECT data FROM artifacts
+             WHERE kind='review' AND id<>'latest'
+               AND json_extract(data,'$.head') IS ?
+               AND json_extract(data,'$.comparison_base') IS ?
+               AND json_extract(data,'$.baseline_id') IS NULL
+             ORDER BY rowid",
+        )?;
         let rows = query.query_map(params![base, base], |r| r.get::<_, String>(0))?;
         let mut reviews = vec![];
         for row in rows {
